@@ -195,10 +195,33 @@ npm run dev                        # → http://localhost:3000
 | 3 | `create_adset(campaign_id, name, daily_budget_thb, destination="WEBSITE")` | Advantage+ Audience, optimization ตาม objective ของแคมเปญ · `destination="MESSENGER"` = **โฆษณายิงข้อความ** (คนกดทักแชทเพจ, ใช้กับแคมเปญ `OUTCOME_ENGAGEMENT`) |
 | 4 | `create_ad(adset_id, name, page_post_text, link_url, image_url)` | ดาวน์โหลดรูป → อัปโหลดเป็น image_hash → Creative → Ad · ถ้า Ad Set เป็น MESSENGER ปุ่มจะเป็น "ส่งข้อความ" และไม่ใช้ `link_url` |
 
-**ตัวอย่างสั่งงาน (ยิงข้อความ):** "สร้างแคมเปญยิงข้อความ งบ 500 บาท ให้คนทักแชทเพจ ข้อความว่า …" → Claude จะสร้าง `OUTCOME_ENGAGEMENT` + Ad Set `destination="MESSENGER"` + โฆษณาปุ่มส่งข้อความ (PAUSED ทั้งหมด)
 | 5 | `send_to_dashboard(date_preset)` | `today` `yesterday` `last_7d` `last_14d` `last_30d` `this_month` `last_month` · ส่งเฉพาะแคมเปญ prefix ตัวเอง แยกรายวัน |
 
 ทุกอย่างจะอยู่ในสถานะ **PAUSED** → ตรวจใน Ads Manager แล้วกดเปิดเองด้วยมือ
+**ตัวอย่างสั่งงาน (ยิงข้อความ):** "สร้างแคมเปญยิงข้อความ งบ 500 บาท ให้คนทักแชทเพจ ข้อความว่า …" → Claude จะสร้าง `OUTCOME_ENGAGEMENT` + Ad Set `destination="MESSENGER"` + โฆษณาปุ่มส่งข้อความ (PAUSED ทั้งหมด)
+
+## ขั้นที่ 7 — แอป Ads Control (ไอคอนบนหน้าจอ + หน้าสร้างโฆษณา)
+
+ใช้งานโดยไม่ต้องพิมพ์สั่งในแชต:
+
+1. ดับเบิลคลิกไอคอน **Ads Control** บนหน้าจอ → ถ้าหน้าเว็บยังไม่รัน ตัวเปิดจะรันให้แบบซ่อนหน้าต่าง (รอราว 10 วินาที) แล้วเปิดเป็นหน้าต่างแอปของ Chrome/Edge
+2. แท็บ **＋ สร้างโฆษณา** → เลือกผู้สร้าง (Claude / Manus / ChatGPT) · ชนิด (ยิงข้อความ / พาเข้าเว็บไซต์) · ชื่อ · งบ · ข้อความ · รูป (ไฟล์จากเครื่อง / ลิงก์รูป / ไม่ใส่ = รูปปกเพจ) → กด **สร้างโฆษณา**
+3. ระบบทำครบชุด: เช็คสิทธิ์ → อัปโหลดรูป → แคมเปญ → กลุ่มเป้าหมาย → โฆษณา (PAUSED ทั้งหมด) → อัปเดตหน้าภาพรวม แล้วโชว์ผลทีละขั้น + ลิงก์เปิดใน Ads Manager
+
+ไฟล์ที่เกี่ยวข้อง:
+
+| ไฟล์ | หน้าที่ |
+|------|---------|
+| `launcher/AdsControl.vbs` → `AdsControl.ps1` | ตัวเปิดแอป (ไอคอนบนหน้าจอชี้มาที่ .vbs) · log อยู่ที่ `%TEMP%ds-control.log` |
+| `launcher/ads-control.ico` | ไอคอน |
+| `dashboard/components/CreatePanel.tsx` | หน้าฟอร์ม + ตัวอย่างโฆษณาสด |
+| `dashboard/app/api/agents`, `app/api/create` | เรียก `server.py --status` / `--create-json` (ใช้ได้จากเครื่องนี้เท่านั้น) |
+
+- กฎทั้งหมด (PAUSED / เช็คสิทธิ์ / เพดานงบ / จำนวนแคมเปญต่อวัน / ชื่อขึ้นต้น prefix) อยู่ใน `server.py` ที่เดียว — หน้าแอปเรียกใช้ตัวเดียวกับ AI
+- `--create-json` อ่านไฟล์รูปจากเครื่องได้ จึง **ไม่ได้เปิดเป็นเครื่องมือ MCP** (กัน agent ภายนอกดึงไฟล์ในเครื่อง) และหน้าเว็บรันที่ `127.0.0.1` เท่านั้น
+- ผู้สร้างที่ยังไม่มีรหัสใน `.env.<agent>` จะขึ้นป้าย "ยังไม่ตั้งค่า" และกดเลือกไม่ได้ · ครบโควตาวันนี้จะขึ้น "ครบโควตาวันนี้"
+
+สร้างไอคอนบนหน้าจอใหม่ (ถ้าหาย): คลิกขวา `launcher/AdsControl.vbs` → Send to → Desktop (create shortcut) แล้วเปลี่ยนไอคอนเป็น `launcher/ads-control.ico`
 
 ## Audit log
 

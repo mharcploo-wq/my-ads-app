@@ -29,7 +29,7 @@ import sys
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import requests
 from dotenv import dotenv_values
@@ -57,6 +57,9 @@ parser.add_argument("--host", default=None, help="host สำหรับโห�
 parser.add_argument("--port", type=int, default=None, help="port สำหรับโหมด HTTP")
 parser.add_argument("--test", type=int, metavar="BUDGET_THB", default=None,
                     help="ทดสอบ check_permission ด้วยงบที่กำหนดแล้วออก เช่น --test 500")
+parser.add_argument("--status", action="store_true", help="(หน้าแอป) พิมพ์สถานะ agent เป็น JSON แล้วออก")
+parser.add_argument("--create-json", metavar="PATH", default=None,
+                    help="(หน้าแอป) สร้างครบชุดจากไฟล์ JSON แล้วพิมพ์ผลเป็น JSON")
 ARGS, _ = parser.parse_known_args()
 
 AGENT = (ARGS.agent or os.getenv("AGENT") or "claude").lower()
@@ -287,6 +290,7 @@ def _run_checks(daily_budget_thb: int | None, count_campaigns: bool) -> dict[str
         src = "Meta" if ok else f"audit log (อ่านจาก Meta ไม่ได้: {_meta_error(err)})"
         add("daily_limit", "จำนวนแคมเปญวันนี้", used < MAX_CAMPAIGNS_PER_DAY,
             f"สร้างแล้ว {used}/{MAX_CAMPAIGNS_PER_DAY} แคมเปญ ({AGENT_PREFIX}, นับจาก {src})")
+        checks[-1]["used"] = used
 
     return _summarize(checks)
 
@@ -450,12 +454,17 @@ def _upload_image(image_url: str) -> tuple[bool, str]:
         r.raise_for_status()
     except Exception as e:  # noqa: BLE001
         return False, f"ดาวน์โหลดรูปไม่ได้: {e}"
-    if len(r.content) > 30 * 1024 * 1024:
-        return False, "รูปใหญ่เกิน 30MB"
     if not r.headers.get("content-type", "").startswith("image/"):
         return False, f"URL นี้ไม่ใช่ไฟล์รูป (content-type: {r.headers.get('content-type')})"
+    return _upload_image_bytes(r.content)
+
+
+def _upload_image_bytes(content: bytes) -> tuple[bool, str]:
+    """อัปโหลดไฟล์รูปเข้า /adimages ได้ image_hash กลับมา"""
+    if len(content) > 30 * 1024 * 1024:
+        return False, "รูปใหญ่เกิน 30MB"
     ok, body = _graph_post(f"{META_AD_ACCOUNT_ID}/adimages",
-                           {"bytes": base64.b64encode(r.content).decode("ascii")})
+                           {"bytes": base64.b64encode(content).decode("ascii")})
     if not ok:
         return False, f"อัปโหลดรูปเข้า Meta ไม่ได้: {_meta_error(body)}"
     images = body.get("images", {})
@@ -466,6 +475,11 @@ def _upload_image(image_url: str) -> tuple[bool, str]:
 def create_ad(adset_id: str, name: str, page_post_text: str, link_url: str, image_url: str) -> dict[str, Any]:
     """สร้างโฆษณา (Creative รูป + ข้อความ + ลิงก์) สถานะ PAUSED ใต้ Ad Set ของ agent นี้
     ถ้า Ad Set เป็นแบบยิงข้อความ (destination MESSENGER) ปุ่มจะเป็น "ส่งข้อความ" และ link_url ไม่ถูกใช้ (ใส่ว่างได้)"""
+    return _create_ad(adset_id, name, page_post_text, link_url, lambda: _upload_image(image_url))
+
+
+def _create_ad(adset_id: str, name: str, page_post_text: str, link_url: str,
+               get_image_hash: Callable[[], tuple[bool, str]]) -> dict[str, Any]:
     perm = _run_checks(None, count_campaigns=False)
     if not perm["allowed"]:
         log_action("create_ad", False, {"blocked": perm["reason"]})
@@ -485,7 +499,7 @@ def create_ad(adset_id: str, name: str, page_post_text: str, link_url: str, imag
             return {"success": False, "error": "link_url ต้องขึ้นต้นด้วย http:// หรือ https://"}
         cta = {"type": "LEARN_MORE", "value": {"link": link_url}}
 
-    ok, image_hash = _upload_image(image_url)
+    ok, image_hash = get_image_hash()
     if not ok:
         return {"success": False, "error": image_hash}
 
@@ -520,6 +534,130 @@ def create_ad(adset_id: str, name: str, page_post_text: str, link_url: str, imag
     return {"success": True, "ad_id": body["id"], "creative_id": cr["id"], "name": ad_name,
             "status": REQUIRED_STATUS,
             "note": "โฆษณายังไม่วิ่ง — ตรวจใน Ads Manager แล้วเปิดเองด้วยมือ"}
+
+
+# ---------------------------------------------------------------------------
+# โหมดหน้าแอป (Dashboard → หน้า "สร้างโฆษณา") — เรียกผ่านบรรทัดคำสั่งเท่านั้น
+# ไม่เปิดเป็นเครื่องมือ MCP เพราะอ่านไฟล์รูปจากเครื่องได้ (กัน agent ภายนอกดึงไฟล์ในเครื่อง)
+# ---------------------------------------------------------------------------
+KINDS = {
+    # ชนิดโฆษณา: objective ของแคมเปญ + ปลายทางของ Ad Set
+    "MESSENGER": ("OUTCOME_ENGAGEMENT", "MESSENGER"),
+    "WEBSITE": ("OUTCOME_TRAFFIC", "WEBSITE"),
+}
+
+
+def _page_cover() -> tuple[str | None, str | None]:
+    """ชื่อเพจ + ลิงก์รูปปกเพจ (ใช้เป็นรูปโฆษณาเมื่อผู้ใช้ไม่ใส่รูป)"""
+    if not META_PAGE_ID:
+        return None, None
+    ok, body = _graph_get(META_PAGE_ID, {"fields": "name,cover"})
+    if not ok:
+        return None, None
+    return body.get("name"), (body.get("cover") or {}).get("source")
+
+
+def app_status() -> dict[str, Any]:
+    """สถานะของ agent นี้สำหรับหน้าแอป: พร้อมไหม / วันนี้เหลือสร้างได้กี่แคมเปญ / ชื่อเพจ"""
+    chk = _run_checks(None, count_campaigns=True)
+    used = next((c.get("used") for c in chk["checks"] if c["key"] == "daily_limit"), None)
+    # ครบโควตาวันนี้ = ตั้งค่าครบแล้ว แค่สร้างเพิ่มวันนี้ไม่ได้ (ยังดึงชื่อ/รูปปกเพจมาโชว์ตัวอย่างได้)
+    configured = all(c["ok"] for c in chk["checks"] if c["key"] != "daily_limit")
+    page_name, cover = _page_cover() if configured else (None, None)
+    return {
+        "agent": AGENT, "prefix": AGENT_PREFIX, "ready": chk["allowed"], "reason": chk["reason"],
+        "configured": configured, "quota_full": configured and not chk["allowed"],
+        "checks": chk["checks"], "max_daily_budget_thb": MAX_DAILY_BUDGET_THB,
+        "max_campaigns_per_day": MAX_CAMPAIGNS_PER_DAY,
+        "campaigns_today": used, "page_name": page_name, "page_cover": cover,
+    }
+
+
+def create_full(spec: dict[str, Any]) -> dict[str, Any]:
+    """สร้างครบชุด: check_permission → แคมเปญ → Ad Set → โฆษณา (PAUSED ทั้งหมด) แล้วส่งผลเข้า Dashboard
+    spec: kind (MESSENGER/WEBSITE), name, daily_budget_thb, text, link_url?, image_path?, image_url?"""
+    steps: list[dict[str, Any]] = []
+
+    def step(key: str, label: str, res: dict[str, Any], detail: str = "") -> bool:
+        ok = bool(res.get("success", res.get("allowed")))
+        steps.append({"key": key, "label": label, "ok": ok,
+                      "detail": detail if ok else (res.get("error") or res.get("reason") or "ไม่สำเร็จ")})
+        return ok
+
+    def done(**extra: Any) -> dict[str, Any]:
+        return {"success": all(s["ok"] for s in steps), "agent": AGENT, "steps": steps, **extra}
+
+    kind = str(spec.get("kind", "")).upper()
+    name = str(spec.get("name", "")).strip()
+    text = str(spec.get("text", "")).strip()
+    link_url = str(spec.get("link_url") or "").strip()
+    try:
+        budget = int(spec.get("daily_budget_thb", 0))
+    except (TypeError, ValueError):
+        budget = 0
+    problems = []
+    if kind not in KINDS:
+        problems.append("เลือกชนิดโฆษณา")
+    if not name:
+        problems.append("ใส่ชื่อแคมเปญ")
+    if not text:
+        problems.append("ใส่ข้อความโฆษณา")
+    if budget <= 0:
+        problems.append("ใส่งบต่อวันเป็นตัวเลขมากกว่า 0")
+    if kind == "WEBSITE" and not link_url.startswith(("http://", "https://")):
+        problems.append("ใส่ลิงก์เว็บไซต์ที่ขึ้นต้นด้วย http:// หรือ https://")
+    if problems:
+        steps.append({"key": "form", "label": "ข้อมูลในฟอร์ม", "ok": False, "detail": " · ".join(problems)})
+        return done()
+    objective, destination = KINDS[kind]
+
+    # 1) เช็คสิทธิ์ก่อนเสมอ (กฎของระบบ)
+    perm = check_permission(budget)
+    if not step("check", "เช็คสิทธิ์", perm, "ผ่านทุกเงื่อนไข"):
+        return done()
+
+    # 2) เตรียมรูปก่อนสร้างอะไรใน Meta — รูปพังจะได้ไม่เหลือแคมเปญค้าง
+    image_path = spec.get("image_path")
+    image_url = str(spec.get("image_url") or "").strip()
+    if image_path:
+        try:
+            content = Path(image_path).read_bytes()
+        except OSError as e:
+            step("image", "รูปโฆษณา", {"success": False, "error": f"เปิดไฟล์รูปไม่ได้: {e}"})
+            return done()
+        ok, img = _upload_image_bytes(content)
+        src = "ไฟล์จากเครื่อง"
+    else:
+        if not image_url:
+            _, image_url = _page_cover()
+            src = "รูปปกเพจ"
+        else:
+            src = "ลิงก์รูป"
+        if not image_url:
+            step("image", "รูปโฆษณา", {"success": False, "error": "ไม่มีรูป และหารูปปกเพจไม่เจอ — ใส่รูปเอง"})
+            return done()
+        ok, img = _upload_image(image_url)
+    if not step("image", "รูปโฆษณา", {"success": ok, "error": img}, f"อัปโหลดแล้ว ({src})"):
+        return done()
+    image_hash = img
+
+    # 3) แคมเปญ → กลุ่มเป้าหมาย → โฆษณา
+    camp = create_campaign(name, objective, budget)
+    if not step("campaign", "แคมเปญ", camp, camp.get("name", "")):
+        return done()
+    adset = create_adset(camp["campaign_id"], f"{name} - กลุ่มเป้าหมาย", budget, destination)
+    if not step("adset", "กลุ่มเป้าหมาย", adset, f"งบ {budget:,} บาท/วัน · ไทย อายุ 20+"):
+        return done(campaign_id=camp["campaign_id"])
+    ad = _create_ad(adset["adset_id"], f"{name} - โฆษณา", text, link_url, lambda: (True, image_hash))
+    if not step("ad", "โฆษณา", ad, "ปุ่ม ส่งข้อความ" if kind == "MESSENGER" else "ปุ่ม ดูเพิ่มเติม"):
+        return done(campaign_id=camp["campaign_id"], adset_id=adset["adset_id"])
+
+    # 4) อัปเดตหน้าสรุปผล (ไม่สำเร็จก็ไม่เป็นไร โฆษณาสร้างครบแล้ว)
+    dash = send_to_dashboard("last_7d")
+    return done(campaign_id=camp["campaign_id"], adset_id=adset["adset_id"], ad_id=ad["ad_id"],
+                campaign_name=camp["name"], dashboard_updated=bool(dash.get("delivered")),
+                ads_manager_url=f"https://adsmanager.facebook.com/adsmanager/manage/campaigns?act="
+                                f"{META_AD_ACCOUNT_ID.removeprefix('act_')}&selected_campaign_ids={camp['campaign_id']}")
 
 
 RESULT_ACTIONS = {
@@ -661,6 +799,14 @@ def run_http(server, host: str, port: int) -> None:
 
 
 if __name__ == "__main__":
+    if ARGS.status or ARGS.create_json:
+        if ARGS.status:
+            out = app_status()
+        else:
+            out = create_full(json.loads(Path(ARGS.create_json).read_text(encoding="utf-8")))
+        sys.stdout.reconfigure(encoding="utf-8")
+        print(json.dumps(out, ensure_ascii=False))
+        sys.exit(0)
     if ARGS.test is not None:
         print(json.dumps(check_permission(ARGS.test), ensure_ascii=False, indent=2))
         sys.exit(0)

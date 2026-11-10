@@ -1,0 +1,91 @@
+import "server-only";
+import { spawn } from "child_process";
+import { existsSync } from "fs";
+import path from "path";
+
+/** ตัวสร้างโฆษณาอยู่ที่ mcp-server/server.py — หน้าแอปเรียกผ่านบรรทัดคำสั่ง (กฎ PAUSED / เช็คสิทธิ์ อยู่ที่นั่นที่เดียว) */
+export const AGENT_IDS = ["claude", "manus", "chatgpt"] as const;
+export type AgentId = (typeof AGENT_IDS)[number];
+export const isAgentId = (v: unknown): v is AgentId => AGENT_IDS.includes(v as AgentId);
+
+const SERVER_DIR = path.resolve(process.cwd(), "..", "mcp-server");
+const SERVER_PY = path.join(SERVER_DIR, "server.py");
+
+function pythonPath(): string {
+  const win = path.join(SERVER_DIR, ".venv", "Scripts", "python.exe");
+  const nix = path.join(SERVER_DIR, ".venv", "bin", "python");
+  if (existsSync(win)) return win;
+  if (existsSync(nix)) return nix;
+  return process.platform === "win32" ? "python" : "python3";
+}
+
+export interface CheckItem { key: string; label: string; ok: boolean; detail: string }
+
+export interface AgentStatus {
+  agent: AgentId;
+  prefix: string;
+  ready: boolean;
+  configured?: boolean;
+  quota_full?: boolean;
+  reason: string;
+  checks: CheckItem[];
+  max_daily_budget_thb: number;
+  max_campaigns_per_day: number;
+  campaigns_today: number | null;
+  page_name: string | null;
+  page_cover: string | null;
+}
+
+export interface CreateSpec {
+  kind: "MESSENGER" | "WEBSITE";
+  name: string;
+  daily_budget_thb: number;
+  text: string;
+  link_url?: string;
+  image_url?: string;
+  image_path?: string;
+}
+
+export interface CreateResult {
+  success: boolean;
+  agent: AgentId;
+  steps: CheckItem[];
+  campaign_id?: string;
+  adset_id?: string;
+  ad_id?: string;
+  campaign_name?: string;
+  dashboard_updated?: boolean;
+  ads_manager_url?: string;
+}
+
+/** รัน server.py แล้วอ่านผล JSON บรรทัดสุดท้าย */
+export function runCreator<T>(agent: AgentId, args: string[], timeoutMs = 120_000): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const p = spawn(pythonPath(), [SERVER_PY, "--agent", agent, ...args], {
+      cwd: SERVER_DIR,
+      env: { ...process.env, PYTHONIOENCODING: "utf-8" },
+      windowsHide: true,
+    });
+    let out = "";
+    let err = "";
+    const timer = setTimeout(() => { p.kill(); reject(new Error("ตัวสร้างโฆษณาไม่ตอบภายในเวลาที่กำหนด")); }, timeoutMs);
+    p.stdout.on("data", (b) => (out += b.toString("utf8")));
+    p.stderr.on("data", (b) => (err += b.toString("utf8")));
+    p.on("error", (e) => { clearTimeout(timer); reject(new Error(`เปิดตัวสร้างโฆษณาไม่ได้: ${e.message}`)); });
+    p.on("close", () => {
+      clearTimeout(timer);
+      const line = out.trim().split(/\r?\n/).pop() ?? "";
+      try {
+        resolve(JSON.parse(line) as T);
+      } catch {
+        reject(new Error(`ตัวสร้างโฆษณาตอบกลับผิดรูปแบบ: ${(err || out).slice(-400)}`));
+      }
+    });
+  });
+}
+
+/** หน้าสร้างโฆษณาใช้ได้เฉพาะจากเครื่องนี้ (กันคนในวง LAN ยิงเข้ามาสร้างโฆษณา) */
+export function isLocalRequest(req: Request): boolean {
+  const host = (req.headers.get("host") ?? "").toLowerCase();
+  return /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(host);
+}
