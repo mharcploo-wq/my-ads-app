@@ -24,6 +24,11 @@ const KINDS: { id: Kind; icon: string; label: string; hint: string; cta: string 
   { id: "WEBSITE", icon: "🔗", label: "พาเข้าเว็บไซต์", hint: "คนกดปุ่ม \"ดูเพิ่มเติม\" ไปหน้าเว็บ", cta: "ดูเพิ่มเติม" },
 ];
 
+/** วันเวลาไทย: "YYYY-MM-DD" + "HH:MM" → เวลาจริง (ms) */
+const thMs = (d: string, t: string) => Date.parse(`${d}T${t || "00:00"}:00+07:00`);
+const thDate = (offsetDays: number) => new Date(Date.now() + 7 * 3600_000 + offsetDays * 86400_000).toISOString().slice(0, 10);
+const fmtTh = (d: string, t: string) => { const [y, m, dd] = d.split("-"); return `${dd}/${m}/${y} ${t}`; };
+
 export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
   const [status, setStatus] = useState<AgentStatus[] | null>(null);
   const [statusErr, setStatusErr] = useState<string | null>(null);
@@ -40,6 +45,13 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<CreateResult | null>(null);
   const [submitErr, setSubmitErr] = useState<string | null>(null);
+  // กำหนดเวลาเผยแพร่ (เวลาไทย)
+  const [startMode, setStartMode] = useState<"now" | "set">("now");
+  const [startDate, setStartDate] = useState(() => thDate(1));
+  const [startTime, setStartTime] = useState("08:00");
+  const [hasEnd, setHasEnd] = useState(false);
+  const [endDate, setEndDate] = useState(() => thDate(8));
+  const [endTime, setEndTime] = useState("23:59");
   const fileInput = useRef<HTMLInputElement>(null);
 
   const loadStatus = useCallback(async () => {
@@ -77,6 +89,23 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
   const previewImage = filePreview || imageUrl.trim() || cur?.page_cover || null;
   const imageSource = file ? "ไฟล์จากเครื่อง" : imageUrl.trim() ? "ลิงก์รูป" : "รูปปกเพจ (ค่าเริ่มต้น)";
 
+  const sched = useMemo(() => {
+    const start = startMode === "set" ? thMs(startDate, startTime) : null;
+    const end = hasEnd ? thMs(endDate, endTime) : null;
+    let error: string | null = null;
+    if (start !== null && (Number.isNaN(start) || !startDate)) error = "ใส่วันเวลาเริ่มให้ครบ";
+    else if (end !== null && (Number.isNaN(end) || !endDate)) error = "ใส่วันสิ้นสุดให้ครบ";
+    else if (start !== null && start < Date.now() - 5 * 60_000) error = "วันเวลาเริ่มย้อนอดีตไม่ได้";
+    else if (end !== null && end < (start ?? Date.now()) + 24 * 3600_000) error = "วันสิ้นสุดต้องหลังวันเริ่มอย่างน้อย 1 วัน";
+    const days = end !== null && !error ? Math.ceil((end - (start ?? Date.now())) / 86400_000) : null;
+    const label = `${start !== null ? `เริ่ม ${fmtTh(startDate, startTime)}` : "เริ่มทันทีเมื่อกดเปิด"} → ${end !== null ? fmtTh(endDate, endTime) : "ไม่มีวันสิ้นสุด"}`;
+    return {
+      error, days, label,
+      start_time: start !== null ? `${startDate}T${startTime}` : "",
+      end_time: end !== null ? `${endDate}T${endTime}` : "",
+    };
+  }, [startMode, startDate, startTime, hasEnd, endDate, endTime]);
+
   const problems = useMemo(() => {
     const p: string[] = [];
     if (!cur?.configured) p.push("ผู้สร้างที่เลือกยังไม่ได้ตั้งค่า");
@@ -86,8 +115,9 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
     if (!text.trim()) p.push("ใส่ข้อความโฆษณา");
     if (kind === "WEBSITE" && !/^https?:\/\//.test(link.trim())) p.push("ใส่ลิงก์เว็บไซต์ (ขึ้นต้น https://)");
     if (left === 0) p.push("วันนี้สร้างครบโควตาแล้ว");
+    if (sched.error) p.push(sched.error);
     return p;
-  }, [cur, name, budgetNum, maxBudget, text, kind, link, left]);
+  }, [cur, name, budgetNum, maxBudget, text, kind, link, left, sched.error]);
 
   function pickFile(f: File | undefined | null) {
     if (!f) return;
@@ -104,6 +134,8 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
     fd.set("agent", agent); fd.set("kind", kind); fd.set("name", name.trim());
     fd.set("daily_budget_thb", String(budgetNum)); fd.set("text", text.trim());
     if (kind === "WEBSITE") fd.set("link_url", link.trim());
+    if (sched.start_time) fd.set("start_time", sched.start_time);
+    if (sched.end_time) fd.set("end_time", sched.end_time);
     if (file) fd.set("image", file); else if (imageUrl.trim()) fd.set("image_url", imageUrl.trim());
     try {
       const r = await fetch("/api/create", { method: "POST", body: fd });
@@ -187,6 +219,34 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
         {!file && (
           <input className="input" style={{ marginTop: 8, width: "100%" }} value={imageUrl} placeholder="หรือวางลิงก์รูป (ไม่ใส่ = ใช้รูปปกเพจ)" onChange={(e) => setImageUrl(e.target.value)} />
         )}
+
+        <div className="c-label">กำหนดเวลาเผยแพร่ (เวลาไทย)</div>
+        <div className="c-seg">
+          <button type="button" className={`c-opt ${startMode === "now" ? "on" : ""}`} onClick={() => setStartMode("now")}>
+            <b>▶ เริ่มทันที</b><span>วิ่งตอนที่กดเปิดใน Ads Manager</span>
+          </button>
+          <button type="button" className={`c-opt ${startMode === "set" ? "on" : ""}`} onClick={() => setStartMode("set")}>
+            <b>🕗 กำหนดวันเวลาเริ่ม</b><span>รอถึงเวลาแล้วค่อยวิ่ง</span>
+          </button>
+        </div>
+        {startMode === "set" && (
+          <div className="c-when">
+            <input type="date" className="input" aria-label="วันที่เริ่ม" value={startDate} min={thDate(0)} onChange={(e) => setStartDate(e.target.value)} />
+            <input type="time" className="input" aria-label="เวลาเริ่ม" value={startTime} onChange={(e) => setStartTime(e.target.value)} />
+          </div>
+        )}
+        <label className="c-check">
+          <input type="checkbox" checked={hasEnd} onChange={(e) => setHasEnd(e.target.checked)} /> กำหนดวันสิ้นสุด
+        </label>
+        {hasEnd && (
+          <div className="c-when">
+            <input type="date" className="input" aria-label="วันที่สิ้นสุด" value={endDate} min={startMode === "set" ? startDate : thDate(0)} onChange={(e) => setEndDate(e.target.value)} />
+            <input type="time" className="input" aria-label="เวลาสิ้นสุด" value={endTime} onChange={(e) => setEndTime(e.target.value)} />
+          </div>
+        )}
+        <div className={`c-hint c-sched ${sched.error ? "bad" : "ok"}`}>
+          {sched.error ? `✖ ${sched.error}` : `✔ ${sched.label}${sched.days && budgetNum > 0 ? ` (${sched.days} วัน) · งบรวมไม่เกินประมาณ ฿${(sched.days * budgetNum).toLocaleString()}` : ""}`}
+        </div>
 
         <div className="c-safe">⏸ โฆษณาจะถูกสร้างแบบ <b>หยุดไว้</b> — ยังไม่เสียเงินจนกว่าคุณจะไปกดเปิดใน Ads Manager</div>
 

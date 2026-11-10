@@ -44,6 +44,8 @@ export interface CreateSpec {
   link_url?: string;
   image_url?: string;
   image_path?: string;
+  start_time?: string;   // เวลาไทย "YYYY-MM-DDTHH:MM" — ว่าง = เริ่มทันทีเมื่อกดเปิด
+  end_time?: string;     // ว่าง = ไม่มีวันสิ้นสุด
 }
 
 export interface CreateResult {

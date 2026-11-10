@@ -213,3 +213,11 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .field .err { font-size: 12px; color: #ff8a8a; }
 .field .d { font-size: 11.5px; color: var(--text-secondary); }
 @media (max-width: 640px) { .env-grid { grid-template-columns: 1fr; } }
+
+/* กำหนดเวลาเผยแพร่ */
+.c-when { display: grid; grid-template-columns: 1.4fr 1fr; gap: 8px; margin-top: 8px; }
+.c-when .input { width: 100%; box-sizing: border-box; color-scheme: dark; }
+.c-check { display: flex; align-items: center; gap: 8px; font-size: 13.5px; margin-top: 12px; cursor: pointer; }
+.c-sched { margin-top: 8px; }
+.c-sched.ok { color: #6fd46f; }
+.c-sched.bad { color: #ff8a8a; }

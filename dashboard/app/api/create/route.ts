@@ -31,6 +31,8 @@ export async function POST(req: Request) {
     text: String(form.get("text") ?? "").trim(),
     link_url: String(form.get("link_url") ?? "").trim(),
     image_url: String(form.get("image_url") ?? "").trim(),
+    start_time: String(form.get("start_time") ?? "").trim(),
+    end_time: String(form.get("end_time") ?? "").trim(),
   };
 
   const tmp = path.join(os.tmpdir(), `ads-create-${randomUUID()}`);

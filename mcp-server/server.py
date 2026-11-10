@@ -379,15 +379,52 @@ def _own_object(object_id: str, fields: str) -> tuple[bool, dict[str, Any] | str
     return True, obj
 
 
-MESSENGER_LINK = "https://fb.com/messenger_doc/"   # ลิงก์มาตรฐานของ Meta สำหรับโฆษณาส่งข้อความ
+MESSENGER_LINK = "https://fb.com/messenger_doc/"
+MIN_RUN_HOURS = 24   # Meta: Ad Set งบต่อวันต้องวิ่งอย่างน้อย 24 ชม. ถ้ากำหนดวันสิ้นสุด
 
 
-def create_adset(campaign_id: str, name: str, daily_budget_thb: int, destination: str = "WEBSITE") -> dict[str, Any]:
+def _parse_th_time(value: str) -> datetime:
+    """'2026-11-11T08:00' / '2026-11-11 08:00' / ISO มี timezone — ถ้าไม่มี timezone ถือเป็นเวลาไทย"""
+    dt = datetime.fromisoformat(value.strip().replace(" ", "T"))
+    return dt if dt.tzinfo else dt.replace(tzinfo=TH_TZ)
+
+
+def _schedule(start_time: str = "", end_time: str = "") -> tuple[dict[str, str], str | None]:
+    """ตรวจและแปลงวันเวลาเผยแพร่ → (payload สำหรับ Meta, ข้อผิดพลาด)
+    เว้นว่าง = เริ่มทันทีเมื่อกดเปิด / ไม่มีวันสิ้นสุด"""
+    out: dict[str, str] = {}
+    now = datetime.now(TH_TZ)
+    start = None
+    try:
+        if (start_time or "").strip():
+            start = _parse_th_time(start_time)
+        end = _parse_th_time(end_time) if (end_time or "").strip() else None
+    except ValueError:
+        return {}, "รูปแบบวันเวลาไม่ถูกต้อง ใช้แบบ 2026-11-11T08:00 (เวลาไทย)"
+    if start:
+        if start < now - timedelta(minutes=5):
+            return {}, "วันเวลาเริ่มย้อนอดีตไม่ได้"
+        out["start_time"] = start.isoformat(timespec="seconds")
+    if end:
+        base = start or now
+        if end < base + timedelta(hours=MIN_RUN_HOURS):
+            return {}, "วันสิ้นสุดต้องหลังวันเริ่มอย่างน้อย 1 วัน (24 ชั่วโมง)"
+        out["end_time"] = end.isoformat(timespec="seconds")
+    return out, None   # ลิงก์มาตรฐานของ Meta สำหรับโฆษณาส่งข้อความ
+
+
+def create_adset(campaign_id: str, name: str, daily_budget_thb: int, destination: str = "WEBSITE",
+                 start_time: str = "", end_time: str = "") -> dict[str, Any]:
     """สร้าง Ad Set สถานะ PAUSED ใต้แคมเปญของ agent นี้
     ใช้ Advantage+ Audience (ประเทศไทย อายุ 20+ — กฎ Meta สำหรับไทย) ไม่ใส่ interest — งบหน่วยบาท
     destination: "WEBSITE" (ค่าเริ่มต้น) หรือ "MESSENGER" = โฆษณายิงข้อความ ให้คนกดทักแชทเพจ
-                 (MESSENGER ใช้กับแคมเปญ OUTCOME_ENGAGEMENT เท่านั้น)"""
+                 (MESSENGER ใช้กับแคมเปญ OUTCOME_ENGAGEMENT เท่านั้น)
+    start_time / end_time: วันเวลาเผยแพร่ (เวลาไทย) เช่น "2026-11-11T08:00" — เว้นว่าง = เริ่มทันทีเมื่อกดเปิด /
+                 ไม่มีวันสิ้นสุด · วันเริ่มย้อนอดีตไม่ได้ · วันสิ้นสุดต้องหลังวันเริ่มอย่างน้อย 24 ชม."""
     destination = (destination or "WEBSITE").upper().strip()
+    sched, sched_err = _schedule(start_time, end_time)
+    if sched_err:
+        return {"success": False, "error": sched_err}
     if destination not in ("WEBSITE", "MESSENGER"):
         return {"success": False, "error": 'destination ต้องเป็น "WEBSITE" หรือ "MESSENGER"'}
     perm = _run_checks(int(daily_budget_thb), count_campaigns=False)
@@ -420,6 +457,7 @@ def create_adset(campaign_id: str, name: str, daily_budget_thb: int, destination
             "targeting_automation": {"advantage_audience": 1},   # Advantage+ Audience
         },
         "status": REQUIRED_STATUS,
+        **sched,
     }
     if "destination_type" in opt:
         payload["destination_type"] = opt["destination_type"]
@@ -439,7 +477,7 @@ def create_adset(campaign_id: str, name: str, daily_budget_thb: int, destination
 
     ok, body = _graph_post(f"{META_AD_ACCOUNT_ID}/adsets", payload)
     log_action("create_adset", ok, {"name": payload["name"], "campaign_id": campaign_id,
-                                    "daily_budget_thb": daily_budget_thb,
+                                    "daily_budget_thb": daily_budget_thb, **sched,
                                     "adset_id": body.get("id") if ok else None,
                                     "error": None if ok else _meta_error(body)})
     if not ok:
@@ -447,6 +485,8 @@ def create_adset(campaign_id: str, name: str, daily_budget_thb: int, destination
     return {"success": True, "adset_id": body["id"], "name": payload["name"], "status": REQUIRED_STATUS,
             "daily_budget_thb": daily_budget_thb, "audience": "Advantage+ Audience (TH, 20+)",
             "destination": destination,
+            "start_time": sched.get("start_time", "เริ่มทันทีเมื่อกดเปิด"),
+            "end_time": sched.get("end_time", "ไม่มีวันสิ้นสุด"),
             "next_step": "เรียก create_ad(adset_id, name, page_post_text, link_url, image_url)"}
 
 
@@ -576,9 +616,17 @@ def app_status() -> dict[str, Any]:
     }
 
 
+def _schedule_label(sched: dict[str, str]) -> str:
+    fmt = lambda v: datetime.fromisoformat(v).astimezone(TH_TZ).strftime("%d/%m/%Y %H:%M")  # noqa: E731
+    start = f"เริ่ม {fmt(sched['start_time'])}" if "start_time" in sched else "เริ่มทันทีเมื่อกดเปิด"
+    end = f"ถึง {fmt(sched['end_time'])}" if "end_time" in sched else "ไม่มีวันสิ้นสุด"
+    return f"{start} {end}"
+
+
 def create_full(spec: dict[str, Any]) -> dict[str, Any]:
     """สร้างครบชุด: check_permission → แคมเปญ → Ad Set → โฆษณา (PAUSED ทั้งหมด) แล้วส่งผลเข้า Dashboard
-    spec: kind (MESSENGER/WEBSITE), name, daily_budget_thb, text, link_url?, image_path?, image_url?"""
+    spec: kind (MESSENGER/WEBSITE), name, daily_budget_thb, text, link_url?, image_path?, image_url?,
+          start_time?, end_time? (เวลาไทย เช่น 2026-11-11T08:00)"""
     steps: list[dict[str, Any]] = []
 
     def step(key: str, label: str, res: dict[str, Any], detail: str = "") -> bool:
@@ -609,6 +657,11 @@ def create_full(spec: dict[str, Any]) -> dict[str, Any]:
         problems.append("ใส่งบต่อวันเป็นตัวเลขมากกว่า 0")
     if kind == "WEBSITE" and not link_url.startswith(("http://", "https://")):
         problems.append("ใส่ลิงก์เว็บไซต์ที่ขึ้นต้นด้วย http:// หรือ https://")
+    start_time = str(spec.get("start_time") or "").strip()
+    end_time = str(spec.get("end_time") or "").strip()
+    sched, sched_err = _schedule(start_time, end_time)
+    if sched_err:
+        problems.append(sched_err)
     if problems:
         steps.append({"key": "form", "label": "ข้อมูลในฟอร์ม", "ok": False, "detail": " · ".join(problems)})
         return done()
@@ -648,8 +701,9 @@ def create_full(spec: dict[str, Any]) -> dict[str, Any]:
     camp = create_campaign(name, objective, budget)
     if not step("campaign", "แคมเปญ", camp, camp.get("name", "")):
         return done()
-    adset = create_adset(camp["campaign_id"], f"{name} - กลุ่มเป้าหมาย", budget, destination)
-    if not step("adset", "กลุ่มเป้าหมาย", adset, f"งบ {budget:,} บาท/วัน · ไทย อายุ 20+"):
+    adset = create_adset(camp["campaign_id"], f"{name} - กลุ่มเป้าหมาย", budget, destination, start_time, end_time)
+    when = _schedule_label(sched)
+    if not step("adset", "กลุ่มเป้าหมาย", adset, f"งบ {budget:,} บาท/วัน · ไทย อายุ 20+ · {when}"):
         return done(campaign_id=camp["campaign_id"])
     ad = _create_ad(adset["adset_id"], f"{name} - โฆษณา", text, link_url, lambda: (True, image_hash))
     if not step("ad", "โฆษณา", ad, "ปุ่ม ส่งข้อความ" if kind == "MESSENGER" else "ปุ่ม ดูเพิ่มเติม"):
