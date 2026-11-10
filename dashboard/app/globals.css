@@ -204,3 +204,12 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .fbp-cta small { color: #65676b; font-size: 11.5px; display: block; }
 .fbp-cta b { font-size: 13.5px; }
 .fbp-cta span { background: #e4e6eb; border-radius: 6px; padding: 7px 12px; font-weight: 600; font-size: 13.5px; white-space: nowrap; }
+
+/* ฟอร์มตั้งค่า Agent */
+.env-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+.env-grid .field .input, .field .input { width: 100%; box-sizing: border-box; }
+.env-adv summary { cursor: pointer; font-size: 12.5px; color: var(--text-secondary); margin-top: 2px; }
+.input.invalid { border-color: #a33; }
+.field .err { font-size: 12px; color: #ff8a8a; }
+.field .d { font-size: 11.5px; color: var(--text-secondary); }
+@media (max-width: 640px) { .env-grid { grid-template-columns: 1fr; } }

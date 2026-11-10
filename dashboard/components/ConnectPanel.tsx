@@ -1,7 +1,8 @@
 "use client";
 import { useEffect, useState } from "react";
 import { fmt } from "@/lib/calc";
-import { AGENTS, MetricsResponse, Prefix, PREFIXES } from "@/lib/types";
+import AgentEnvForm from "@/components/AgentEnvForm";
+import { AGENTS, MetricsResponse, PREFIXES } from "@/lib/types";
 
 type Check = { label: string; ok: boolean; detail: string };
 
@@ -49,29 +50,6 @@ export default function ConnectPanel({ data, onChanged }: { data: MetricsRespons
     } finally {
       setBusy("");
     }
-  };
-
-  // --- ตัวสร้าง .env ---
-  const [agent, setAgent] = useState<Prefix>("CLD-");
-  const [budget, setBudget] = useState(500);
-  const [perDay, setPerDay] = useState(3);
-  const [copied, setCopied] = useState(false);
-  const envText = [
-    `AGENT=${AGENTS[agent].key}`,
-    `META_ACCESS_TOKEN=ใส่โทเคน System User ของ ${AGENTS[agent].label} (ห้ามแชร์)`,
-    `META_AD_ACCOUNT_ID=${data.config.adAccountId ?? "act_ใส่เลขบัญชี"}`,
-    "META_PAGE_ID=ใส่เลขเพจ",
-    `AGENT_PREFIX=${agent}`,
-    `MAX_DAILY_BUDGET_THB=${budget}`,
-    `MAX_CAMPAIGNS_PER_DAY=${perDay}`,
-    "GRAPH_API_VERSION=v21.0",
-    `DASHBOARD_API_URL=${ingestUrl}`,
-    "DASHBOARD_API_SECRET=ค่าเดียวกับ dashboard/.env.local",
-  ].join("\n");
-  const copy = async () => {
-    await navigator.clipboard.writeText(envText);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
   };
 
   return (
@@ -148,33 +126,7 @@ export default function ConnectPanel({ data, onChanged }: { data: MetricsRespons
         {syncMsg && <div className={`msg ${syncMsg.ok ? "ok" : "no"}`}>{syncMsg.ok ? "✓ " : "✕ "}{syncMsg.text}</div>}
       </div>
 
-      <div className="card">
-        <h3>3. สร้างไฟล์ .env ของแต่ละ Agent</h3>
-        <p className="hint">เลือก Agent แล้วคัดลอกไปวางใน <code>mcp-server/.env.{AGENTS[agent].key}</code> จากนั้นใส่โทเคนจริงเองในเครื่อง</p>
-        <div className="seg" role="group" aria-label="เลือก Agent" style={{ marginBottom: 14 }}>
-          {PREFIXES.map((p) => (
-            <button key={p} aria-pressed={agent === p} onClick={() => setAgent(p)}>
-              <span className="swatch" style={{ background: AGENTS[p].color }} />{AGENTS[p].label} <span className="tag">{p}</span>
-            </button>
-          ))}
-        </div>
-        <div className="field">
-          <label>งบสูงสุดต่อวัน (MAX_DAILY_BUDGET_THB): <b className="num">{fmt.int(budget)} บาท</b></label>
-          <input type="range" min={100} max={5000} step={100} value={budget} onChange={(e) => setBudget(+e.target.value)} />
-        </div>
-        <div className="field">
-          <label>แคมเปญสูงสุดต่อวัน (MAX_CAMPAIGNS_PER_DAY)</label>
-          <div className="row">
-            <button className="btn" onClick={() => setPerDay((n) => Math.max(1, n - 1))}>−</button>
-            <b className="num" style={{ minWidth: 24, textAlign: "center" }}>{perDay}</b>
-            <button className="btn" onClick={() => setPerDay((n) => Math.min(20, n + 1))}>+</button>
-          </div>
-        </div>
-        <pre className="codebox mono">{envText}</pre>
-        <div className="row" style={{ marginTop: 10 }}>
-          <button className="btn primary" onClick={copy}>{copied ? "คัดลอกแล้ว ✓" : "คัดลอก"}</button>
-        </div>
-      </div>
+      <AgentEnvForm />
 
       <div className="card">
         <h3>กฎความปลอดภัยที่ MCP Server บังคับ</h3>
@@ -184,10 +136,10 @@ export default function ConnectPanel({ data, onChanged }: { data: MetricsRespons
           <li>ทุก <code>create_*</code> เรียก <code>check_permission</code> ก่อน: โทเคน · สิทธิ์บัญชี · งบ ≤ เพดาน · จำนวนแคมเปญ/วัน</li>
           <li>ชื่อทุกชิ้นเติม Prefix อัตโนมัติ (CLD- / MANUS- / GPT-) และแก้ได้เฉพาะของ Prefix ตัวเอง</li>
           <li>Ad Set ใช้ Advantage+ Audience (ไทย 20+) ไม่ใส่ interest แคบ ๆ</li>
-          <li>โทเคนอ่านจาก .env เท่านั้น ไม่ถูกเขียนลง audit log</li>
+          <li>โทเคนอ่านจาก .env เท่านั้น ไม่ถูกเขียนลง audit log · งบ/จำนวนแคมเปญ ตั้งเกิน 1,000 บาท / 5 แคมเปญ ไม่ได้</li>
         </ul>
         <div className="banner" style={{ marginTop: 14 }}>
-          <span>⚠</span><span>ห้ามวางโทเคนจริงในช่องใด ๆ บนหน้าเว็บ — ใส่ในไฟล์ .env บนเครื่องเท่านั้น</span>
+          <span>⚠</span><span>วางรหัสเข้าใช้ (Token) ได้เฉพาะช่องในข้อ 3 ซึ่งรับเฉพาะจากเครื่องนี้และบันทึกลงไฟล์ .env บนเครื่องเท่านั้น — ห้ามวางในช่องอื่นหรือส่งให้ใคร</span>
         </div>
       </div>
     </div>

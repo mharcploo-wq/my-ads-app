@@ -82,8 +82,11 @@ META_PIXEL_ID = os.getenv("META_PIXEL_ID", "").strip()             # ใช้�
 # เลขผู้ลงโฆษณาที่ยืนยันตัวตนแล้ว (Meta บังคับสำหรับโฆษณาที่ยิงในไทย) — ดูได้จาก Ad Set เดิมใน Ads Manager
 META_VERIFIED_IDENTITY_ID = os.getenv("META_VERIFIED_IDENTITY_ID", "").strip()
 AGENT_PREFIX = os.getenv("AGENT_PREFIX", AGENT_PREFIX_MAP[AGENT]).strip()
-MAX_DAILY_BUDGET_THB = int(os.getenv("MAX_DAILY_BUDGET_THB", "1000"))
-MAX_CAMPAIGNS_PER_DAY = int(os.getenv("MAX_CAMPAIGNS_PER_DAY", "5"))
+# เพดานที่ตกลงกันไว้ — ตั้งในไฟล์ .env ให้ต่ำกว่านี้ได้ แต่สูงกว่านี้ไม่ได้
+HARD_MAX_DAILY_BUDGET_THB = 1000
+HARD_MAX_CAMPAIGNS_PER_DAY = 5
+MAX_DAILY_BUDGET_THB = min(int(os.getenv("MAX_DAILY_BUDGET_THB", "1000")), HARD_MAX_DAILY_BUDGET_THB)
+MAX_CAMPAIGNS_PER_DAY = min(int(os.getenv("MAX_CAMPAIGNS_PER_DAY", "5")), HARD_MAX_CAMPAIGNS_PER_DAY)
 DASHBOARD_API_URL = os.getenv("DASHBOARD_API_URL", "").strip()
 DASHBOARD_API_SECRET = os.getenv("DASHBOARD_API_SECRET", "").strip()
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v21.0").strip()
