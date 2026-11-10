@@ -1,7 +1,7 @@
 import "server-only";
 import { promises as fs } from "fs";
 import path from "path";
-import { Campaign, DailyRow, IngestPayload, Prefix, Store, SyncInfo, prefixOf } from "./types";
+import { Campaign, DailyRow, IngestPayload, PREFIXES, Prefix, Store, SyncInfo, prefixOf } from "./types";
 
 const DATA_DIR = path.join(process.cwd(), "data");
 const FILE = path.join(DATA_DIR, "store.json");
@@ -38,6 +38,7 @@ export interface UpsertResult {
   campaigns: number;
   rows: number;
   skipped: number;
+  removed: number;
   prefixes: Prefix[];
 }
 
@@ -52,6 +53,10 @@ export function upsert(payload: IngestPayload, source: SyncInfo["source"]): Prom
       counts[p]![k]++;
     };
     let skipped = 0;
+
+    // รายชื่อแคมเปญที่ส่งมา = รายชื่อล่าสุดจาก Meta (Meta ไม่ส่งแคมเปญที่เก็บถาวร/ลบแล้วมา)
+    // → แคมเปญของ prefix เดียวกันที่ไม่อยู่ในรายชื่อนี้ ให้ลบออกพร้อมตัวเลขรายวัน
+    const removed = Array.isArray(payload.campaigns) ? prune(s, payload, source) : 0;
 
     for (const c of payload.campaigns ?? []) {
       const p = prefixOf(c.name);
@@ -104,9 +109,37 @@ export function upsert(payload: IngestPayload, source: SyncInfo["source"]): Prom
       campaigns: Object.values(counts).reduce((a, x) => a + (x?.c ?? 0), 0),
       rows: Object.values(counts).reduce((a, x) => a + (x?.r ?? 0), 0),
       skipped,
+      removed,
       prefixes: [...touched],
     };
   });
+}
+
+/** prefix ที่ข้อมูลชุดนี้ครอบคลุม: ส่งจาก agent = prefix ของ agent นั้น · ดึงจาก Meta ตรง = ทุก prefix */
+function coveredPrefixes(payload: IngestPayload, source: SyncInfo["source"]): Prefix[] {
+  const p = payload.prefix ? prefixOf(payload.prefix) : null;
+  if (p) return [p];
+  return source === "meta" ? [...PREFIXES] : [];
+}
+
+/** ลบแคมเปญ (และตัวเลขรายวัน) ที่หายไปจาก Meta แล้ว — คืนจำนวนแคมเปญที่ลบ */
+function prune(s: Store, payload: IngestPayload, source: SyncInfo["source"]): number {
+  const covered = new Set(coveredPrefixes(payload, source));
+  if (covered.size === 0) return 0;
+  const keep = new Set((payload.campaigns ?? []).map((c) => String(c.id)));
+  let n = 0;
+  for (const [id, c] of Object.entries(s.campaigns)) {
+    if (covered.has(c.prefix) && !keep.has(id)) {
+      delete s.campaigns[id];
+      n++;
+    }
+  }
+  if (n > 0) {
+    for (const [k, r] of Object.entries(s.rows)) {
+      if (!s.campaigns[r.campaign_id]) delete s.rows[k];
+    }
+  }
+  return n;
 }
 
 export function clearStore(): Promise<void> {
