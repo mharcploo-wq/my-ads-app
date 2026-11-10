@@ -1,0 +1,15 @@
+# ห้าม commit token
+mcp-server/.env
+mcp-server/.env.claude
+mcp-server/.env.manus
+mcp-server/.env.chatgpt
+!mcp-server/.env.example
+dashboard/.env.local
+dashboard/data/
+
+mcp-server/.venv/
+mcp-server/logs/
+__pycache__/
+dashboard/node_modules/
+dashboard/.next/
+*.tsbuildinfo
