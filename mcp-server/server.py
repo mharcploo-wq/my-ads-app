@@ -86,6 +86,7 @@ MCP_HTTP_TOKEN = os.getenv("MCP_HTTP_TOKEN", "").strip()            # กุญ�
 MCP_PUBLIC_HOST = os.getenv("MCP_PUBLIC_HOST", "").strip()          # เช่น xxxx.ngrok-free.app
 
 BASE_URL = f"https://graph.facebook.com/{GRAPH_API_VERSION}"
+__version__ = "0.1.0"
 REQUIRED_STATUS = "PAUSED"           # ห้ามเปลี่ยน
 TH_TZ = timezone(timedelta(hours=7))  # "วันนี้" นับตามเวลาไทย
 HTTP_TIMEOUT = 20
@@ -577,6 +578,7 @@ def build_server():
 
     server = MCPServer(
         name=f"meta-ads-{AGENT}",
+        version=__version__,
         instructions=(
             f"คุณคือ agent '{AGENT}' ใช้ prefix {AGENT_PREFIX} กับบัญชี {META_AD_ACCOUNT_ID}. "
             "ลำดับ: check_permission -> create_campaign -> create_adset -> create_ad. "
