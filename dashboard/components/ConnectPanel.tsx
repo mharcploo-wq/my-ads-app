@@ -183,7 +183,7 @@ export default function ConnectPanel({ data, onChanged }: { data: MetricsRespons
           <li>สร้างแคมเปญ / Ad Set / โฆษณา เป็น <b>PAUSED</b> เท่านั้น — payload ที่เป็น ACTIVE ถูกบล็อกก่อนยิง API</li>
           <li>ทุก <code>create_*</code> เรียก <code>check_permission</code> ก่อน: โทเคน · สิทธิ์บัญชี · งบ ≤ เพดาน · จำนวนแคมเปญ/วัน</li>
           <li>ชื่อทุกชิ้นเติม Prefix อัตโนมัติ (CLD- / MANUS- / GPT-) และแก้ได้เฉพาะของ Prefix ตัวเอง</li>
-          <li>Ad Set ใช้ Advantage+ Audience (ไทย 18+) ไม่ใส่ interest แคบ ๆ</li>
+          <li>Ad Set ใช้ Advantage+ Audience (ไทย 20+) ไม่ใส่ interest แคบ ๆ</li>
           <li>โทเคนอ่านจาก .env เท่านั้น ไม่ถูกเขียนลง audit log</li>
         </ul>
         <div className="banner" style={{ marginTop: 14 }}>

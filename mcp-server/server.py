@@ -76,6 +76,8 @@ META_ACCESS_TOKEN = os.getenv("META_ACCESS_TOKEN", "").strip()
 META_AD_ACCOUNT_ID = os.getenv("META_AD_ACCOUNT_ID", "").strip()   # ต้องขึ้นต้นด้วย act_
 META_PAGE_ID = os.getenv("META_PAGE_ID", "").strip()
 META_PIXEL_ID = os.getenv("META_PIXEL_ID", "").strip()             # ใช้เฉพาะ OUTCOME_SALES / OUTCOME_LEADS
+# เลขผู้ลงโฆษณาที่ยืนยันตัวตนแล้ว (Meta บังคับสำหรับโฆษณาที่ยิงในไทย) — ดูได้จาก Ad Set เดิมใน Ads Manager
+META_VERIFIED_IDENTITY_ID = os.getenv("META_VERIFIED_IDENTITY_ID", "").strip()
 AGENT_PREFIX = os.getenv("AGENT_PREFIX", AGENT_PREFIX_MAP[AGENT]).strip()
 MAX_DAILY_BUDGET_THB = int(os.getenv("MAX_DAILY_BUDGET_THB", "1000"))
 MAX_CAMPAIGNS_PER_DAY = int(os.getenv("MAX_CAMPAIGNS_PER_DAY", "5"))
@@ -372,7 +374,7 @@ def _own_object(object_id: str, fields: str) -> tuple[bool, dict[str, Any] | str
 
 def create_adset(campaign_id: str, name: str, daily_budget_thb: int) -> dict[str, Any]:
     """สร้าง Ad Set สถานะ PAUSED ใต้แคมเปญของ agent นี้
-    ใช้ Advantage+ Audience (ประเทศไทย อายุ 18+) ไม่ใส่ interest — งบหน่วยบาท"""
+    ใช้ Advantage+ Audience (ประเทศไทย อายุ 20+ — กฎ Meta สำหรับไทย) ไม่ใส่ interest — งบหน่วยบาท"""
     perm = _run_checks(int(daily_budget_thb), count_campaigns=False)
     if not perm["allowed"]:
         log_action("create_adset", False, {"blocked": perm["reason"]})
@@ -392,13 +394,19 @@ def create_adset(campaign_id: str, name: str, daily_budget_thb: int) -> dict[str
         "bid_strategy": "LOWEST_COST_WITHOUT_CAP",
         "targeting": {
             "geo_locations": {"countries": ["TH"]},
-            "age_min": 18,
+            "age_min": 20,   # Meta บังคับอายุขั้นต่ำ 20 ปีสำหรับผู้ชมในไทย
             "targeting_automation": {"advantage_audience": 1},   # Advantage+ Audience
         },
         "status": REQUIRED_STATUS,
     }
     if "destination_type" in opt:
         payload["destination_type"] = opt["destination_type"]
+    if META_VERIFIED_IDENTITY_ID:
+        payload["regional_regulated_categories"] = ["VOLUNTARY_VERIFICATION"]
+        payload["regional_regulation_identities"] = {
+            "universal_beneficiary": META_VERIFIED_IDENTITY_ID,
+            "universal_payer": META_VERIFIED_IDENTITY_ID,
+        }
     if "event" in opt:
         if not META_PIXEL_ID:
             return {"success": False,
@@ -413,7 +421,7 @@ def create_adset(campaign_id: str, name: str, daily_budget_thb: int) -> dict[str
     if not ok:
         return {"success": False, "error": _meta_error(body)}
     return {"success": True, "adset_id": body["id"], "name": payload["name"], "status": REQUIRED_STATUS,
-            "daily_budget_thb": daily_budget_thb, "audience": "Advantage+ Audience (TH, 18+)",
+            "daily_budget_thb": daily_budget_thb, "audience": "Advantage+ Audience (TH, 20+)",
             "next_step": "เรียก create_ad(adset_id, name, page_post_text, link_url, image_url)"}
 
 

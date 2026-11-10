@@ -26,7 +26,7 @@ my-ads-app/
 2. **check_permission ก่อนทุกครั้ง** — `create_campaign / create_adset / create_ad` เรียกตรวจซ้ำเองข้างใน ถ้าไม่ผ่านจะไม่ยิง API เลย
 3. **ไม่มี Token ในโค้ด** — อ่านจาก `.env.<agent>` เท่านั้น ไฟล์ `.env.*` อยู่ใน `.gitignore` และไม่ถูกเขียนลง audit log
 4. **Prefix อัตโนมัติ** — ชื่อถูกเติม `CLD-` / `MANUS-` / `GPT-` เอง (ถ้า AI พิมพ์ prefix มาเองหรือพิมพ์ของ agent อื่นมา จะถูกแทนที่) และแต่ละ agent **แก้ได้เฉพาะของ prefix ตัวเอง**
-5. **Advantage+ Audience** — Ad Set ใช้ `targeting_automation.advantage_audience = 1` (ไทย อายุ 18+) ไม่มี interest
+5. **Advantage+ Audience** — Ad Set ใช้ `targeting_automation.advantage_audience = 1` (ไทย อายุ 20+ ตามกฎ Meta สำหรับไทย) ไม่มี interest
 
 ---
 
@@ -67,6 +67,9 @@ DASHBOARD_API_SECRET=รหัสลับยาวอย่างน้อย12
 ```
 
 ถ้าใช้ objective `OUTCOME_SALES` หรือ `OUTCOME_LEADS` ต้องใส่ `META_PIXEL_ID` ด้วย
+
+**โฆษณาที่ยิงในไทยต้องใส่ `META_VERIFIED_IDENTITY_ID`** (เลขผู้ลงโฆษณาที่ยืนยันตัวตนแล้ว) — Meta บังคับ ไม่ใส่จะสร้าง Ad Set ไม่ได้
+หาเลขได้จาก Ad Set เดิมที่เคยยิงโฆษณาสำเร็จในบัญชีนั้น (ช่อง "ผู้รับผลประโยชน์ / ผู้ชำระเงิน") และกลุ่มเป้าหมายในไทยต้องอายุ 20 ปีขึ้นไป
 
 ## ขั้นที่ 3 — ทดสอบ check_permission ด้วยงบ 500 บาท ✅
 
@@ -179,7 +182,7 @@ npm run dev                        # → http://localhost:3000
 ## ขั้นที่ 6 — ใช้งานจริง (ตัวอย่างคำสั่งถึง AI)
 
 > เช็คสิทธิ์ด้วยงบ 500 บาท แล้วสร้างแคมเปญ Traffic ชื่อ "คอร์สออนไลน์-พ.ย." งบ 500 บาท
-> สร้าง ad set ชื่อ "TH-18+" งบ 500 บาท แล้วสร้างโฆษณาข้อความ "สมัครวันนี้ลด 30%"
+> สร้าง ad set ชื่อ "TH-20+" งบ 500 บาท แล้วสร้างโฆษณาข้อความ "สมัครวันนี้ลด 30%"
 > ลิงก์ https://example.com รูป https://example.com/banner.jpg
 > เสร็จแล้วส่งผล 7 วันล่าสุดเข้า Dashboard
 
