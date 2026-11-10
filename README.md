@@ -192,8 +192,10 @@ npm run dev                        # → http://localhost:3000
 |---|------|----------|
 | 1 | `check_permission(daily_budget_thb)` | ตรวจ token / สิทธิ์บัญชี / งบ ≤ เพดาน / จำนวนแคมเปญวันนี้ |
 | 2 | `create_campaign(name, objective, daily_budget_thb)` | objective: `OUTCOME_TRAFFIC` `OUTCOME_AWARENESS` `OUTCOME_ENGAGEMENT` `OUTCOME_LEADS` `OUTCOME_SALES` · งบจริงอยู่ที่ Ad Set |
-| 3 | `create_adset(campaign_id, name, daily_budget_thb)` | Advantage+ Audience, optimization ตาม objective ของแคมเปญ |
-| 4 | `create_ad(adset_id, name, page_post_text, link_url, image_url)` | ดาวน์โหลดรูป → อัปโหลดเป็น image_hash → Creative → Ad |
+| 3 | `create_adset(campaign_id, name, daily_budget_thb, destination="WEBSITE")` | Advantage+ Audience, optimization ตาม objective ของแคมเปญ · `destination="MESSENGER"` = **โฆษณายิงข้อความ** (คนกดทักแชทเพจ, ใช้กับแคมเปญ `OUTCOME_ENGAGEMENT`) |
+| 4 | `create_ad(adset_id, name, page_post_text, link_url, image_url)` | ดาวน์โหลดรูป → อัปโหลดเป็น image_hash → Creative → Ad · ถ้า Ad Set เป็น MESSENGER ปุ่มจะเป็น "ส่งข้อความ" และไม่ใช้ `link_url` |
+
+**ตัวอย่างสั่งงาน (ยิงข้อความ):** "สร้างแคมเปญยิงข้อความ งบ 500 บาท ให้คนทักแชทเพจ ข้อความว่า …" → Claude จะสร้าง `OUTCOME_ENGAGEMENT` + Ad Set `destination="MESSENGER"` + โฆษณาปุ่มส่งข้อความ (PAUSED ทั้งหมด)
 | 5 | `send_to_dashboard(date_preset)` | `today` `yesterday` `last_7d` `last_14d` `last_30d` `this_month` `last_month` · ส่งเฉพาะแคมเปญ prefix ตัวเอง แยกรายวัน |
 
 ทุกอย่างจะอยู่ในสถานะ **PAUSED** → ตรวจใน Ads Manager แล้วกดเปิดเองด้วยมือ

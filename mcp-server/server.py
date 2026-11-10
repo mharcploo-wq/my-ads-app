@@ -372,9 +372,17 @@ def _own_object(object_id: str, fields: str) -> tuple[bool, dict[str, Any] | str
     return True, obj
 
 
-def create_adset(campaign_id: str, name: str, daily_budget_thb: int) -> dict[str, Any]:
+MESSENGER_LINK = "https://fb.com/messenger_doc/"   # ลิงก์มาตรฐานของ Meta สำหรับโฆษณาส่งข้อความ
+
+
+def create_adset(campaign_id: str, name: str, daily_budget_thb: int, destination: str = "WEBSITE") -> dict[str, Any]:
     """สร้าง Ad Set สถานะ PAUSED ใต้แคมเปญของ agent นี้
-    ใช้ Advantage+ Audience (ประเทศไทย อายุ 20+ — กฎ Meta สำหรับไทย) ไม่ใส่ interest — งบหน่วยบาท"""
+    ใช้ Advantage+ Audience (ประเทศไทย อายุ 20+ — กฎ Meta สำหรับไทย) ไม่ใส่ interest — งบหน่วยบาท
+    destination: "WEBSITE" (ค่าเริ่มต้น) หรือ "MESSENGER" = โฆษณายิงข้อความ ให้คนกดทักแชทเพจ
+                 (MESSENGER ใช้กับแคมเปญ OUTCOME_ENGAGEMENT เท่านั้น)"""
+    destination = (destination or "WEBSITE").upper().strip()
+    if destination not in ("WEBSITE", "MESSENGER"):
+        return {"success": False, "error": 'destination ต้องเป็น "WEBSITE" หรือ "MESSENGER"'}
     perm = _run_checks(int(daily_budget_thb), count_campaigns=False)
     if not perm["allowed"]:
         log_action("create_adset", False, {"blocked": perm["reason"]})
@@ -384,6 +392,13 @@ def create_adset(campaign_id: str, name: str, daily_budget_thb: int) -> dict[str
     if not ok:
         return {"success": False, "error": camp}
     opt = _OPTIMIZATION.get(camp.get("objective", ""), _OPTIMIZATION["OUTCOME_TRAFFIC"])
+    if destination == "MESSENGER":
+        if camp.get("objective") != "OUTCOME_ENGAGEMENT":
+            return {"success": False,
+                    "error": "โฆษณายิงข้อความต้องอยู่ใต้แคมเปญ OUTCOME_ENGAGEMENT — สร้างแคมเปญใหม่ด้วย objective นี้"}
+        if not META_PAGE_ID:
+            return {"success": False, "error": "ยังไม่ได้ใส่ META_PAGE_ID ใน .env (ต้องรู้ว่าจะให้ทักแชทเพจไหน)"}
+        opt = {"optimization_goal": "CONVERSATIONS", "destination_type": "MESSENGER"}
 
     payload: dict[str, Any] = {
         "name": with_prefix(name),
@@ -412,6 +427,8 @@ def create_adset(campaign_id: str, name: str, daily_budget_thb: int) -> dict[str
             return {"success": False,
                     "error": f"แคมเปญ {camp.get('objective')} ต้องมี META_PIXEL_ID ใน .env เพื่อวัด conversion"}
         payload["promoted_object"] = {"pixel_id": META_PIXEL_ID, "custom_event_type": opt["event"]}
+    if destination == "MESSENGER":
+        payload["promoted_object"] = {"page_id": META_PAGE_ID}
 
     ok, body = _graph_post(f"{META_AD_ACCOUNT_ID}/adsets", payload)
     log_action("create_adset", ok, {"name": payload["name"], "campaign_id": campaign_id,
@@ -422,6 +439,7 @@ def create_adset(campaign_id: str, name: str, daily_budget_thb: int) -> dict[str
         return {"success": False, "error": _meta_error(body)}
     return {"success": True, "adset_id": body["id"], "name": payload["name"], "status": REQUIRED_STATUS,
             "daily_budget_thb": daily_budget_thb, "audience": "Advantage+ Audience (TH, 20+)",
+            "destination": destination,
             "next_step": "เรียก create_ad(adset_id, name, page_post_text, link_url, image_url)"}
 
 
@@ -446,19 +464,26 @@ def _upload_image(image_url: str) -> tuple[bool, str]:
 
 
 def create_ad(adset_id: str, name: str, page_post_text: str, link_url: str, image_url: str) -> dict[str, Any]:
-    """สร้างโฆษณา (Creative รูป + ข้อความ + ลิงก์) สถานะ PAUSED ใต้ Ad Set ของ agent นี้"""
+    """สร้างโฆษณา (Creative รูป + ข้อความ + ลิงก์) สถานะ PAUSED ใต้ Ad Set ของ agent นี้
+    ถ้า Ad Set เป็นแบบยิงข้อความ (destination MESSENGER) ปุ่มจะเป็น "ส่งข้อความ" และ link_url ไม่ถูกใช้ (ใส่ว่างได้)"""
     perm = _run_checks(None, count_campaigns=False)
     if not perm["allowed"]:
         log_action("create_ad", False, {"blocked": perm["reason"]})
         return {"success": False, "blocked_by": "check_permission", **perm}
     if not META_PAGE_ID:
         return {"success": False, "error": "ยังไม่ได้ใส่ META_PAGE_ID ใน .env"}
-    if not link_url.startswith(("http://", "https://")):
-        return {"success": False, "error": "link_url ต้องขึ้นต้นด้วย http:// หรือ https://"}
 
-    ok, adset = _own_object(adset_id, "name,campaign_id")
+    ok, adset = _own_object(adset_id, "name,campaign_id,destination_type")
     if not ok:
         return {"success": False, "error": adset}
+    messenger = adset.get("destination_type") == "MESSENGER"
+    if messenger:
+        link_url = MESSENGER_LINK
+        cta = {"type": "MESSAGE_PAGE", "value": {"app_destination": "MESSENGER"}}
+    else:
+        if not (link_url or "").startswith(("http://", "https://")):
+            return {"success": False, "error": "link_url ต้องขึ้นต้นด้วย http:// หรือ https://"}
+        cta = {"type": "LEARN_MORE", "value": {"link": link_url}}
 
     ok, image_hash = _upload_image(image_url)
     if not ok:
@@ -473,7 +498,7 @@ def create_ad(adset_id: str, name: str, page_post_text: str, link_url: str, imag
                 "message": page_post_text,
                 "link": link_url,
                 "image_hash": image_hash,
-                "call_to_action": {"type": "LEARN_MORE", "value": {"link": link_url}},
+                "call_to_action": cta,
             },
         },
     })
