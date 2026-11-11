@@ -192,7 +192,7 @@ npm run dev                        # → http://localhost:3000
 |---|------|----------|
 | 1 | `check_permission(daily_budget_thb)` | ตรวจ token / สิทธิ์บัญชี / งบ ≤ เพดาน / จำนวนแคมเปญวันนี้ |
 | 2 | `create_campaign(name, objective, daily_budget_thb)` | objective: `OUTCOME_TRAFFIC` `OUTCOME_AWARENESS` `OUTCOME_ENGAGEMENT` `OUTCOME_LEADS` `OUTCOME_SALES` · งบจริงอยู่ที่ Ad Set |
-| 3 | `create_adset(campaign_id, name, daily_budget_thb, destination="WEBSITE")` | Advantage+ Audience, optimization ตาม objective ของแคมเปญ · `destination="MESSENGER"` = **โฆษณายิงข้อความ** (คนกดทักแชทเพจ, ใช้กับแคมเปญ `OUTCOME_ENGAGEMENT`) |
+| 3 | `create_adset(campaign_id, name, daily_budget_thb, destination="WEBSITE", age_min=20, languages=["th","en_us","en_gb"])` | Advantage+ Audience · อายุขั้นต่ำ 20–25 · ภาษา th en_us en_gb zh ja ko km vi ms, optimization ตาม objective ของแคมเปญ · `destination="MESSENGER"` = **โฆษณายิงข้อความ** (คนกดทักแชทเพจ, ใช้กับแคมเปญ `OUTCOME_ENGAGEMENT`) |
 | 4 | `create_ad(adset_id, name, page_post_text, link_url, image_url)` | ดาวน์โหลดรูป → อัปโหลดเป็น image_hash → Creative → Ad · ถ้า Ad Set เป็น MESSENGER ปุ่มจะเป็น "ส่งข้อความ" และไม่ใช้ `link_url` |
 
 | 5 | `send_to_dashboard(date_preset)` | `today` `yesterday` `last_7d` `last_14d` `last_30d` `this_month` `last_month` · ส่งเฉพาะแคมเปญ prefix ตัวเอง แยกรายวัน |
@@ -205,7 +205,7 @@ npm run dev                        # → http://localhost:3000
 ใช้งานโดยไม่ต้องพิมพ์สั่งในแชต:
 
 1. ดับเบิลคลิกไอคอน **Ads Control** บนหน้าจอ → ถ้าหน้าเว็บยังไม่รัน ตัวเปิดจะรันให้แบบซ่อนหน้าต่าง (รอราว 10 วินาที) แล้วเปิดเป็นหน้าต่างแอปของ Chrome/Edge
-2. แท็บ **＋ สร้างโฆษณา** → เลือกผู้สร้าง (Claude / Manus / ChatGPT) · ชนิด (ยิงข้อความ / พาเข้าเว็บไซต์) · ชื่อ · งบ · ข้อความ · รูป (ไฟล์จากเครื่อง / ลิงก์รูป / ไม่ใส่ = รูปปกเพจ) → กด **สร้างโฆษณา**
+2. แท็บ **＋ สร้างโฆษณา** → เลือกผู้สร้าง (Claude / Manus / ChatGPT) · ชนิด (ยิงข้อความ / พาเข้าเว็บไซต์) · ชื่อ · งบ · ข้อความ · รูป (ไฟล์จากเครื่อง / ลิงก์รูป / ไม่ใส่ = รูปปกเพจ) · กลุ่มเป้าหมาย (อายุขั้นต่ำ 20–25 · ภาษา ค่าเริ่มต้น ไทย + อังกฤษ US/UK) → กด **สร้างโฆษณา**
 3. ระบบทำครบชุด: เช็คสิทธิ์ → อัปโหลดรูป → แคมเปญ → กลุ่มเป้าหมาย → โฆษณา (PAUSED ทั้งหมด) → อัปเดตหน้าภาพรวม แล้วโชว์ผลทีละขั้น + ลิงก์เปิดใน Ads Manager
 
 ไฟล์ที่เกี่ยวข้อง:

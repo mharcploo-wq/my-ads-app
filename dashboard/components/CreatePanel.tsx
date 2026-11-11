@@ -5,10 +5,14 @@ type AgentId = "claude" | "manus" | "chatgpt";
 type Kind = "MESSENGER" | "WEBSITE";
 
 interface CheckItem { key: string; label: string; ok: boolean; detail: string }
+interface AudienceOptions {
+  min_age: number; max_age_min: number; default_age: number;
+  languages: { key: string; label: string }[]; default_languages: string[]; fixed: string;
+}
 interface AgentStatus {
   agent: AgentId; prefix: string; ready: boolean; configured?: boolean; quota_full?: boolean; reason: string; checks: CheckItem[];
   max_daily_budget_thb: number; max_campaigns_per_day: number; campaigns_today: number | null;
-  page_name: string | null; page_cover: string | null;
+  page_name: string | null; page_cover: string | null; audience?: AudienceOptions;
 }
 interface CreateResult {
   success: boolean; steps: CheckItem[]; campaign_name?: string; ads_manager_url?: string; dashboard_updated?: boolean;
@@ -52,6 +56,9 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
   const [hasEnd, setHasEnd] = useState(false);
   const [endDate, setEndDate] = useState(() => thDate(8));
   const [endTime, setEndTime] = useState("23:59");
+  // กลุ่มเป้าหมาย — null = ยังไม่แตะ ใช้ค่าเริ่มต้นจาก server.py
+  const [ageMin, setAgeMin] = useState<number | null>(null);
+  const [langs, setLangs] = useState<string[] | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const loadStatus = useCallback(async () => {
@@ -87,6 +94,13 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
   const left = cur && cur.campaigns_today != null ? Math.max(0, cur.max_campaigns_per_day - cur.campaigns_today) : null;
   const budgetNum = Number(budget);
   const previewImage = filePreview || imageUrl.trim() || cur?.page_cover || null;
+  const audOpt = status?.find((a) => a.audience)?.audience ?? null;
+  const age = ageMin ?? audOpt?.default_age ?? null;
+  const pickedLangs = langs ?? audOpt?.default_languages ?? [];
+  const ageChoices = audOpt ? Array.from({ length: audOpt.max_age_min - audOpt.min_age + 1 }, (_, i) => audOpt.min_age + i) : [];
+  function toggleLang(key: string) {
+    setLangs(pickedLangs.includes(key) ? pickedLangs.filter((k) => k !== key) : [...pickedLangs, key]);
+  }
   const imageSource = file ? "ไฟล์จากเครื่อง" : imageUrl.trim() ? "ลิงก์รูป" : "รูปปกเพจ (ค่าเริ่มต้น)";
 
   const sched = useMemo(() => {
@@ -116,8 +130,9 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
     if (kind === "WEBSITE" && !/^https?:\/\//.test(link.trim())) p.push("ใส่ลิงก์เว็บไซต์ (ขึ้นต้น https://)");
     if (left === 0) p.push("วันนี้สร้างครบโควตาแล้ว");
     if (sched.error) p.push(sched.error);
+    if (audOpt && pickedLangs.length === 0) p.push("เลือกภาษาอย่างน้อย 1 ภาษา");
     return p;
-  }, [cur, name, budgetNum, maxBudget, text, kind, link, left, sched.error]);
+  }, [cur, name, budgetNum, maxBudget, text, kind, link, left, sched.error, audOpt, pickedLangs.length]);
 
   function pickFile(f: File | undefined | null) {
     if (!f) return;
@@ -136,6 +151,8 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
     if (kind === "WEBSITE") fd.set("link_url", link.trim());
     if (sched.start_time) fd.set("start_time", sched.start_time);
     if (sched.end_time) fd.set("end_time", sched.end_time);
+    if (age != null) fd.set("age_min", String(age));
+    pickedLangs.forEach((k) => fd.append("languages", k));
     if (file) fd.set("image", file); else if (imageUrl.trim()) fd.set("image_url", imageUrl.trim());
     try {
       const r = await fetch("/api/create", { method: "POST", body: fd });
@@ -219,6 +236,33 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
         {!file && (
           <input className="input" style={{ marginTop: 8, width: "100%" }} value={imageUrl} placeholder="หรือวางลิงก์รูป (ไม่ใส่ = ใช้รูปปกเพจ)" onChange={(e) => setImageUrl(e.target.value)} />
         )}
+
+        <div className="c-label">กลุ่มเป้าหมาย</div>
+        {!audOpt ? (
+          <div className="c-aud c-hint">{status ? "โหลดตัวเลือกกลุ่มเป้าหมายไม่ได้ — กดลองใหม่ที่ด้านบน" : "กำลังโหลดตัวเลือก…"}</div>
+        ) : (
+          <div className="c-aud">
+            <div className="c-aud-row">
+              <label htmlFor="c-age">👤 อายุขั้นต่ำ</label>
+              <select id="c-age" className="input c-age" value={age ?? ""} onChange={(e) => setAgeMin(Number(e.target.value))}>
+                {ageChoices.map((n) => <option key={n} value={n}>{n} ปีขึ้นไป</option>)}
+              </select>
+            </div>
+            <div className="c-aud-row c-aud-langs">
+              <span>🗣 ภาษา</span>
+              <div className="c-chips">
+                {audOpt.languages.map((l) => (
+                  <button key={l.key} type="button" aria-pressed={pickedLangs.includes(l.key)}
+                    className={`c-chip ${pickedLangs.includes(l.key) ? "on" : ""}`} onClick={() => toggleLang(l.key)}>
+                    {pickedLangs.includes(l.key) ? "✓ " : ""}{l.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>📍 {audOpt.fixed}</div>
+          </div>
+        )}
+        <small className="c-hint">อายุขั้นต่ำเลือกได้ {audOpt ? `${audOpt.min_age}–${audOpt.max_age_min}` : "…"} ปี (ข้อกำหนดของ Meta สำหรับไทย) · ไม่มีอายุสูงสุด</small>
 
         <div className="c-label">กำหนดเวลาเผยแพร่ (เวลาไทย)</div>
         <div className="c-seg">

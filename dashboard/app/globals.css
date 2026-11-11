@@ -221,3 +221,13 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .c-sched { margin-top: 8px; }
 .c-sched.ok { color: #6fd46f; }
 .c-sched.bad { color: #ff8a8a; }
+
+/* กลุ่มเป้าหมาย (ค่าตายตัว) */
+.c-aud { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; font-size: 13.5px; line-height: 1.85; background: var(--surface-1); }
+.c-aud-row { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.c-aud-langs { align-items: flex-start; }
+.c-aud-langs > span { white-space: nowrap; padding-top: 3px; }
+.c-age { width: auto; padding: 4px 8px; color-scheme: dark; }
+.c-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.c-chip { border: 1px solid var(--border); background: var(--surface-2); color: var(--text-muted); border-radius: 999px; padding: 2px 10px; font-size: 12.5px; line-height: 1.7; cursor: pointer; }
+.c-chip.on { border-color: var(--accent); color: var(--text-primary); box-shadow: 0 0 0 1px var(--accent) inset; }

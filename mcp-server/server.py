@@ -380,7 +380,50 @@ def _own_object(object_id: str, fields: str) -> tuple[bool, dict[str, Any] | str
 
 
 MESSENGER_LINK = "https://fb.com/messenger_doc/"
-MIN_RUN_HOURS = 24   # Meta: Ad Set งบต่อวันต้องวิ่งอย่างน้อย 24 ชม. ถ้ากำหนดวันสิ้นสุด
+MIN_RUN_HOURS = 24                    # Meta: Ad Set งบต่อวันต้องวิ่งอย่างน้อย 24 ชม. ถ้ากำหนดวันสิ้นสุด
+MIN_AGE = 20                          # Meta บังคับอายุขั้นต่ำ 20 ปีสำหรับผู้ชมในไทย
+MAX_AGE_MIN = 25                      # Meta: ใช้ Advantage+ Audience ตั้งอายุขั้นต่ำได้ไม่เกิน 25
+# ภาษาที่เลือกได้ (รหัส locale ของ Meta) — พม่า / ลาว Meta ไม่มีให้เลือก
+LANGUAGES: dict[str, tuple[int, str]] = {
+    "th": (35, "ไทย"), "en_us": (6, "อังกฤษ (สหรัฐอเมริกา)"), "en_gb": (24, "อังกฤษ (สหราชอาณาจักร)"),
+    "zh": (1004, "จีน"), "ja": (11, "ญี่ปุ่น"), "ko": (12, "เกาหลี"), "km": (74, "เขมร"),
+    "vi": (27, "เวียดนาม"), "ms": (41, "มาเลย์"),
+}
+DEFAULT_LANGUAGES = ["th", "en_us", "en_gb"]
+
+
+def audience_options() -> dict[str, Any]:
+    """ตัวเลือกกลุ่มเป้าหมายสำหรับหน้าแอป (หน้าเว็บแค่แสดง — ช่วงอายุ/รายการภาษาอยู่ที่นี่ที่เดียว)"""
+    return {
+        "min_age": MIN_AGE, "max_age_min": MAX_AGE_MIN, "default_age": MIN_AGE,
+        "languages": [{"key": k, "label": v[1]} for k, v in LANGUAGES.items()],
+        "default_languages": DEFAULT_LANGUAGES,
+        "fixed": "ประเทศไทย · Advantage+ Audience",
+    }
+
+
+def _audience(age_min: Any = None, languages: Any = None) -> tuple[dict[str, Any], str | None]:
+    """ตรวจอายุ/ภาษา → (ค่า targeting, ข้อผิดพลาด) · ไม่ใส่ = อายุ 20+ และ ไทย + อังกฤษ US/UK"""
+    try:
+        age = MIN_AGE if age_min in (None, "") else int(age_min)
+    except (TypeError, ValueError):
+        return {}, "อายุขั้นต่ำต้องเป็นตัวเลข"
+    if not MIN_AGE <= age <= MAX_AGE_MIN:
+        return {}, (f"อายุขั้นต่ำต้องอยู่ระหว่าง {MIN_AGE}–{MAX_AGE_MIN} ปี (Meta: ไทยขั้นต่ำ {MIN_AGE} · "
+                    f"Advantage+ ตั้งสูงกว่า {MAX_AGE_MIN} ไม่ได้)")
+    if isinstance(languages, str):
+        languages = [x for x in languages.replace("，", ",").split(",")]
+    keys = [str(x).strip().lower() for x in (languages or []) if str(x).strip()] or DEFAULT_LANGUAGES
+    by_name = {v[1]: k for k, v in LANGUAGES.items()}
+    resolved = []
+    for k in keys:
+        k = k if k in LANGUAGES else by_name.get(k, "")
+        if not k:
+            return {}, "ภาษาที่ใช้ได้: " + ", ".join(f"{k} ({v[1]})" for k, v in LANGUAGES.items())
+        if k not in resolved:
+            resolved.append(k)
+    return {"age_min": age, "locales": [LANGUAGES[k][0] for k in resolved],
+            "_label": f"อายุ {age}+ · ภาษา " + " / ".join(LANGUAGES[k][1] for k in resolved)}, None
 
 
 def _parse_th_time(value: str) -> datetime:
@@ -414,17 +457,24 @@ def _schedule(start_time: str = "", end_time: str = "") -> tuple[dict[str, str],
 
 
 def create_adset(campaign_id: str, name: str, daily_budget_thb: int, destination: str = "WEBSITE",
-                 start_time: str = "", end_time: str = "") -> dict[str, Any]:
+                 start_time: str = "", end_time: str = "",
+                 age_min: int = MIN_AGE, languages: list[str] | None = None) -> dict[str, Any]:
     """สร้าง Ad Set สถานะ PAUSED ใต้แคมเปญของ agent นี้
     ใช้ Advantage+ Audience (ประเทศไทย อายุ 20+ — กฎ Meta สำหรับไทย) ไม่ใส่ interest — งบหน่วยบาท
     destination: "WEBSITE" (ค่าเริ่มต้น) หรือ "MESSENGER" = โฆษณายิงข้อความ ให้คนกดทักแชทเพจ
                  (MESSENGER ใช้กับแคมเปญ OUTCOME_ENGAGEMENT เท่านั้น)
     start_time / end_time: วันเวลาเผยแพร่ (เวลาไทย) เช่น "2026-11-11T08:00" — เว้นว่าง = เริ่มทันทีเมื่อกดเปิด /
-                 ไม่มีวันสิ้นสุด · วันเริ่มย้อนอดีตไม่ได้ · วันสิ้นสุดต้องหลังวันเริ่มอย่างน้อย 24 ชม."""
+                 ไม่มีวันสิ้นสุด · วันเริ่มย้อนอดีตไม่ได้ · วันสิ้นสุดต้องหลังวันเริ่มอย่างน้อย 24 ชม.
+    age_min: อายุขั้นต่ำ 20–25 (ค่าเริ่มต้น 20 — Meta: ไทยขั้นต่ำ 20, Advantage+ ตั้งเกิน 25 ไม่ได้) ไม่มีอายุสูงสุด
+    languages: ภาษาของผู้ชม เลือกจาก th, en_us, en_gb, zh, ja, ko, km, vi, ms
+               (ไม่ใส่ = th + en_us + en_gb)"""
     destination = (destination or "WEBSITE").upper().strip()
     sched, sched_err = _schedule(start_time, end_time)
     if sched_err:
         return {"success": False, "error": sched_err}
+    aud, aud_err = _audience(age_min, languages)
+    if aud_err:
+        return {"success": False, "error": aud_err}
     if destination not in ("WEBSITE", "MESSENGER"):
         return {"success": False, "error": 'destination ต้องเป็น "WEBSITE" หรือ "MESSENGER"'}
     perm = _run_checks(int(daily_budget_thb), count_campaigns=False)
@@ -453,7 +503,8 @@ def create_adset(campaign_id: str, name: str, daily_budget_thb: int, destination
         "bid_strategy": "LOWEST_COST_WITHOUT_CAP",
         "targeting": {
             "geo_locations": {"countries": ["TH"]},
-            "age_min": 20,   # Meta บังคับอายุขั้นต่ำ 20 ปีสำหรับผู้ชมในไทย
+            "age_min": aud["age_min"],   # Meta บังคับอายุขั้นต่ำ 20 ปีสำหรับผู้ชมในไทย
+            "locales": aud["locales"],
             "targeting_automation": {"advantage_audience": 1},   # Advantage+ Audience
         },
         "status": REQUIRED_STATUS,
@@ -483,7 +534,7 @@ def create_adset(campaign_id: str, name: str, daily_budget_thb: int, destination
     if not ok:
         return {"success": False, "error": _meta_error(body)}
     return {"success": True, "adset_id": body["id"], "name": payload["name"], "status": REQUIRED_STATUS,
-            "daily_budget_thb": daily_budget_thb, "audience": "Advantage+ Audience (TH, 20+)",
+            "daily_budget_thb": daily_budget_thb, "audience": f"Advantage+ Audience · ประเทศไทย · {aud['_label']}",
             "destination": destination,
             "start_time": sched.get("start_time", "เริ่มทันทีเมื่อกดเปิด"),
             "end_time": sched.get("end_time", "ไม่มีวันสิ้นสุด"),
@@ -613,6 +664,7 @@ def app_status() -> dict[str, Any]:
         "checks": chk["checks"], "max_daily_budget_thb": MAX_DAILY_BUDGET_THB,
         "max_campaigns_per_day": MAX_CAMPAIGNS_PER_DAY,
         "campaigns_today": used, "page_name": page_name, "page_cover": cover,
+        "audience": audience_options(),
     }
 
 
@@ -662,6 +714,10 @@ def create_full(spec: dict[str, Any]) -> dict[str, Any]:
     sched, sched_err = _schedule(start_time, end_time)
     if sched_err:
         problems.append(sched_err)
+    age_min, languages = spec.get("age_min"), spec.get("languages")
+    aud, aud_err = _audience(age_min, languages)
+    if aud_err:
+        problems.append(aud_err)
     if problems:
         steps.append({"key": "form", "label": "ข้อมูลในฟอร์ม", "ok": False, "detail": " · ".join(problems)})
         return done()
@@ -701,9 +757,11 @@ def create_full(spec: dict[str, Any]) -> dict[str, Any]:
     camp = create_campaign(name, objective, budget)
     if not step("campaign", "แคมเปญ", camp, camp.get("name", "")):
         return done()
-    adset = create_adset(camp["campaign_id"], f"{name} - กลุ่มเป้าหมาย", budget, destination, start_time, end_time)
+    adset = create_adset(camp["campaign_id"], f"{name} - กลุ่มเป้าหมาย", budget, destination, start_time, end_time,
+                         age_min, languages)
     when = _schedule_label(sched)
-    if not step("adset", "กลุ่มเป้าหมาย", adset, f"งบ {budget:,} บาท/วัน · ไทย อายุ 20+ · {when}"):
+    who = aud["_label"]
+    if not step("adset", "กลุ่มเป้าหมาย", adset, f"งบ {budget:,} บาท/วัน · {who} · {when}"):
         return done(campaign_id=camp["campaign_id"])
     ad = _create_ad(adset["adset_id"], f"{name} - โฆษณา", text, link_url, lambda: (True, image_hash))
     if not step("ad", "โฆษณา", ad, "ปุ่ม ส่งข้อความ" if kind == "MESSENGER" else "ปุ่ม ดูเพิ่มเติม"):

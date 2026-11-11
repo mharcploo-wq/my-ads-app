@@ -10,7 +10,8 @@ export const dynamic = "force-dynamic";
 const IMAGE_TYPES: Record<string, string> = { "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif" };
 const MAX_IMAGE = 30 * 1024 * 1024;
 
-/** สร้างโฆษณาครบชุด (PAUSED) จากฟอร์ม — multipart: agent, kind, name, daily_budget_thb, text, link_url, image_url, image */
+/** สร้างโฆษณาครบชุด (PAUSED) จากฟอร์ม — multipart: agent, kind, name, daily_budget_thb, text, link_url, image_url, image,
+ *  start_time, end_time, age_min, languages (ส่งซ้ำได้หลายค่า) — ตรวจค่าจริงที่ server.py */
 export async function POST(req: Request) {
   if (!isLocalRequest(req)) return NextResponse.json({ ok: false, error: "ใช้ได้จากเครื่องนี้เท่านั้น" }, { status: 403 });
   let form: FormData;
@@ -34,6 +35,10 @@ export async function POST(req: Request) {
     start_time: String(form.get("start_time") ?? "").trim(),
     end_time: String(form.get("end_time") ?? "").trim(),
   };
+  const ageMin = String(form.get("age_min") ?? "").trim();
+  if (ageMin) spec.age_min = Number(ageMin);
+  const languages = form.getAll("languages").map((v) => String(v).trim()).filter(Boolean);
+  if (languages.length) spec.languages = languages;
 
   const tmp = path.join(os.tmpdir(), `ads-create-${randomUUID()}`);
   await fs.mkdir(tmp, { recursive: true });

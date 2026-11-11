@@ -21,6 +21,16 @@ function pythonPath(): string {
 
 export interface CheckItem { key: string; label: string; ok: boolean; detail: string }
 
+/** ตัวเลือกกลุ่มเป้าหมาย — มาจาก server.py (หน้าเว็บแค่แสดง) */
+export interface AudienceOptions {
+  min_age: number;
+  max_age_min: number;
+  default_age: number;
+  languages: { key: string; label: string }[];
+  default_languages: string[];
+  fixed: string;
+}
+
 export interface AgentStatus {
   agent: AgentId;
   prefix: string;
@@ -34,6 +44,7 @@ export interface AgentStatus {
   campaigns_today: number | null;
   page_name: string | null;
   page_cover: string | null;
+  audience?: AudienceOptions;
 }
 
 export interface CreateSpec {
@@ -46,6 +57,8 @@ export interface CreateSpec {
   image_path?: string;
   start_time?: string;   // เวลาไทย "YYYY-MM-DDTHH:MM" — ว่าง = เริ่มทันทีเมื่อกดเปิด
   end_time?: string;     // ว่าง = ไม่มีวันสิ้นสุด
+  age_min?: number;      // ว่าง = ค่าเริ่มต้นของ server.py
+  languages?: string[];  // รหัสภาษา เช่น ["th","en_us"] — ว่าง = ค่าเริ่มต้นของ server.py
 }
 
 export interface CreateResult {
