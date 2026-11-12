@@ -6,7 +6,7 @@ type Values = Record<string, string>;
 type SecretInfo = { set: boolean; last4: string | null };
 type EnvView = {
   agent: string; prefix: string; file: string; exists: boolean; values: Values; token: SecretInfo; secret: SecretInfo;
-  aiKey: SecretInfo & { name: string; label: string };
+  aiKey: SecretInfo & { name: string; label: string; workspace: boolean; userKey: boolean };
 };
 type Check = { key: string; label: string; ok: boolean; detail: string };
 type Status = { ready?: boolean; configured?: boolean; reason?: string; checks?: Check[]; error?: string };
@@ -131,6 +131,22 @@ export default function AgentEnvForm() {
               placeholder={env.aiKey.set ? "เว้นว่าง = ใช้คีย์เดิม · วางใหม่เพื่อเปลี่ยน" : "วางคีย์ที่ขึ้นต้นด้วย sk-…"} />
             {errors.aiKey ? <div className="err">{errors.aiKey}</div> : <div className="d">บันทึกเป็น {env.aiKey.name} · คีย์จะไม่ถูกส่งกลับมาแสดงบนหน้าจอ</div>}
           </div>
+          {env.aiKey.workspace && (
+            <div className="field">
+              <label htmlFor="env-ANTHROPIC_WORKSPACE_ID">
+                Workspace ID ของ Claude{" "}
+                {env.aiKey.userKey && !env.values.ANTHROPIC_WORKSPACE_ID
+                  ? <span className="pill bad">✕ คีย์นี้ต้องใส่</span>
+                  : <span className="pill">{env.aiKey.userKey ? "✓ ใส่แล้ว" : "ไม่บังคับ"}</span>}
+              </label>
+              <input id="env-ANTHROPIC_WORKSPACE_ID" className={`input${errors.ANTHROPIC_WORKSPACE_ID ? " invalid" : ""}`}
+                value={values.ANTHROPIC_WORKSPACE_ID ?? ""} placeholder="wrkspc_…" autoComplete="off"
+                onChange={(e) => set("ANTHROPIC_WORKSPACE_ID", e.target.value.trim())} />
+              {errors.ANTHROPIC_WORKSPACE_ID
+                ? <div className="err">{errors.ANTHROPIC_WORKSPACE_ID}</div>
+                : <div className="d">ต้องใส่เมื่อคีย์ขึ้นต้นด้วย sk-ant-usr- (คีย์ระดับผู้ใช้) · หาได้ที่ platform.claude.com → Settings → Workspaces</div>}
+            </div>
+          )}
           <div className="env-grid">{MAIN.map(field)}</div>
           <details className="env-adv">
             <summary>ตั้งค่าขั้นสูง (ปกติไม่ต้องแตะ)</summary>

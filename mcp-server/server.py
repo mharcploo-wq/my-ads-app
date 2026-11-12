@@ -97,6 +97,8 @@ GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v21.0").strip()
 # AI ที่ใช้คิดความสนใจ (ปุ่ม ✨ ในหน้าแอป) — claude/manus ใช้ Claude · chatgpt ใช้ OpenAI
 AI_PROVIDER = "openai" if AGENT == "chatgpt" else "anthropic"
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
+# คีย์ระดับผู้ใช้ (sk-ant-usr-…) ไม่ผูก workspace → ต้องส่ง workspace id ไปกับทุกคำขอ ไม่งั้น Claude ตอบ 400
+ANTHROPIC_WORKSPACE_ID = os.getenv("ANTHROPIC_WORKSPACE_ID", "").strip()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 AI_MODEL = os.getenv("AI_MODEL", "").strip() or {"anthropic": "claude-haiku-5-5", "openai": "gpt-4o-mini"}[AI_PROVIDER]
 MCP_HTTP_TOKEN = os.getenv("MCP_HTTP_TOKEN", "").strip()            # กุญแจป้องกันโหมด HTTP
@@ -439,8 +441,23 @@ def ai_info() -> dict[str, Any]:
     label = "Claude" if AI_PROVIDER == "anthropic" else "OpenAI"
     key_name = "ANTHROPIC_API_KEY" if AI_PROVIDER == "anthropic" else "OPENAI_API_KEY"
     ready = bool(ANTHROPIC_API_KEY if AI_PROVIDER == "anthropic" else OPENAI_API_KEY)
+    missing = None if ready else f"ยังไม่ได้ใส่คีย์ {label} ({key_name}) — ใส่ได้ที่แท็บ \"เชื่อมต่อ API\""
+    if ready and AI_PROVIDER == "anthropic" and ANTHROPIC_API_KEY.startswith(USER_KEY_PREFIX) \
+            and not ANTHROPIC_WORKSPACE_ID:
+        ready, missing = False, CLAUDE_NEEDS_WORKSPACE
     return {"provider": AI_PROVIDER, "label": label, "model": AI_MODEL, "key_name": key_name, "ready": ready,
-            "missing": None if ready else f"ยังไม่ได้ใส่คีย์ {label} ({key_name}) — ใส่ได้ที่แท็บ \"เชื่อมต่อ API\""}
+            "missing": missing}
+
+
+USER_KEY_PREFIX = "sk-ant-usr-"
+CLAUDE_NEEDS_WORKSPACE = ("คีย์ Claude นี้เป็นคีย์ระดับผู้ใช้ (sk-ant-usr-…) ต้องใส่ Workspace ID (wrkspc_…) ด้วย — "
+                          "ใส่ที่แท็บ \"เชื่อมต่อ API\" · หาได้ที่ platform.claude.com → Settings → Workspaces")
+
+
+def _api_error_text(body: Any) -> str:
+    """ข้อความ error จาก Claude/OpenAI ({"error": {"message": …}}) — ไว้บอกสาเหตุจริงบนจอ"""
+    err = body.get("error") if isinstance(body, dict) else None
+    return str(err.get("message") or "").strip()[:200] if isinstance(err, dict) else ""
 
 
 def audience_options() -> dict[str, Any]:
@@ -1250,7 +1267,9 @@ def _ai_keywords(copy: str) -> tuple[list[str], str | None]:
     prompt = f"Ad copy:\n{copy}\n\nReturn 8 keywords."
     if AI_PROVIDER == "anthropic":
         import anthropic  # โหลดเฉพาะตอนใช้ปุ่ม ✨ — เครื่องมือ MCP อื่นไม่ต้องพึ่ง
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, timeout=60.0, max_retries=2)
+        client = anthropic.Anthropic(
+            api_key=ANTHROPIC_API_KEY, timeout=60.0, max_retries=2,
+            default_headers={"anthropic-workspace-id": ANTHROPIC_WORKSPACE_ID} if ANTHROPIC_WORKSPACE_ID else None)
         try:
             resp = client.messages.create(
                 model=AI_MODEL, max_tokens=4000, system=AI_SYSTEM,
@@ -1259,12 +1278,21 @@ def _ai_keywords(copy: str) -> tuple[list[str], str | None]:
             )
         except anthropic.AuthenticationError:
             return [], "คีย์ Claude ไม่ถูกต้องหรือหมดอายุ — ตรวจ ANTHROPIC_API_KEY ที่แท็บ \"เชื่อมต่อ API\""
-        except anthropic.NotFoundError:
-            return [], f"ไม่พบรุ่น AI \"{AI_MODEL}\" — แก้ AI_MODEL ใน .env หรือเว้นว่างเพื่อใช้ค่าเริ่มต้น"
         except anthropic.RateLimitError:
             return [], "Claude ถูกใช้ถี่เกินไป — รอสักครู่แล้วกดใหม่"
         except anthropic.APIStatusError as e:
-            return [], f"Claude ตอบผิดพลาด (HTTP {e.status_code})"
+            why = _api_error_text(e.body)
+            # 400 "not scoped to a workspace" / 403-404 workspace ผิด — แยกบอกเพราะแก้ที่ช่อง Workspace ID
+            if "workspace" in why.lower():
+                if not ANTHROPIC_WORKSPACE_ID:
+                    return [], CLAUDE_NEEDS_WORKSPACE
+                return [], (f"Workspace ID \"{ANTHROPIC_WORKSPACE_ID}\" ใช้กับคีย์นี้ไม่ได้ — ตรวจที่แท็บ \"เชื่อมต่อ API\" "
+                            f"(Claude: {why})")
+            if isinstance(e, anthropic.NotFoundError):
+                return [], f"ไม่พบรุ่น AI \"{AI_MODEL}\" — แก้ AI_MODEL ใน .env หรือเว้นว่างเพื่อใช้ค่าเริ่มต้น"
+            if isinstance(e, anthropic.PermissionDeniedError):
+                return [], f"คีย์ Claude นี้ไม่มีสิทธิ์เรียกใช้ — ตรวจสิทธิ์ของคีย์ (Claude: {why or 'ไม่ระบุ'})"
+            return [], f"Claude ปฏิเสธคำขอ (HTTP {e.status_code}): {why or 'ไม่ระบุสาเหตุ'}"
         except anthropic.APIConnectionError:
             return [], "เชื่อมต่อ Claude ไม่ได้ — ตรวจอินเทอร์เน็ต"
         if resp.stop_reason == "refusal":
@@ -1283,10 +1311,19 @@ def _ai_keywords(copy: str) -> tuple[list[str], str | None]:
             return [], "คีย์ OpenAI ไม่ถูกต้องหรือหมดอายุ — ตรวจ OPENAI_API_KEY ที่แท็บ \"เชื่อมต่อ API\""
         if r.status_code == 404:
             return [], f"ไม่พบรุ่น AI \"{AI_MODEL}\" — แก้ AI_MODEL ใน .env หรือเว้นว่างเพื่อใช้ค่าเริ่มต้น"
+        try:
+            err_body = r.json() if r.status_code != 200 else {}
+        except ValueError:
+            err_body = {}
         if r.status_code == 429:
-            return [], "OpenAI ถูกใช้ถี่เกินไปหรือเครดิตหมด — รอสักครู่หรือเติมเครดิต"
+            # เครดิตหมด (insufficient_quota) กับใช้ถี่เกิน ได้ 429 เหมือนกัน แต่แก้คนละทาง
+            err = err_body.get("error") if isinstance(err_body, dict) else None
+            if isinstance(err, dict) and err.get("type") == "insufficient_quota":
+                return [], ("เครดิต OpenAI หมด — เติมเครดิตที่ platform.openai.com → Settings → Billing "
+                            "แล้วกดใหม่ (กดซ้ำตอนนี้ก็ไม่ผ่าน)")
+            return [], "OpenAI ถูกใช้ถี่เกินไป — รอสักครู่แล้วกดใหม่"
         if r.status_code != 200:
-            return [], f"OpenAI ตอบผิดพลาด (HTTP {r.status_code})"
+            return [], f"OpenAI ปฏิเสธคำขอ (HTTP {r.status_code}): {_api_error_text(err_body) or 'ไม่ระบุสาเหตุ'}"
         try:
             text = r.json()["choices"][0]["message"]["content"] or ""
         except (ValueError, KeyError, IndexError):

@@ -9,12 +9,14 @@ const SERVER_DIR = path.resolve(process.cwd(), "..", "mcp-server");
 const PREFIX: Record<AgentId, string> = { claude: "CLD-", manus: "MANUS-", chatgpt: "GPT-" };
 
 /** คีย์ AI ของปุ่ม ✨ ให้ AI คิดกลุ่มเป้าหมาย — claude/manus ใช้ Claude · chatgpt ใช้ OpenAI (ตรงกับ server.py AI_PROVIDER) */
-export const AI_KEY: Record<AgentId, { name: string; label: string }> = {
-  claude: { name: "ANTHROPIC_API_KEY", label: "Claude" },
-  manus: { name: "ANTHROPIC_API_KEY", label: "Claude" },
-  chatgpt: { name: "OPENAI_API_KEY", label: "OpenAI" },
+export const AI_KEY: Record<AgentId, { name: string; label: string; workspace: boolean }> = {
+  claude: { name: "ANTHROPIC_API_KEY", label: "Claude", workspace: true },
+  manus: { name: "ANTHROPIC_API_KEY", label: "Claude", workspace: true },
+  chatgpt: { name: "OPENAI_API_KEY", label: "OpenAI", workspace: false },
 };
 const AI_KEY_PATTERN = /^sk-[\x21-\x7e]{20,}$/;
+/** คีย์ Claude ระดับผู้ใช้ไม่ผูก workspace → ต้องมี ANTHROPIC_WORKSPACE_ID (server.py ส่งเป็น header ให้) */
+const USER_KEY_PREFIX = "sk-ant-usr-";
 
 /** เพดานที่ตกลงกันไว้ — server.py บังคับซ้ำอีกชั้น */
 export const LIMITS = { maxBudgetThb: 1000, maxCampaignsPerDay: 5 } as const;
@@ -30,6 +32,7 @@ export const EDITABLE_KEYS = [
   "GRAPH_API_VERSION",
   "DASHBOARD_API_URL",
   "AI_MODEL",
+  "ANTHROPIC_WORKSPACE_ID",
 ] as const;
 export type EditableKey = (typeof EDITABLE_KEYS)[number];
 export type EnvValues = Record<EditableKey, string>;
@@ -44,7 +47,7 @@ export interface AgentEnvView {
   values: EnvValues;
   token: SecretInfo;     // META_ACCESS_TOKEN
   secret: SecretInfo;    // DASHBOARD_API_SECRET
-  aiKey: SecretInfo & { name: string; label: string };   // ANTHROPIC_API_KEY / OPENAI_API_KEY
+  aiKey: SecretInfo & { name: string; label: string; workspace: boolean; userKey: boolean };   // ANTHROPIC_API_KEY / OPENAI_API_KEY
 }
 
 export interface AgentEnvInput {
@@ -93,7 +96,10 @@ export async function readAgentEnv(a: AgentId): Promise<AgentEnvView> {
     values,
     token: secretInfo(m.get("META_ACCESS_TOKEN"), /^EAA[A-Za-z0-9]{20,}$/),
     secret: secretInfo(m.get("DASHBOARD_API_SECRET"), /^[\x21-\x7e]{8,}$/),
-    aiKey: { ...secretInfo(m.get(AI_KEY[a].name), AI_KEY_PATTERN), ...AI_KEY[a] },
+    aiKey: {
+      ...secretInfo(m.get(AI_KEY[a].name), AI_KEY_PATTERN), ...AI_KEY[a],
+      userKey: AI_KEY[a].workspace && (m.get(AI_KEY[a].name) ?? "").trim().startsWith(USER_KEY_PREFIX),
+    },
   };
 }
 
@@ -119,6 +125,8 @@ export function validate(input: AgentEnvInput): Partial<Record<EditableKey | "to
   if (input.secret && !/^[\x21-\x7e]{8,}$/.test(input.secret)) e.secret = "อย่างน้อย 8 ตัว ไม่มีช่องว่าง";
   if (input.aiKey && !AI_KEY_PATTERN.test(input.aiKey)) e.aiKey = "คีย์ต้องขึ้นต้นด้วย sk- และไม่มีช่องว่าง";
   if (v.AI_MODEL && !/^[A-Za-z0-9._:-]{2,80}$/.test(v.AI_MODEL)) e.AI_MODEL = "ชื่อรุ่น เช่น claude-haiku-5-5 หรือเว้นว่าง";
+  if (v.ANTHROPIC_WORKSPACE_ID && !/^wrkspc_[A-Za-z0-9]{8,64}$/.test(v.ANTHROPIC_WORKSPACE_ID))
+    e.ANTHROPIC_WORKSPACE_ID = "ต้องขึ้นต้นด้วย wrkspc_ ตามด้วยตัวอักษร/ตัวเลข หรือเว้นว่าง";
   return e;
 }
 

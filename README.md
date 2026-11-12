@@ -216,6 +216,8 @@ npm run dev                        # → http://localhost:3000
    `server.py` ค้นคลังความสนใจของ Meta (`search?type=adinterest`) ได้ไม่เกิน 10 รายการ ขึ้นเป็นป้ายพร้อมขนาดกลุ่มคน ลบได้ก่อนกดสร้าง · กดซ้ำ = แทนที่ชุดเดิม
    · claude / manus ใช้ Claude (`ANTHROPIC_API_KEY` รุ่นเริ่มต้น `claude-haiku-5-5`) · chatgpt ใช้ OpenAI (`OPENAI_API_KEY` รุ่นเริ่มต้น `gpt-4o-mini`)
    · ใส่คีย์ที่แท็บ **เชื่อมต่อ API** (ข้อ 3) · เปลี่ยนรุ่นได้ด้วย `AI_MODEL` · ไม่ใส่คีย์ก็สร้างโฆษณาได้ตามปกติ (ปุ่มกดไม่ได้)
+   · คีย์ Claude ที่ขึ้นต้นด้วย `sk-ant-usr-` (คีย์ระดับผู้ใช้) ต้องใส่ **Workspace ID** (`ANTHROPIC_WORKSPACE_ID` = `wrkspc_…`) ด้วย
+     ไม่งั้น Claude ตอบ 400 "not scoped to a workspace" · คีย์ที่สร้างภายใน workspace (`sk-ant-api…`) ไม่ต้องใส่
    · AI ในแชตส่งความสนใจเองได้ทาง `create_adset(..., interests=["digital marketing", ...], age_max=60)`
 
 ไฟล์ที่เกี่ยวข้อง:
