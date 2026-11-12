@@ -8,6 +8,14 @@ import { AgentId } from "@/lib/creator";
 const SERVER_DIR = path.resolve(process.cwd(), "..", "mcp-server");
 const PREFIX: Record<AgentId, string> = { claude: "CLD-", manus: "MANUS-", chatgpt: "GPT-" };
 
+/** คีย์ AI ของปุ่ม ✨ ให้ AI คิดกลุ่มเป้าหมาย — claude/manus ใช้ Claude · chatgpt ใช้ OpenAI (ตรงกับ server.py AI_PROVIDER) */
+export const AI_KEY: Record<AgentId, { name: string; label: string }> = {
+  claude: { name: "ANTHROPIC_API_KEY", label: "Claude" },
+  manus: { name: "ANTHROPIC_API_KEY", label: "Claude" },
+  chatgpt: { name: "OPENAI_API_KEY", label: "OpenAI" },
+};
+const AI_KEY_PATTERN = /^sk-[\x21-\x7e]{20,}$/;
+
 /** เพดานที่ตกลงกันไว้ — server.py บังคับซ้ำอีกชั้น */
 export const LIMITS = { maxBudgetThb: 1000, maxCampaignsPerDay: 5 } as const;
 
@@ -21,6 +29,7 @@ export const EDITABLE_KEYS = [
   "MAX_CAMPAIGNS_PER_DAY",
   "GRAPH_API_VERSION",
   "DASHBOARD_API_URL",
+  "AI_MODEL",
 ] as const;
 export type EditableKey = (typeof EDITABLE_KEYS)[number];
 export type EnvValues = Record<EditableKey, string>;
@@ -35,12 +44,14 @@ export interface AgentEnvView {
   values: EnvValues;
   token: SecretInfo;     // META_ACCESS_TOKEN
   secret: SecretInfo;    // DASHBOARD_API_SECRET
+  aiKey: SecretInfo & { name: string; label: string };   // ANTHROPIC_API_KEY / OPENAI_API_KEY
 }
 
 export interface AgentEnvInput {
   values: EnvValues;
   token?: string;        // ว่าง = ใช้ค่าเดิม
   secret?: string;       // ว่าง = ใช้ค่าเดิม
+  aiKey?: string;        // ว่าง = ใช้ค่าเดิม
 }
 
 const envPath = (a: AgentId) => path.join(SERVER_DIR, `.env.${a}`);
@@ -82,13 +93,14 @@ export async function readAgentEnv(a: AgentId): Promise<AgentEnvView> {
     values,
     token: secretInfo(m.get("META_ACCESS_TOKEN"), /^EAA[A-Za-z0-9]{20,}$/),
     secret: secretInfo(m.get("DASHBOARD_API_SECRET"), /^[\x21-\x7e]{8,}$/),
+    aiKey: { ...secretInfo(m.get(AI_KEY[a].name), AI_KEY_PATTERN), ...AI_KEY[a] },
   };
 }
 
 /** ตรวจค่าก่อนบันทึก — คืนรายการข้อผิดพลาดแยกตามช่อง (ว่าง = ผ่าน) */
-export function validate(input: AgentEnvInput): Partial<Record<EditableKey | "token" | "secret", string>> {
+export function validate(input: AgentEnvInput): Partial<Record<EditableKey | "token" | "secret" | "aiKey", string>> {
   const v = input.values;
-  const e: Partial<Record<EditableKey | "token" | "secret", string>> = {};
+  const e: Partial<Record<EditableKey | "token" | "secret" | "aiKey", string>> = {};
   for (const k of EDITABLE_KEYS) {
     if (typeof v[k] !== "string") { e[k] = "ไม่มีค่า"; continue; }
     if (/[\r\n]/.test(v[k])) e[k] = "ห้ามขึ้นบรรทัดใหม่";
@@ -105,6 +117,8 @@ export function validate(input: AgentEnvInput): Partial<Record<EditableKey | "to
   if (v.DASHBOARD_API_URL && !/^https?:\/\/[^\s]+$/.test(v.DASHBOARD_API_URL)) e.DASHBOARD_API_URL = "ต้องขึ้นต้นด้วย http:// หรือ https://";
   if (input.token && !/^EAA[A-Za-z0-9]{20,}$/.test(input.token)) e.token = "รหัสต้องขึ้นต้นด้วย EAA และไม่มีช่องว่าง";
   if (input.secret && !/^[\x21-\x7e]{8,}$/.test(input.secret)) e.secret = "อย่างน้อย 8 ตัว ไม่มีช่องว่าง";
+  if (input.aiKey && !AI_KEY_PATTERN.test(input.aiKey)) e.aiKey = "คีย์ต้องขึ้นต้นด้วย sk- และไม่มีช่องว่าง";
+  if (v.AI_MODEL && !/^[A-Za-z0-9._:-]{2,80}$/.test(v.AI_MODEL)) e.AI_MODEL = "ชื่อรุ่น เช่น claude-haiku-5-5 หรือเว้นว่าง";
   return e;
 }
 
@@ -118,6 +132,7 @@ export async function writeAgentEnv(a: AgentId, input: AgentEnvInput): Promise<v
   ]);
   if (input.token) updates.set("META_ACCESS_TOKEN", input.token.trim());
   if (input.secret) updates.set("DASHBOARD_API_SECRET", input.secret.trim());
+  if (input.aiKey) updates.set(AI_KEY[a].name, input.aiKey.trim());
 
   const done = new Set<string>();
   const lines = text.split(/\r?\n/).map((line) => {

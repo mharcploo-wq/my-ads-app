@@ -39,9 +39,34 @@ export interface AudienceOptions {
   min_age: number;
   max_age_min: number;
   default_age: number;
+  min_age_max: number;      // อายุสูงสุดเลือกได้ตั้งแต่
+  no_max_age: number;       // ค่านี้ = ไม่จำกัดอายุสูงสุด
+  default_age_max: number;
   languages: { key: string; label: string }[];
   default_languages: string[];
+  max_interests: number;
+  brand_safety: { label: string; detail: string };
+  ai: { provider: string; label: string; model: string; key_name: string; ready: boolean; missing: string | null };
   fixed: string;
+}
+
+/** ความสนใจจากคลังของ Meta (ปุ่ม ✨) */
+export interface Interest {
+  id: string;
+  name: string;
+  keyword?: string;
+  size_lower?: number | null;
+  size_upper?: number | null;
+}
+
+export interface SuggestResult {
+  success: boolean;
+  error?: string;
+  ai?: string;
+  model?: string;
+  keywords?: string[];
+  missed?: string[];
+  interests?: Interest[];
 }
 
 export interface AgentStatus {
@@ -72,6 +97,8 @@ export interface CreateSpec {
   start_time?: string;   // เวลาไทย "YYYY-MM-DDTHH:MM" — ว่าง = เริ่มทันทีเมื่อกดเปิด
   end_time?: string;     // ว่าง = ไม่มีวันสิ้นสุด
   age_min?: number;      // ว่าง = ค่าเริ่มต้นของ server.py
+  age_max?: number;      // ว่าง = ค่าเริ่มต้นของ server.py · no_max_age = ไม่จำกัด
+  interests?: { id: string; name: string }[];   // ค่าแนะนำ — จากปุ่ม ✨
   languages?: string[];  // รหัสภาษา เช่น ["th","en_us"] — ว่าง = ค่าเริ่มต้นของ server.py
   // ชิ้นงานแบบไดนามิก — ตรวจจำนวน/ขนาดที่ server.py
   dynamic?: boolean;

@@ -226,11 +226,23 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .c-aud { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; font-size: 13.5px; line-height: 1.85; background: var(--surface-1); }
 .c-aud-row { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
 .c-aud-langs { align-items: flex-start; }
-.c-aud-langs > span { white-space: nowrap; padding-top: 3px; }
+.c-aud-langs > span { white-space: nowrap; padding-top: 3px; min-width: 92px; }
 .c-age { width: auto; padding: 4px 8px; color-scheme: dark; }
 .c-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .c-chip { border: 1px solid var(--border); background: var(--surface-2); color: var(--text-muted); border-radius: 999px; padding: 2px 10px; font-size: 12.5px; line-height: 1.7; cursor: pointer; }
 .c-chip.on { border-color: var(--accent); color: var(--text-primary); box-shadow: 0 0 0 1px var(--accent) inset; }
+.c-aud-k { white-space: nowrap; min-width: 92px; }
+.c-sugg { color: var(--text-muted); font-size: 11.5px; border: 1px dashed var(--border); border-radius: 6px; padding: 0 6px; }
+.c-int { flex: 1; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.c-int-bar { margin-bottom: 0; flex-wrap: wrap; }
+.c-int-bar .c-cnt { margin-left: auto; }
+.c-ai { background: linear-gradient(90deg, #6b4cff, var(--accent)); color: #fff; border: 0; }
+.c-ai:disabled { background: var(--surface-2); color: var(--text-muted); }
+.c-itag { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--accent); border-radius: 999px; padding: 1px 4px 1px 10px; font-size: 12.5px; line-height: 1.7; }
+.c-itag small { color: var(--text-muted); }
+.c-itag button { background: none; border: 0; color: var(--text-muted); cursor: pointer; padding: 0 4px; font-size: 12px; }
+.c-warn { color: var(--warning); font-size: 12.5px; line-height: 1.6; }
+.c-ok { color: var(--success, #3fb950); font-weight: 600; }
 
 /* ชิ้นงานโฆษณาแบบไดนามิก */
 .c-dyn { display: flex; align-items: center; gap: 10px; margin-top: 14px; border: 1px solid var(--border); background: var(--surface-2); border-radius: 12px; padding: 11px 14px; }

@@ -11,8 +11,12 @@ interface CreativeOptions {
 }
 interface AudienceOptions {
   min_age: number; max_age_min: number; default_age: number;
+  min_age_max: number; no_max_age: number; default_age_max: number;
   languages: { key: string; label: string }[]; default_languages: string[]; fixed: string;
+  max_interests: number; brand_safety: { label: string; detail: string };
+  ai: { label: string; ready: boolean; missing: string | null };
 }
+interface Interest { id: string; name: string; size_lower?: number | null; size_upper?: number | null }
 interface AgentStatus {
   agent: AgentId; prefix: string; ready: boolean; configured?: boolean; quota_full?: boolean; reason: string; checks: CheckItem[];
   max_daily_budget_thb: number; max_campaigns_per_day: number; campaigns_today: number | null;
@@ -39,6 +43,12 @@ const thDate = (offsetDays: number) => new Date(Date.now() + 7 * 3600_000 + offs
 const fmtTh = (d: string, t: string) => { const [y, m, dd] = d.split("-"); return `${dd}/${m}/${y} ${t}`; };
 const MB = 1024 * 1024;
 const fmtMb = (bytes: number) => `${Math.max(1, Math.round(bytes / MB))}MB`;
+/** ขนาดกลุ่มคนจาก Meta เช่น 150,000,000–176,000,000 → "≈150–176 ล้าน" · 86,760–102,030 → "≈87–102 พัน" */
+const fmtSize = (lo?: number | null, hi?: number | null) => {
+  if (!lo || !hi) return "";
+  const [d, unit] = hi >= 1e6 ? [1e6, "ล้าน"] : [1e3, "พัน"];
+  return `≈${Math.max(1, Math.round(lo / d))}–${Math.max(1, Math.round(hi / d))} ${unit}`;
+};
 const fmtDur = (sec: number) => `${Math.floor(sec / 60)}:${String(Math.round(sec % 60)).padStart(2, "0")}`;
 const VIDEO_ACCEPT = "video/mp4,video/quicktime,video/x-m4v";
 const IMAGE_ACCEPT = "image/jpeg,image/png,image/webp,image/gif";
@@ -88,6 +98,10 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
   // กลุ่มเป้าหมาย — null = ยังไม่แตะ ใช้ค่าเริ่มต้นจาก server.py
   const [ageMin, setAgeMin] = useState<number | null>(null);
   const [langs, setLangs] = useState<string[] | null>(null);
+  const [ageMax, setAgeMax] = useState<number | null>(null);
+  const [interests, setInterests] = useState<Interest[]>([]);
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiMsg, setAiMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   // ชิ้นงานโฆษณาแบบไดนามิก (ค่าเริ่มต้น = ปิด)
   const [dynamic, setDynamic] = useState(false);
@@ -139,6 +153,9 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
   const age = ageMin ?? audOpt?.default_age ?? null;
   const pickedLangs = langs ?? audOpt?.default_languages ?? [];
   const ageChoices = audOpt ? Array.from({ length: audOpt.max_age_min - audOpt.min_age + 1 }, (_, i) => audOpt.min_age + i) : [];
+  const ageHi = ageMax ?? audOpt?.default_age_max ?? null;
+  const ageMaxChoices = audOpt ? Array.from({ length: audOpt.no_max_age - audOpt.min_age_max + 1 }, (_, i) => audOpt.min_age_max + i) : [];
+  const ai = cur?.audience?.ai ?? null;   // AI ของ agent ที่เลือก (คีย์แยกต่อ agent)
   function toggleLang(key: string) {
     setLangs(pickedLangs.includes(key) ? pickedLangs.filter((k) => k !== key) : [...pickedLangs, key]);
   }
@@ -240,6 +257,28 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
     setImageUrl("");
   }
 
+  async function suggestInterests() {
+    if (aiBusy || !ai?.ready) return;
+    const copy = isDyn ? filledTexts : [text.trim()].filter(Boolean);
+    if (!copy.length) { setAiMsg({ ok: false, text: "ใส่ข้อความโฆษณาก่อน แล้วค่อยให้ AI คิดกลุ่มเป้าหมาย" }); return; }
+    setAiBusy(true); setAiMsg(null);
+    try {
+      const r = await fetch("/api/interests", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ agent, texts: copy, titles: isDyn ? filledTitles : [], link_url: kind === "WEBSITE" ? link.trim() : "" }),
+      });
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error);
+      if (!j.result.success) throw new Error(j.result.error);
+      setInterests(j.result.interests);   // กดซ้ำ = แทนที่ชุดเดิมทั้งหมด
+      setAiMsg({ ok: true, text: `${j.result.ai} คิดจากข้อความ ได้ ${j.result.interests.length} รายการ` });
+    } catch (e) {
+      setAiMsg({ ok: false, text: (e as Error).message });
+    } finally {
+      setAiBusy(false);
+    }
+  }
+
   async function submit() {
     if (problems.length || busy) return;
     setBusy(true); setResult(null); setSubmitErr(null);
@@ -250,6 +289,8 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
     if (sched.start_time) fd.set("start_time", sched.start_time);
     if (sched.end_time) fd.set("end_time", sched.end_time);
     if (age != null) fd.set("age_min", String(age));
+    if (ageHi != null) fd.set("age_max", String(ageHi));
+    if (interests.length) fd.set("interests", JSON.stringify(interests.map(({ id, name }) => ({ id, name }))));
     pickedLangs.forEach((k) => fd.append("languages", k));
     if (isDyn) {
       fd.set("dynamic", "1");
@@ -276,6 +317,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
   function reset() {
     setResult(null); setName(""); setText(""); setLink(""); setImageUrl(""); setFile(null);
     setDynImages([]); setDynVideos([]); setTexts([""]); setTitles([]); setPvIdx(0);
+    setInterests([]); setAiMsg(null);
   }
 
   return (
@@ -409,10 +451,15 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
         ) : (
           <div className="c-aud">
             <div className="c-aud-row">
-              <label htmlFor="c-age">👤 อายุขั้นต่ำ</label>
-              <select id="c-age" className="input c-age" value={age ?? ""} onChange={(e) => setAgeMin(Number(e.target.value))}>
-                {ageChoices.map((n) => <option key={n} value={n}>{n} ปีขึ้นไป</option>)}
+              <label htmlFor="c-age" className="c-aud-k">👤 อายุ</label>
+              <select id="c-age" className="input c-age" aria-label="อายุขั้นต่ำ" value={age ?? ""} onChange={(e) => setAgeMin(Number(e.target.value))}>
+                {ageChoices.map((n) => <option key={n} value={n}>{n}</option>)}
               </select>
+              ถึง
+              <select id="c-age-max" className="input c-age" aria-label="อายุสูงสุด" value={ageHi ?? ""} onChange={(e) => setAgeMax(Number(e.target.value))}>
+                {ageMaxChoices.map((n) => <option key={n} value={n}>{n === audOpt.no_max_age ? `${n}+` : n}</option>)}
+              </select>
+              ปี {ageHi != null && ageHi < audOpt.no_max_age && <span className="c-sugg">ค่าแนะนำ</span>}
             </div>
             <div className="c-aud-row c-aud-langs">
               <span>🗣 ภาษา</span>
@@ -425,10 +472,39 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
                 ))}
               </div>
             </div>
+            <div className="c-aud-row c-aud-langs">
+              <span>🎯 ความสนใจ</span>
+              <div className="c-int">
+                <div className="c-aud-row c-int-bar">
+                  <button type="button" className="btn c-ai" onClick={suggestInterests} disabled={!ai?.ready || aiBusy}>
+                    {aiBusy ? "AI กำลังคิด…" : "✨ ให้ AI คิดกลุ่มเป้าหมาย"}
+                  </button>
+                  {ai?.ready && !aiBusy && <span className="c-hint">{ai.label} คิดจากข้อความหลัก{isDyn ? " + พาดหัว" : ""}{kind === "WEBSITE" ? " + ลิงก์" : ""}</span>}
+                  <span className="c-cnt">{interests.length} / {audOpt.max_interests}</span>
+                </div>
+                {interests.length > 0 && (
+                  <div className="c-chips">
+                    {interests.map((it) => (
+                      <span key={it.id} className="c-itag">
+                        {it.name} {fmtSize(it.size_lower, it.size_upper) && <small>{fmtSize(it.size_lower, it.size_upper)}</small>}
+                        <button type="button" aria-label={`ลบความสนใจ ${it.name}`} onClick={() => setInterests(interests.filter((x) => x.id !== it.id))}>✕</button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {ai && !ai.ready && <div className="c-warn">{ai.missing} · ไม่ใส่ความสนใจก็สร้างโฆษณาได้ตามปกติ</div>}
+                {aiMsg && <div className={aiMsg.ok ? "c-hint" : "c-warn"}>{aiMsg.ok ? "✓ " : "✕ "}{aiMsg.text}</div>}
+                {interests.length > 0 && <div className="c-hint">ค่าแนะนำ · Meta อาจขยายไปคนนอกกลุ่มนี้ถ้าได้ผลดีกว่า · ลบได้ก่อนกดสร้าง</div>}
+              </div>
+            </div>
+            <div className="c-aud-row">
+              <span className="c-aud-k">🛡 คลังเนื้อหา</span><b className="c-ok">{audOpt.brand_safety.label}</b>
+              <span className="c-hint">— {audOpt.brand_safety.detail}</span>
+            </div>
             <div>📍 {audOpt.fixed}</div>
           </div>
         )}
-        <small className="c-hint">อายุขั้นต่ำเลือกได้ {audOpt ? `${audOpt.min_age}–${audOpt.max_age_min}` : "…"} ปี (ข้อกำหนดของ Meta สำหรับไทย) · ไม่มีอายุสูงสุด</small>
+        <small className="c-hint">อายุขั้นต่ำ {audOpt ? `${audOpt.min_age}–${audOpt.max_age_min}` : "…"} · อายุสูงสุด {audOpt ? `${audOpt.min_age_max}–${audOpt.no_max_age} (${audOpt.no_max_age}+ = ไม่จำกัด)` : "…"} · อายุสูงสุดและความสนใจเป็นค่าแนะนำของ Advantage+</small>
 
         <div className="c-label">กำหนดเวลาเผยแพร่ (เวลาไทย)</div>
         <div className="c-seg">

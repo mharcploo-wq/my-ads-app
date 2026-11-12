@@ -4,7 +4,10 @@ import { AGENTS, Prefix, PREFIXES } from "@/lib/types";
 
 type Values = Record<string, string>;
 type SecretInfo = { set: boolean; last4: string | null };
-type EnvView = { agent: string; prefix: string; file: string; exists: boolean; values: Values; token: SecretInfo; secret: SecretInfo };
+type EnvView = {
+  agent: string; prefix: string; file: string; exists: boolean; values: Values; token: SecretInfo; secret: SecretInfo;
+  aiKey: SecretInfo & { name: string; label: string };
+};
 type Check = { key: string; label: string; ok: boolean; detail: string };
 type Status = { ready?: boolean; configured?: boolean; reason?: string; checks?: Check[]; error?: string };
 
@@ -19,6 +22,7 @@ const MAIN: { key: string; label: string; hint?: string; num?: boolean }[] = [
 const ADVANCED: { key: string; label: string }[] = [
   { key: "GRAPH_API_VERSION", label: "เวอร์ชัน Graph API" },
   { key: "DASHBOARD_API_URL", label: "ที่อยู่ส่งผลเข้า Dashboard" },
+  { key: "AI_MODEL", label: "รุ่น AI ของปุ่ม ✨ (เว้นว่าง = ค่าเริ่มต้น)" },
 ];
 
 /** การ์ด "3. ตั้งค่า Agent" — กรอกแล้วบันทึกลง mcp-server/.env.{agent} แล้วตรวจสิทธิ์ทันที */
@@ -29,6 +33,7 @@ export default function AgentEnvForm() {
   const [values, setValues] = useState<Values>({});
   const [token, setToken] = useState("");
   const [secret, setSecret] = useState("");
+  const [aiKey, setAiKey] = useState("");
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<"" | "load" | "save">("load");
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -36,7 +41,7 @@ export default function AgentEnvForm() {
 
   const load = useCallback(async () => {
     setBusy("load");
-    setMsg(null); setStatus(null); setErrors({}); setToken(""); setSecret("");
+    setMsg(null); setStatus(null); setErrors({}); setToken(""); setSecret(""); setAiKey("");
     try {
       const r = await fetch(`/api/agent-env?agent=${key}`);
       const j = await r.json();
@@ -59,7 +64,7 @@ export default function AgentEnvForm() {
       const r = await fetch("/api/agent-env", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ agent: key, values, token, secret }),
+        body: JSON.stringify({ agent: key, values, token, secret, aiKey }),
       });
       const j = await r.json();
       if (!j.ok) {
@@ -69,7 +74,7 @@ export default function AgentEnvForm() {
       }
       setEnv(j.env);
       setValues(j.env.values);
-      setToken(""); setSecret("");
+      setToken(""); setSecret(""); setAiKey("");
       setStatus(j.status);
       setMsg({ ok: true, text: `บันทึกลง ${j.env.file} แล้ว` });
     } catch (e) {
@@ -115,6 +120,16 @@ export default function AgentEnvForm() {
               onChange={(e) => setToken(e.target.value)}
               placeholder={env.token.set ? "เว้นว่าง = ใช้รหัสเดิม · วางใหม่เพื่อเปลี่ยน" : "วางรหัสที่ขึ้นต้นด้วย EAA…"} />
             {errors.token ? <div className="err">{errors.token}</div> : <div className="d">รหัสจะไม่ถูกส่งกลับมาแสดงบนหน้าจอ</div>}
+          </div>
+          <div className="field">
+            <label htmlFor="env-aikey">
+              คีย์ AI ({env.aiKey.label}) สำหรับปุ่ม ✨ ให้ AI คิดกลุ่มเป้าหมาย{" "}
+              <span className={`pill ${env.aiKey.set ? "ok" : "warn"}`}>{env.aiKey.set ? `✓ ใส่แล้ว · ลงท้าย …${env.aiKey.last4}` : "ยังไม่ได้ใส่ (ไม่บังคับ)"}</span>
+            </label>
+            <input id="env-aikey" className={`input${errors.aiKey ? " invalid" : ""}`} type="password" autoComplete="off" value={aiKey}
+              onChange={(e) => setAiKey(e.target.value)}
+              placeholder={env.aiKey.set ? "เว้นว่าง = ใช้คีย์เดิม · วางใหม่เพื่อเปลี่ยน" : "วางคีย์ที่ขึ้นต้นด้วย sk-…"} />
+            {errors.aiKey ? <div className="err">{errors.aiKey}</div> : <div className="d">บันทึกเป็น {env.aiKey.name} · คีย์จะไม่ถูกส่งกลับมาแสดงบนหน้าจอ</div>}
           </div>
           <div className="env-grid">{MAIN.map(field)}</div>
           <details className="env-adv">

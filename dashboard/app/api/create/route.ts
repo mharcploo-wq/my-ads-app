@@ -12,7 +12,7 @@ const VIDEO_TYPES: Record<string, string> = { "video/mp4": ".mp4", "video/quickt
 const MAX_IMAGE = 30 * 1024 * 1024;
 
 /** สร้างโฆษณาครบชุด (PAUSED) จากฟอร์ม — multipart: agent, kind, name, daily_budget_thb, text, link_url, image_url, image,
- *  start_time, end_time, age_min, languages (ส่งซ้ำได้หลายค่า)
+ *  start_time, end_time, age_min, age_max, languages (ส่งซ้ำได้หลายค่า), interests (JSON [{id,name}])
  *  ชิ้นงานแบบไดนามิก: dynamic=1, images, videos, texts, titles (ส่งซ้ำได้หลายค่า) — ตรวจจำนวน/ขนาดจริงที่ server.py */
 export async function POST(req: Request) {
   if (!isLocalRequest(req)) return NextResponse.json({ ok: false, error: "ใช้ได้จากเครื่องนี้เท่านั้น" }, { status: 403 });
@@ -41,6 +41,17 @@ export async function POST(req: Request) {
   if (ageMin) spec.age_min = Number(ageMin);
   const languages = form.getAll("languages").map((v) => String(v).trim()).filter(Boolean);
   if (languages.length) spec.languages = languages;
+  const ageMax = String(form.get("age_max") ?? "").trim();
+  if (ageMax) spec.age_max = Number(ageMax);
+  const interestsRaw = String(form.get("interests") ?? "").trim();
+  if (interestsRaw) {
+    try {
+      const list = JSON.parse(interestsRaw) as { id?: unknown; name?: unknown }[];
+      spec.interests = (Array.isArray(list) ? list : []).map((x) => ({ id: String(x.id ?? ""), name: String(x.name ?? "") }));
+    } catch {
+      return NextResponse.json({ ok: false, error: "ข้อมูลความสนใจไม่ถูกต้อง" }, { status: 400 });
+    }
+  }
   const dynamic = form.get("dynamic") === "1";
   if (dynamic) {
     spec.dynamic = true;

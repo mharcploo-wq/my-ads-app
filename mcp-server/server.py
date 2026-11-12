@@ -16,7 +16,8 @@ server.py — MCP Server สร้างแคมเปญ Facebook (Meta) Ads
     2) create_* ทุกตัวเรียก check_permission ก่อนเสมอ (ไม่ผ่าน = ไม่ยิง API)
     3) Token อ่านจาก .env เท่านั้น และไม่ถูกเขียนลง log
     4) ชื่อ campaign / adset / ad / creative ถูกเติม Prefix อัตโนมัติตาม AGENT_PREFIX
-    5) Ad Set ใช้ Advantage+ Audience (targeting_automation.advantage_audience = 1) ไม่ใส่ interest
+    5) Ad Set ใช้ Advantage+ Audience (targeting_automation.advantage_audience = 1) — อายุสูงสุด/ความสนใจเป็นค่าแนะนำ
+    6) ตัวกรองคลังเนื้อหา "ปานกลาง" (FACEBOOK_STANDARD + AN_STANDARD) ทุก Ad Set
 """
 
 from __future__ import annotations
@@ -61,6 +62,8 @@ parser.add_argument("--test", type=int, metavar="BUDGET_THB", default=None,
 parser.add_argument("--status", action="store_true", help="(หน้าแอป) พิมพ์สถานะ agent เป็น JSON แล้วออก")
 parser.add_argument("--create-json", metavar="PATH", default=None,
                     help="(หน้าแอป) สร้างครบชุดจากไฟล์ JSON แล้วพิมพ์ผลเป็น JSON")
+parser.add_argument("--suggest-json", metavar="PATH", default=None,
+                    help="(หน้าแอป) ให้ AI คิดความสนใจจากข้อความในไฟล์ JSON แล้วพิมพ์ผลเป็น JSON")
 ARGS, _ = parser.parse_known_args()
 
 AGENT = (ARGS.agent or os.getenv("AGENT") or "claude").lower()
@@ -91,6 +94,11 @@ MAX_CAMPAIGNS_PER_DAY = min(int(os.getenv("MAX_CAMPAIGNS_PER_DAY", "5")), HARD_M
 DASHBOARD_API_URL = os.getenv("DASHBOARD_API_URL", "").strip()
 DASHBOARD_API_SECRET = os.getenv("DASHBOARD_API_SECRET", "").strip()
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v21.0").strip()
+# AI ที่ใช้คิดความสนใจ (ปุ่ม ✨ ในหน้าแอป) — claude/manus ใช้ Claude · chatgpt ใช้ OpenAI
+AI_PROVIDER = "openai" if AGENT == "chatgpt" else "anthropic"
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+AI_MODEL = os.getenv("AI_MODEL", "").strip() or {"anthropic": "claude-haiku-5-5", "openai": "gpt-4o-mini"}[AI_PROVIDER]
 MCP_HTTP_TOKEN = os.getenv("MCP_HTTP_TOKEN", "").strip()            # กุญแจป้องกันโหมด HTTP
 MCP_PUBLIC_HOST = os.getenv("MCP_PUBLIC_HOST", "").strip()          # เช่น xxxx.ngrok-free.app
 
@@ -393,6 +401,13 @@ MESSENGER_LINK = "https://fb.com/messenger_doc/"
 MIN_RUN_HOURS = 24                    # Meta: Ad Set งบต่อวันต้องวิ่งอย่างน้อย 24 ชม. ถ้ากำหนดวันสิ้นสุด
 MIN_AGE = 20                          # Meta บังคับอายุขั้นต่ำ 20 ปีสำหรับผู้ชมในไทย
 MAX_AGE_MIN = 25                      # Meta: ใช้ Advantage+ Audience ตั้งอายุขั้นต่ำได้ไม่เกิน 25
+NO_MAX_AGE = 65                       # อายุสูงสุด 65 = ไม่จำกัด (ไม่ส่ง age_range)
+MIN_AGE_MAX, DEFAULT_AGE_MAX = 30, 60 # อายุสูงสุดเลือกได้ 30–65 · Advantage+ รับเป็น "ค่าแนะนำ" (age_range) เท่านั้น
+MAX_INTERESTS = 10                    # ความสนใจ (ค่าแนะนำ) ต่อ Ad Set
+EXTRA_INTERESTS = {"ความสนใจเพิ่มเติม", "Additional interests"}  # กลุ่มชื่องาน/องค์กรเฉพาะในคลังของ Meta
+# ตัวกรองคลังเนื้อหา "ปานกลาง" — โฆษณาในเนื้อหา (คลิป Reels/วิดีโอ) + Audience Network
+BRAND_SAFETY = ["FACEBOOK_STANDARD", "AN_STANDARD"]
+BRAND_SAFETY_LABEL = "ปานกลาง"
 # ภาษาที่เลือกได้ (รหัส locale ของ Meta) — พม่า / ลาว Meta ไม่มีให้เลือก
 LANGUAGES: dict[str, tuple[int, str]] = {
     "th": (35, "ไทย"), "en_us": (6, "อังกฤษ (สหรัฐอเมริกา)"), "en_gb": (24, "อังกฤษ (สหราชอาณาจักร)"),
@@ -419,25 +434,119 @@ def creative_options() -> dict[str, Any]:
     }
 
 
+def ai_info() -> dict[str, Any]:
+    """AI ที่ปุ่ม ✨ ของ agent นี้ใช้ — หน้าเว็บแค่แสดง (คีย์ไม่ถูกส่งออกไป)"""
+    label = "Claude" if AI_PROVIDER == "anthropic" else "OpenAI"
+    key_name = "ANTHROPIC_API_KEY" if AI_PROVIDER == "anthropic" else "OPENAI_API_KEY"
+    ready = bool(ANTHROPIC_API_KEY if AI_PROVIDER == "anthropic" else OPENAI_API_KEY)
+    return {"provider": AI_PROVIDER, "label": label, "model": AI_MODEL, "key_name": key_name, "ready": ready,
+            "missing": None if ready else f"ยังไม่ได้ใส่คีย์ {label} ({key_name}) — ใส่ได้ที่แท็บ \"เชื่อมต่อ API\""}
+
+
 def audience_options() -> dict[str, Any]:
     """ตัวเลือกกลุ่มเป้าหมายสำหรับหน้าแอป (หน้าเว็บแค่แสดง — ช่วงอายุ/รายการภาษาอยู่ที่นี่ที่เดียว)"""
     return {
         "min_age": MIN_AGE, "max_age_min": MAX_AGE_MIN, "default_age": MIN_AGE,
+        "min_age_max": MIN_AGE_MAX, "no_max_age": NO_MAX_AGE, "default_age_max": DEFAULT_AGE_MAX,
         "languages": [{"key": k, "label": v[1]} for k, v in LANGUAGES.items()],
         "default_languages": DEFAULT_LANGUAGES,
+        "max_interests": MAX_INTERESTS,
+        "brand_safety": {"label": BRAND_SAFETY_LABEL, "detail": "โฆษณาในเนื้อหา + Audience Network (ตั้งให้ทุกโฆษณา)"},
+        "ai": ai_info(),
         "fixed": "ประเทศไทย · Advantage+ Audience",
     }
 
 
-def _audience(age_min: Any = None, languages: Any = None) -> tuple[dict[str, Any], str | None]:
-    """ตรวจอายุ/ภาษา → (ค่า targeting, ข้อผิดพลาด) · ไม่ใส่ = อายุ 20+ และ ไทย + อังกฤษ US/UK"""
+def _interest_items(interests: Any) -> tuple[list[dict[str, str]], list[str], str | None]:
+    """แยกความสนใจที่ส่งมา → (มี id แล้ว [{id,name}], คำค้นที่ต้องหา id, ข้อผิดพลาด)
+    รับได้ทั้ง [{"id","name"}] (จากหน้าแอป) · "6003127206524" (id ล้วน) · "digital marketing" (คำค้น จาก AI ในแชต)"""
+    if isinstance(interests, str):
+        interests = [x for x in interests.replace("，", ",").split(",")]
+    known: list[dict[str, str]] = []
+    words: list[str] = []
+    for it in interests or []:
+        if isinstance(it, dict):
+            iid, nm = str(it.get("id", "")).strip(), str(it.get("name", "")).strip()
+            if not iid.isdigit():
+                return [], [], "ความสนใจต้องมี id เป็นตัวเลขของ Meta"
+            known.append({"id": iid, "name": nm or iid})
+        elif str(it).strip().isdigit():
+            known.append({"id": str(it).strip(), "name": str(it).strip()})
+        elif str(it).strip():
+            words.append(str(it).strip())
+    if len(known) + len(words) > MAX_INTERESTS:
+        return [], [], f"ความสนใจใส่ได้ไม่เกิน {MAX_INTERESTS} รายการ"
+    return known, words, None
+
+
+def _search_interests(words: list[str], have: list[dict[str, Any]] | None = None,
+                      limit: int = MAX_INTERESTS) -> tuple[list[dict[str, Any]], list[str]]:
+    """ค้นคลังความสนใจของ Meta ทีละคำ (ไม่เอาซ้ำ) แล้วขอชื่อภาษาไทย → (ความสนใจ, คำที่หาไม่เจอ)"""
+    out = list(have or [])
+    seen = {x["id"] for x in out}
+    missed: list[str] = []
+    for w in words:
+        if len(out) >= limit:
+            break
+        # ค้นด้วยภาษาเดียวกับคำค้น — คำอังกฤษค้นด้วย th_TH จะไม่เจอหมวดหลัก (ชื่อหมวดถูกแปลเป็นไทย)
+        # เช่น "coffee" ได้ "Arabic coffee" แทน "Coffee" 535 ล้านคน
+        ok, body = _graph_get("search", {"type": "adinterest", "q": w, "limit": 5,
+                                         "locale": "en_US" if w.isascii() else "th_TH"})
+        cands = [r for r in (body.get("data", []) if ok else []) if str(r.get("id")) not in seen]
+        # ชื่อตรงคำค้น → หมวดหลัก (ไม่ใช่ชื่องาน/แบรนด์ใต้ "ความสนใจเพิ่มเติม") ตามลำดับของ Meta
+        # → ไม่มีเลยค่อยเอาตัวที่คนสนใจมากสุดใน 5 อันดับ
+        exact = [r for r in cands if str(r.get("name", "")).strip().lower() == w.lower()]
+        core = [r for r in cands if not set(r.get("path") or []) & EXTRA_INTERESTS]
+        hit = (exact or core or [max(cands, key=lambda r: r.get("audience_size_lower_bound") or 0)])[0] \
+            if cands else None
+        if not hit:
+            missed.append(w)
+            continue
+        seen.add(str(hit["id"]))
+        out.append({"id": str(hit["id"]), "name": hit.get("name", w), "keyword": w,
+                    "size_lower": hit.get("audience_size_lower_bound"),
+                    "size_upper": hit.get("audience_size_upper_bound")})
+    new = [x["id"] for x in out[len(have or []):]]
+    if new:  # ชื่อภาษาไทยให้หน้าแอป (ขอไม่ได้ก็ใช้ชื่ออังกฤษไป)
+        ok, body = _graph_get("search", {"type": "adinterestvalid", "interest_fbid_list": json.dumps(new),
+                                         "locale": "th_TH"})
+        th = {str(r.get("id")): r.get("name") for r in (body.get("data", []) if ok else []) if r.get("name")}
+        for x in out:
+            x["name"] = th.get(x["id"], x["name"])
+    return out, missed
+
+
+def _resolve_interests(interests: Any) -> tuple[list[dict[str, str]], str | None]:
+    """ความสนใจที่ส่งมา → [{id,name}] พร้อมใช้ (คำค้นจะถูกค้นหา id จาก Meta)"""
+    known, words, err = _interest_items(interests)
+    if err:
+        return [], err
+    if not words:
+        return known, None
+    found, missed = _search_interests(words, known)
+    if missed:
+        return [], "หาความสนใจในคลังของ Meta ไม่เจอ: " + ", ".join(missed) + " — ลองคำอื่น (ภาษาอังกฤษมักเจอง่ายกว่า)"
+    return [{"id": x["id"], "name": x["name"]} for x in found], None
+
+
+def _audience(age_min: Any = None, languages: Any = None, age_max: Any = None,
+              interests: list[dict[str, str]] | None = None) -> tuple[dict[str, Any], str | None]:
+    """ตรวจอายุ/ภาษา/ความสนใจ → (ค่า targeting, ข้อผิดพลาด)
+    ไม่ใส่ = อายุ 20–60 (60 เป็นค่าแนะนำ) · ไทย + อังกฤษ US/UK · ไม่มีความสนใจ
+    interests ต้องผ่าน _resolve_interests มาก่อน (มี id แล้ว)"""
     try:
         age = MIN_AGE if age_min in (None, "") else int(age_min)
+        age_hi = DEFAULT_AGE_MAX if age_max in (None, "") else int(age_max)
     except (TypeError, ValueError):
-        return {}, "อายุขั้นต่ำต้องเป็นตัวเลข"
+        return {}, "อายุต้องเป็นตัวเลข"
     if not MIN_AGE <= age <= MAX_AGE_MIN:
         return {}, (f"อายุขั้นต่ำต้องอยู่ระหว่าง {MIN_AGE}–{MAX_AGE_MIN} ปี (Meta: ไทยขั้นต่ำ {MIN_AGE} · "
                     f"Advantage+ ตั้งสูงกว่า {MAX_AGE_MIN} ไม่ได้)")
+    if not MIN_AGE_MAX <= age_hi <= NO_MAX_AGE:
+        return {}, f"อายุสูงสุดต้องอยู่ระหว่าง {MIN_AGE_MAX}–{NO_MAX_AGE} ปี ({NO_MAX_AGE} = ไม่จำกัด)"
+    interests = list(interests or [])
+    if len(interests) > MAX_INTERESTS:
+        return {}, f"ความสนใจใส่ได้ไม่เกิน {MAX_INTERESTS} รายการ"
     if isinstance(languages, str):
         languages = [x for x in languages.replace("，", ",").split(",")]
     keys = [str(x).strip().lower() for x in (languages or []) if str(x).strip()] or DEFAULT_LANGUAGES
@@ -449,8 +558,23 @@ def _audience(age_min: Any = None, languages: Any = None) -> tuple[dict[str, Any
             return {}, "ภาษาที่ใช้ได้: " + ", ".join(f"{k} ({v[1]})" for k, v in LANGUAGES.items())
         if k not in resolved:
             resolved.append(k)
-    return {"age_min": age, "locales": [LANGUAGES[k][0] for k in resolved],
-            "_label": f"อายุ {age}+ · ภาษา " + " / ".join(LANGUAGES[k][1] for k in resolved)}, None
+    targeting: dict[str, Any] = {
+        "geo_locations": {"countries": ["TH"]},
+        "age_min": age,   # Meta บังคับอายุขั้นต่ำ 20 ปีสำหรับผู้ชมในไทย
+        "locales": [LANGUAGES[k][0] for k in resolved],
+        "targeting_automation": {"advantage_audience": 1},   # Advantage+ Audience
+        "brand_safety_content_filter_levels": BRAND_SAFETY,
+    }
+    if age_hi < NO_MAX_AGE:
+        targeting["age_range"] = [age, age_hi]   # Advantage+ รับอายุสูงสุดเป็นค่าแนะนำเท่านั้น
+    if interests:
+        targeting["flexible_spec"] = [{"interests": [{"id": x["id"], "name": x["name"]} for x in interests]}]
+    ages = f"อายุ {age}–{age_hi} (แนะนำ)" if age_hi < NO_MAX_AGE else f"อายุ {age}+"
+    label = f"{ages} · ภาษา " + " / ".join(LANGUAGES[k][1] for k in resolved)
+    if interests:
+        label += f" · ความสนใจ {len(interests)} รายการ (แนะนำ)"
+    label += f" · คลังเนื้อหา{BRAND_SAFETY_LABEL}"
+    return {"age_min": age, "age_max": age_hi, "interests": interests, "targeting": targeting, "_label": label}, None
 
 
 def _parse_th_time(value: str) -> datetime:
@@ -485,29 +609,38 @@ def _schedule(start_time: str = "", end_time: str = "") -> tuple[dict[str, str],
 
 def create_adset(campaign_id: str, name: str, daily_budget_thb: int, destination: str = "WEBSITE",
                  start_time: str = "", end_time: str = "",
-                 age_min: int = MIN_AGE, languages: list[str] | None = None) -> dict[str, Any]:
+                 age_min: int = MIN_AGE, languages: list[str] | None = None,
+                 age_max: int = DEFAULT_AGE_MAX, interests: list[str] | None = None) -> dict[str, Any]:
     """สร้าง Ad Set สถานะ PAUSED ใต้แคมเปญของ agent นี้
-    ใช้ Advantage+ Audience (ประเทศไทย อายุ 20+ — กฎ Meta สำหรับไทย) ไม่ใส่ interest — งบหน่วยบาท
+    ใช้ Advantage+ Audience (ประเทศไทย) + ตัวกรองคลังเนื้อหา "ปานกลาง" — งบหน่วยบาท
     destination: "WEBSITE" (ค่าเริ่มต้น) หรือ "MESSENGER" = โฆษณายิงข้อความ ให้คนกดทักแชทเพจ
                  (MESSENGER ใช้กับแคมเปญ OUTCOME_ENGAGEMENT เท่านั้น)
     start_time / end_time: วันเวลาเผยแพร่ (เวลาไทย) เช่น "2026-11-11T08:00" — เว้นว่าง = เริ่มทันทีเมื่อกดเปิด /
                  ไม่มีวันสิ้นสุด · วันเริ่มย้อนอดีตไม่ได้ · วันสิ้นสุดต้องหลังวันเริ่มอย่างน้อย 24 ชม.
-    age_min: อายุขั้นต่ำ 20–25 (ค่าเริ่มต้น 20 — Meta: ไทยขั้นต่ำ 20, Advantage+ ตั้งเกิน 25 ไม่ได้) ไม่มีอายุสูงสุด
+    age_min: อายุขั้นต่ำ 20–25 (ค่าเริ่มต้น 20 — Meta: ไทยขั้นต่ำ 20, Advantage+ ตั้งเกิน 25 ไม่ได้)
+    age_max: อายุสูงสุด 30–65 (ค่าเริ่มต้น 60 · 65 = ไม่จำกัด) — เป็น "ค่าแนะนำ" ของ Advantage+
     languages: ภาษาของผู้ชม เลือกจาก th, en_us, en_gb, zh, ja, ko, km, vi, ms
-               (ไม่ใส่ = th + en_us + en_gb)"""
-    return _create_adset(campaign_id, name, daily_budget_thb, destination, start_time, end_time, age_min, languages)
+               (ไม่ใส่ = th + en_us + en_gb)
+    interests: ความสนใจ (ค่าแนะนำ) ไม่เกิน 10 — คิดจากเนื้อหาโฆษณาแล้วส่งเป็นคำค้นสั้น ๆ เช่น
+               ["digital marketing", "small business", "ร้านกาแฟ"] ระบบจะค้น id ในคลังของ Meta ให้
+               (ภาษาอังกฤษมักเจอง่ายกว่า · หาไม่เจอจะแจ้งกลับให้เปลี่ยนคำ) · ไม่ใส่ = ไม่กำหนด"""
+    return _create_adset(campaign_id, name, daily_budget_thb, destination, start_time, end_time, age_min, languages,
+                         age_max=age_max, interests=interests)
 
 
 def _create_adset(campaign_id: str, name: str, daily_budget_thb: int, destination: str = "WEBSITE",
                   start_time: str = "", end_time: str = "", age_min: Any = MIN_AGE, languages: Any = None,
-                  dynamic: bool = False) -> dict[str, Any]:
+                  dynamic: bool = False, age_max: Any = DEFAULT_AGE_MAX, interests: Any = None) -> dict[str, Any]:
     """ตัวจริงของ create_adset · dynamic=True = ชิ้นงานโฆษณาแบบไดนามิก (ใช้จากหน้าแอปเท่านั้น
     เพราะ Ad Set แบบนี้ต้องคู่กับโฆษณาแบบ asset_feed_spec ซึ่งเครื่องมือ create_ad ไม่ได้สร้าง)"""
     destination = (destination or "WEBSITE").upper().strip()
     sched, sched_err = _schedule(start_time, end_time)
     if sched_err:
         return {"success": False, "error": sched_err}
-    aud, aud_err = _audience(age_min, languages)
+    picked, int_err = _resolve_interests(interests)
+    if int_err:
+        return {"success": False, "error": int_err}
+    aud, aud_err = _audience(age_min, languages, age_max, picked)
     if aud_err:
         return {"success": False, "error": aud_err}
     if destination not in ("WEBSITE", "MESSENGER"):
@@ -536,12 +669,7 @@ def _create_adset(campaign_id: str, name: str, daily_budget_thb: int, destinatio
         "billing_event": "IMPRESSIONS",
         "optimization_goal": opt["optimization_goal"],
         "bid_strategy": "LOWEST_COST_WITHOUT_CAP",
-        "targeting": {
-            "geo_locations": {"countries": ["TH"]},
-            "age_min": aud["age_min"],   # Meta บังคับอายุขั้นต่ำ 20 ปีสำหรับผู้ชมในไทย
-            "locales": aud["locales"],
-            "targeting_automation": {"advantage_audience": 1},   # Advantage+ Audience
-        },
+        "targeting": aud["targeting"],
         "status": REQUIRED_STATUS,
         **sched,
     }
@@ -812,7 +940,8 @@ def _schedule_label(sched: dict[str, str]) -> str:
 def create_full(spec: dict[str, Any]) -> dict[str, Any]:
     """สร้างครบชุด: check_permission → แคมเปญ → Ad Set → โฆษณา (PAUSED ทั้งหมด) แล้วส่งผลเข้า Dashboard
     spec: kind (MESSENGER/WEBSITE), name, daily_budget_thb, text, link_url?, image_path?, image_url?,
-          start_time?, end_time? (เวลาไทย เช่น 2026-11-11T08:00), age_min?, languages?
+          start_time?, end_time? (เวลาไทย เช่น 2026-11-11T08:00), age_min?, age_max?, languages?,
+          interests? [{id,name}] (จากปุ่ม ✨ ในหน้าแอป)
           ชิ้นงานแบบไดนามิก: dynamic=true, image_paths[], video_paths[], texts[], titles[]"""
     steps: list[dict[str, Any]] = []
 
@@ -855,8 +984,11 @@ def create_full(spec: dict[str, Any]) -> dict[str, Any]:
     sched, sched_err = _schedule(start_time, end_time)
     if sched_err:
         problems.append(sched_err)
-    age_min, languages = spec.get("age_min"), spec.get("languages")
-    aud, aud_err = _audience(age_min, languages)
+    age_min, languages, age_max = spec.get("age_min"), spec.get("languages"), spec.get("age_max")
+    interests, int_err = _resolve_interests(spec.get("interests"))
+    if int_err:
+        problems.append(int_err)
+    aud, aud_err = _audience(age_min, languages, age_max, interests)
     if aud_err:
         problems.append(aud_err)
     if dynamic:
@@ -905,8 +1037,8 @@ def create_full(spec: dict[str, Any]) -> dict[str, Any]:
     camp = create_campaign(name, objective, budget)
     if not step("campaign", "แคมเปญ", camp, camp.get("name", "")):
         return done()
-    adset = create_adset(camp["campaign_id"], f"{name} - กลุ่มเป้าหมาย", budget, destination, start_time, end_time,
-                         age_min, languages)
+    adset = _create_adset(camp["campaign_id"], f"{name} - กลุ่มเป้าหมาย", budget, destination, start_time, end_time,
+                          age_min, languages, age_max=aud["age_max"], interests=aud["interests"])
     when = _schedule_label(sched)
     who = aud["_label"]
     if not step("adset", "กลุ่มเป้าหมาย", adset, f"งบ {budget:,} บาท/วัน · {who} · {when}"):
@@ -996,7 +1128,7 @@ def _create_full_dynamic(name: str, budget: int, texts: list[str], titles: list[
     if not step("campaign", "แคมเปญ", camp, camp.get("name", "")):
         return done()
     adset = _create_adset(camp["campaign_id"], f"{name} - กลุ่มเป้าหมาย", budget, destination, start_time, end_time,
-                          age_min, languages, dynamic=True)
+                          age_min, languages, dynamic=True, age_max=aud["age_max"], interests=aud["interests"])
     if not step("adset", "กลุ่มเป้าหมาย", adset,
                 f"งบ {budget:,} บาท/วัน · {aud['_label']} · {_schedule_label(sched)} · ชิ้นงานแบบไดนามิก"):
         return done(campaign_id=camp["campaign_id"])
@@ -1097,6 +1229,100 @@ def send_to_dashboard(date_preset: str = "last_7d") -> dict[str, Any]:
 TOOLS = [check_permission, create_campaign, create_adset, create_ad, send_to_dashboard]
 
 
+AI_SYSTEM = (
+    "You plan Meta (Facebook) ad targeting for ads shown in Thailand. From the ad copy, propose short search "
+    "keywords for Meta's detailed-targeting interest catalog: interests, hobbies, activities, industries, "
+    "products and job fields the likely customers have. Prefer common English terms (Meta's catalog matches "
+    "them best); Thai is fine for Thailand-only topics. Do not propose age, gender, location, or sensitive "
+    "categories (health conditions, religion, politics, sexual orientation, ethnicity, financial hardship). "
+    "Order from most to least relevant."
+)
+AI_KEYWORDS_SCHEMA = {
+    "type": "object",
+    "properties": {"keywords": {"type": "array", "items": {"type": "string"}}},
+    "required": ["keywords"],
+    "additionalProperties": False,
+}
+
+
+def _ai_keywords(copy: str) -> tuple[list[str], str | None]:
+    """ถาม AI ของ agent นี้ → คำค้นความสนใจ 6–8 คำ"""
+    prompt = f"Ad copy:\n{copy}\n\nReturn 8 keywords."
+    if AI_PROVIDER == "anthropic":
+        import anthropic  # โหลดเฉพาะตอนใช้ปุ่ม ✨ — เครื่องมือ MCP อื่นไม่ต้องพึ่ง
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, timeout=60.0, max_retries=2)
+        try:
+            resp = client.messages.create(
+                model=AI_MODEL, max_tokens=4000, system=AI_SYSTEM,
+                messages=[{"role": "user", "content": prompt}],
+                output_config={"effort": "low", "format": {"type": "json_schema", "schema": AI_KEYWORDS_SCHEMA}},
+            )
+        except anthropic.AuthenticationError:
+            return [], "คีย์ Claude ไม่ถูกต้องหรือหมดอายุ — ตรวจ ANTHROPIC_API_KEY ที่แท็บ \"เชื่อมต่อ API\""
+        except anthropic.NotFoundError:
+            return [], f"ไม่พบรุ่น AI \"{AI_MODEL}\" — แก้ AI_MODEL ใน .env หรือเว้นว่างเพื่อใช้ค่าเริ่มต้น"
+        except anthropic.RateLimitError:
+            return [], "Claude ถูกใช้ถี่เกินไป — รอสักครู่แล้วกดใหม่"
+        except anthropic.APIStatusError as e:
+            return [], f"Claude ตอบผิดพลาด (HTTP {e.status_code})"
+        except anthropic.APIConnectionError:
+            return [], "เชื่อมต่อ Claude ไม่ได้ — ตรวจอินเทอร์เน็ต"
+        if resp.stop_reason == "refusal":
+            return [], "Claude ไม่คิดกลุ่มเป้าหมายให้ข้อความนี้ — ลองปรับข้อความโฆษณา"
+        text = next((b.text for b in resp.content if b.type == "text"), "")
+    else:
+        try:
+            r = requests.post("https://api.openai.com/v1/chat/completions", timeout=60,
+                              headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                              json={"model": AI_MODEL, "response_format": {"type": "json_object"},
+                                    "messages": [{"role": "system", "content": AI_SYSTEM + ' Reply as JSON: {"keywords": [...]}'},
+                                                 {"role": "user", "content": prompt}]})
+        except requests.RequestException:
+            return [], "เชื่อมต่อ OpenAI ไม่ได้ — ตรวจอินเทอร์เน็ต"
+        if r.status_code == 401:
+            return [], "คีย์ OpenAI ไม่ถูกต้องหรือหมดอายุ — ตรวจ OPENAI_API_KEY ที่แท็บ \"เชื่อมต่อ API\""
+        if r.status_code == 404:
+            return [], f"ไม่พบรุ่น AI \"{AI_MODEL}\" — แก้ AI_MODEL ใน .env หรือเว้นว่างเพื่อใช้ค่าเริ่มต้น"
+        if r.status_code == 429:
+            return [], "OpenAI ถูกใช้ถี่เกินไปหรือเครดิตหมด — รอสักครู่หรือเติมเครดิต"
+        if r.status_code != 200:
+            return [], f"OpenAI ตอบผิดพลาด (HTTP {r.status_code})"
+        try:
+            text = r.json()["choices"][0]["message"]["content"] or ""
+        except (ValueError, KeyError, IndexError):
+            return [], "OpenAI ตอบกลับในรูปแบบที่อ่านไม่ได้"
+    try:
+        words = [str(w).strip() for w in json.loads(text).get("keywords", []) if str(w).strip()]
+    except (ValueError, AttributeError):
+        return [], "AI ตอบกลับในรูปแบบที่อ่านไม่ได้ — กดใหม่อีกครั้ง"
+    return list(dict.fromkeys(words))[:12], None
+
+
+def suggest_interests(spec: dict[str, Any]) -> dict[str, Any]:
+    """(ปุ่ม ✨ ในหน้าแอป) ข้อความโฆษณา → AI คิดคำค้น → ค้นคลังความสนใจของ Meta → ไม่เกิน 10 รายการ
+    spec: texts[], titles[], link_url?"""
+    info = ai_info()
+    if not info["ready"]:
+        return {"success": False, "error": info["missing"]}
+    texts = [str(x).strip() for x in (spec.get("texts") or []) if str(x).strip()]
+    titles = [str(x).strip() for x in (spec.get("titles") or []) if str(x).strip()]
+    link = str(spec.get("link_url") or "").strip()
+    if not texts:
+        return {"success": False, "error": "ใส่ข้อความโฆษณาก่อน แล้วค่อยให้ AI คิดกลุ่มเป้าหมาย"}
+    copy = "\n".join(texts + [f"Headline: {t}" for t in titles] + ([f"Link: {link}"] if link else []))[:4000]
+    words, err = _ai_keywords(copy)
+    if err:
+        log_action("suggest_interests", False, {"ai": info["label"], "model": AI_MODEL, "error": err})
+        return {"success": False, "error": err}
+    found, missed = _search_interests(words)
+    log_action("suggest_interests", bool(found), {"ai": info["label"], "model": AI_MODEL, "keywords": words,
+                                                  "interests": [x["name"] for x in found], "missed": missed})
+    if not found:
+        return {"success": False, "error": "AI คิดคำค้นได้ แต่ไม่ตรงกับความสนใจในคลังของ Meta — ลองปรับข้อความแล้วกดใหม่"}
+    return {"success": True, "ai": info["label"], "model": AI_MODEL, "keywords": words, "missed": missed,
+            "interests": found}
+
+
 def build_server():
     from mcp.server.mcpserver import MCPServer
 
@@ -1152,9 +1378,11 @@ def run_http(server, host: str, port: int) -> None:
 
 
 if __name__ == "__main__":
-    if ARGS.status or ARGS.create_json:
+    if ARGS.status or ARGS.create_json or ARGS.suggest_json:
         if ARGS.status:
             out = app_status()
+        elif ARGS.suggest_json:
+            out = suggest_interests(json.loads(Path(ARGS.suggest_json).read_text(encoding="utf-8")))
         else:
             out = create_full(json.loads(Path(ARGS.create_json).read_text(encoding="utf-8")))
         sys.stdout.reconfigure(encoding="utf-8")

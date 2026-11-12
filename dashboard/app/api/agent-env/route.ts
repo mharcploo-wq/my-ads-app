@@ -14,7 +14,7 @@ export async function GET(req: Request) {
   return NextResponse.json({ ok: true, env: await readAgentEnv(agent) });
 }
 
-/** POST {agent, values, token?, secret?} → ตรวจ → บันทึกลงไฟล์ → ตรวจสิทธิ์ด้วย server.py --status */
+/** POST {agent, values, token?, secret?, aiKey?} → ตรวจ → บันทึกลงไฟล์ → ตรวจสิทธิ์ด้วย server.py --status */
 export async function POST(req: Request) {
   if (!isLocalRequest(req)) return forbidden();
   const body = (await req.json().catch(() => null)) as ({ agent?: string } & Partial<AgentEnvInput>) | null;
@@ -26,6 +26,7 @@ export async function POST(req: Request) {
     values: Object.fromEntries(EDITABLE_KEYS.map((k) => [k, typeof raw[k] === "string" ? (raw[k] as string).trim() : String(raw[k] ?? "")])) as AgentEnvInput["values"],
     token: typeof body.token === "string" ? body.token.trim() : "",
     secret: typeof body.secret === "string" ? body.secret.trim() : "",
+    aiKey: typeof body.aiKey === "string" ? body.aiKey.trim() : "",
   };
   const errors = validate(input);
   if (Object.keys(errors).length) return NextResponse.json({ ok: false, error: "มีช่องที่กรอกไม่ถูกต้อง", errors }, { status: 400 });
