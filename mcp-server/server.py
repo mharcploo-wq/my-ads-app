@@ -27,6 +27,7 @@ import json
 import os
 import sys
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -392,6 +393,23 @@ LANGUAGES: dict[str, tuple[int, str]] = {
 DEFAULT_LANGUAGES = ["th", "en_us", "en_gb"]
 
 
+# ชิ้นงานโฆษณาแบบไดนามิก (Meta asset_feed_spec): รูป ≤10 · คลิป ≤10 · ข้อความหลัก ≤5 · พาดหัว ≤5 · รวม ≤30
+MAX_IMAGES, MAX_VIDEOS, MAX_BODIES, MAX_TITLES, MAX_ASSETS = 10, 10, 5, 5, 30
+MAX_VIDEO_MB, MAX_TOTAL_MB = 200, 1024          # ขนาดคลิปต่อไฟล์ / รวมทั้งชุด (กันอัปโหลดนานและกินแรม)
+DYNAMIC_KINDS = ["WEBSITE"]                      # ยิงข้อความ + ไดนามิก ยังยืนยันกับ Meta ไม่ได้ → ยังไม่เปิด
+VIDEO_TYPES = {".mp4", ".mov", ".m4v"}
+
+
+def creative_options() -> dict[str, Any]:
+    """ค่าจำกัดชิ้นงานสำหรับหน้าแอป (หน้าเว็บแค่แสดง — ตัวเลขอยู่ที่นี่ที่เดียว)"""
+    return {
+        "max_images": MAX_IMAGES, "max_videos": MAX_VIDEOS, "max_bodies": MAX_BODIES, "max_titles": MAX_TITLES,
+        "max_assets": MAX_ASSETS, "max_video_mb": MAX_VIDEO_MB, "max_total_mb": MAX_TOTAL_MB,
+        "dynamic_kinds": DYNAMIC_KINDS,
+        "dynamic_off_reason": "ชิ้นงานแบบไดนามิกใช้ได้กับโฆษณาพาเข้าเว็บไซต์ (ยิงข้อความยังไม่ได้ยืนยันกับ Meta)",
+    }
+
+
 def audience_options() -> dict[str, Any]:
     """ตัวเลือกกลุ่มเป้าหมายสำหรับหน้าแอป (หน้าเว็บแค่แสดง — ช่วงอายุ/รายการภาษาอยู่ที่นี่ที่เดียว)"""
     return {
@@ -468,6 +486,14 @@ def create_adset(campaign_id: str, name: str, daily_budget_thb: int, destination
     age_min: อายุขั้นต่ำ 20–25 (ค่าเริ่มต้น 20 — Meta: ไทยขั้นต่ำ 20, Advantage+ ตั้งเกิน 25 ไม่ได้) ไม่มีอายุสูงสุด
     languages: ภาษาของผู้ชม เลือกจาก th, en_us, en_gb, zh, ja, ko, km, vi, ms
                (ไม่ใส่ = th + en_us + en_gb)"""
+    return _create_adset(campaign_id, name, daily_budget_thb, destination, start_time, end_time, age_min, languages)
+
+
+def _create_adset(campaign_id: str, name: str, daily_budget_thb: int, destination: str = "WEBSITE",
+                  start_time: str = "", end_time: str = "", age_min: Any = MIN_AGE, languages: Any = None,
+                  dynamic: bool = False) -> dict[str, Any]:
+    """ตัวจริงของ create_adset · dynamic=True = ชิ้นงานโฆษณาแบบไดนามิก (ใช้จากหน้าแอปเท่านั้น
+    เพราะ Ad Set แบบนี้ต้องคู่กับโฆษณาแบบ asset_feed_spec ซึ่งเครื่องมือ create_ad ไม่ได้สร้าง)"""
     destination = (destination or "WEBSITE").upper().strip()
     sched, sched_err = _schedule(start_time, end_time)
     if sched_err:
@@ -525,10 +551,14 @@ def create_adset(campaign_id: str, name: str, daily_budget_thb: int, destination
         payload["promoted_object"] = {"pixel_id": META_PIXEL_ID, "custom_event_type": opt["event"]}
     if destination == "MESSENGER":
         payload["promoted_object"] = {"page_id": META_PAGE_ID}
+    if dynamic:
+        if destination not in DYNAMIC_KINDS:
+            return {"success": False, "error": creative_options()["dynamic_off_reason"]}
+        payload["is_dynamic_creative"] = True
 
     ok, body = _graph_post(f"{META_AD_ACCOUNT_ID}/adsets", payload)
     log_action("create_adset", ok, {"name": payload["name"], "campaign_id": campaign_id,
-                                    "daily_budget_thb": daily_budget_thb, **sched,
+                                    "daily_budget_thb": daily_budget_thb, **sched, "dynamic": dynamic,
                                     "adset_id": body.get("id") if ok else None,
                                     "error": None if ok else _meta_error(body)})
     if not ok:
@@ -564,6 +594,96 @@ def _upload_image_bytes(content: bytes) -> tuple[bool, str]:
     images = body.get("images", {})
     first = next(iter(images.values()), {})
     return (True, first["hash"]) if first.get("hash") else (False, f"ไม่ได้ image_hash: {body}")
+
+
+VIDEO_READY_TIMEOUT = 600   # วินาที — รอ Meta ประมวลผลคลิปได้นานสุด
+
+
+def _upload_video_file(path: str) -> tuple[bool, dict[str, str] | str]:
+    """อัปโหลดไฟล์คลิปเข้า /advideos → รอ Meta ประมวลผลจนพร้อม → คืน {video_id, thumbnail_url}"""
+    url = f"https://graph-video.facebook.com/{GRAPH_API_VERSION}/{META_AD_ACCOUNT_ID}/advideos"
+    try:
+        with open(path, "rb") as f:
+            r = requests.post(url, data={"access_token": META_ACCESS_TOKEN, "name": Path(path).name},
+                              files={"source": (Path(path).name, f)}, timeout=600)
+        body = r.json()
+    except Exception as e:  # noqa: BLE001
+        return False, f"อัปโหลดคลิปเข้า Meta ไม่ได้: {e}"
+    if r.status_code != 200 or "id" not in body:
+        return False, f"อัปโหลดคลิปเข้า Meta ไม่ได้: {_meta_error(body)}"
+    video_id = body["id"]
+    deadline = time.monotonic() + VIDEO_READY_TIMEOUT
+    while True:
+        ok, info = _graph_get(video_id, {"fields": "status"})
+        status = (info.get("status") or {}).get("video_status") if ok else None
+        if status == "ready":
+            break
+        if status == "error":
+            return False, f"Meta ประมวลผลคลิป {Path(path).name} ไม่สำเร็จ"
+        if time.monotonic() > deadline:
+            return False, f"รอ Meta ประมวลผลคลิป {Path(path).name} นานเกิน {VIDEO_READY_TIMEOUT // 60} นาที"
+        time.sleep(5)
+    ok, th = _graph_get(f"{video_id}/thumbnails", {"fields": "uri,is_preferred"})
+    thumbs = th.get("data", []) if ok else []
+    pick = next((t for t in thumbs if t.get("is_preferred")), thumbs[0] if thumbs else None)
+    if not pick:
+        return False, f"ไม่ได้รูปปกของคลิป {Path(path).name} จาก Meta"
+    return True, {"video_id": video_id, "thumbnail_url": pick["uri"]}
+
+
+def _create_dynamic_ad(adset_id: str, name: str, bodies: list[str], titles: list[str], link_url: str,
+                       image_hashes: list[str], videos: list[dict[str, str]]) -> dict[str, Any]:
+    """โฆษณาแบบไดนามิก: Creative เป็น asset_feed_spec (รูป/คลิป/ข้อความ/พาดหัวหลายแบบ) ใต้ Ad Set ไดนามิก"""
+    perm = _run_checks(None, count_campaigns=False)
+    if not perm["allowed"]:
+        log_action("create_ad", False, {"blocked": perm["reason"]})
+        return {"success": False, "blocked_by": "check_permission", **perm}
+    if not META_PAGE_ID:
+        return {"success": False, "error": "ยังไม่ได้ใส่ META_PAGE_ID ใน .env"}
+    ok, adset = _own_object(adset_id, "name,is_dynamic_creative,destination_type")
+    if not ok:
+        return {"success": False, "error": adset}
+    if not adset.get("is_dynamic_creative"):
+        return {"success": False, "error": "Ad Set นี้ไม่ได้เปิดชิ้นงานแบบไดนามิก"}
+    if image_hashes and videos:
+        ad_format = "AUTOMATIC_FORMAT"          # Meta: ผสมรูป+คลิปต้องใช้ AUTOMATIC_FORMAT
+    else:
+        ad_format = "SINGLE_VIDEO" if videos else "SINGLE_IMAGE"
+    feed: dict[str, Any] = {
+        "bodies": [{"text": b} for b in bodies],
+        "link_urls": [{"website_url": link_url}],
+        "call_to_action_types": ["LEARN_MORE"],
+        "ad_formats": [ad_format],
+    }
+    if image_hashes:
+        feed["images"] = [{"hash": h} for h in image_hashes]
+    if videos:
+        feed["videos"] = [{"video_id": v["video_id"], "thumbnail_url": v["thumbnail_url"]} for v in videos]
+    if titles:
+        feed["titles"] = [{"text": t} for t in titles]
+
+    ad_name = with_prefix(name)
+    ok, cr = _graph_post(f"{META_AD_ACCOUNT_ID}/adcreatives", {
+        "name": f"{ad_name}-Creative",
+        "object_story_spec": {"page_id": META_PAGE_ID},
+        "asset_feed_spec": feed,
+    })
+    if not ok:
+        log_action("create_ad", False, {"name": ad_name, "step": "creative", "dynamic": True, "error": _meta_error(cr)})
+        return {"success": False, "error": f"สร้าง Creative ไม่สำเร็จ: {_meta_error(cr)}"}
+    ok, body = _graph_post(f"{META_AD_ACCOUNT_ID}/ads", {
+        "name": ad_name,
+        "adset_id": adset_id,
+        "creative": {"creative_id": cr["id"]},
+        "status": REQUIRED_STATUS,
+    })
+    log_action("create_ad", ok, {"name": ad_name, "adset_id": adset_id, "creative_id": cr["id"], "dynamic": True,
+                                 "images": len(image_hashes), "videos": len(videos), "bodies": len(bodies),
+                                 "titles": len(titles), "ad_id": body.get("id") if ok else None,
+                                 "error": None if ok else _meta_error(body)})
+    if not ok:
+        return {"success": False, "error": _meta_error(body), "creative_id": cr["id"]}
+    return {"success": True, "ad_id": body["id"], "creative_id": cr["id"], "name": ad_name, "status": REQUIRED_STATUS}
 
 
 def create_ad(adset_id: str, name: str, page_post_text: str, link_url: str, image_url: str) -> dict[str, Any]:
@@ -665,6 +785,7 @@ def app_status() -> dict[str, Any]:
         "max_campaigns_per_day": MAX_CAMPAIGNS_PER_DAY,
         "campaigns_today": used, "page_name": page_name, "page_cover": cover,
         "audience": audience_options(),
+        "creative": creative_options(),
     }
 
 
@@ -678,7 +799,8 @@ def _schedule_label(sched: dict[str, str]) -> str:
 def create_full(spec: dict[str, Any]) -> dict[str, Any]:
     """สร้างครบชุด: check_permission → แคมเปญ → Ad Set → โฆษณา (PAUSED ทั้งหมด) แล้วส่งผลเข้า Dashboard
     spec: kind (MESSENGER/WEBSITE), name, daily_budget_thb, text, link_url?, image_path?, image_url?,
-          start_time?, end_time? (เวลาไทย เช่น 2026-11-11T08:00)"""
+          start_time?, end_time? (เวลาไทย เช่น 2026-11-11T08:00), age_min?, languages?
+          ชิ้นงานแบบไดนามิก: dynamic=true, image_paths[], video_paths[], texts[], titles[]"""
     steps: list[dict[str, Any]] = []
 
     def step(key: str, label: str, res: dict[str, Any], detail: str = "") -> bool:
@@ -692,7 +814,13 @@ def create_full(spec: dict[str, Any]) -> dict[str, Any]:
 
     kind = str(spec.get("kind", "")).upper()
     name = str(spec.get("name", "")).strip()
-    text = str(spec.get("text", "")).strip()
+    dynamic = bool(spec.get("dynamic"))
+    clean = lambda v: [str(x).strip() for x in (v or []) if str(x).strip()]  # noqa: E731
+    texts = clean(spec.get("texts")) if dynamic else []
+    titles = clean(spec.get("titles")) if dynamic else []
+    image_paths = clean(spec.get("image_paths")) if dynamic else []
+    video_paths = clean(spec.get("video_paths")) if dynamic else []
+    text = texts[0] if dynamic and texts else str(spec.get("text", "")).strip()
     link_url = str(spec.get("link_url") or "").strip()
     try:
         budget = int(spec.get("daily_budget_thb", 0))
@@ -718,6 +846,8 @@ def create_full(spec: dict[str, Any]) -> dict[str, Any]:
     aud, aud_err = _audience(age_min, languages)
     if aud_err:
         problems.append(aud_err)
+    if dynamic:
+        problems += _dynamic_problems(kind, texts, titles, image_paths, video_paths)
     if problems:
         steps.append({"key": "form", "label": "ข้อมูลในฟอร์ม", "ok": False, "detail": " · ".join(problems)})
         return done()
@@ -727,6 +857,11 @@ def create_full(spec: dict[str, Any]) -> dict[str, Any]:
     perm = check_permission(budget)
     if not step("check", "เช็คสิทธิ์", perm, "ผ่านทุกเงื่อนไข"):
         return done()
+
+    if dynamic:
+        return _create_full_dynamic(name, budget, texts, titles, link_url, image_paths, video_paths,
+                                    start_time, end_time, sched, age_min, languages, aud, objective, destination,
+                                    step, done)
 
     # 2) เตรียมรูปก่อนสร้างอะไรใน Meta — รูปพังจะได้ไม่เหลือแคมเปญค้าง
     image_path = spec.get("image_path")
@@ -768,6 +903,96 @@ def create_full(spec: dict[str, Any]) -> dict[str, Any]:
         return done(campaign_id=camp["campaign_id"], adset_id=adset["adset_id"])
 
     # 4) อัปเดตหน้าสรุปผล (ไม่สำเร็จก็ไม่เป็นไร โฆษณาสร้างครบแล้ว)
+    dash = send_to_dashboard("last_7d")
+    return done(campaign_id=camp["campaign_id"], adset_id=adset["adset_id"], ad_id=ad["ad_id"],
+                campaign_name=camp["name"], dashboard_updated=bool(dash.get("delivered")),
+                ads_manager_url=f"https://adsmanager.facebook.com/adsmanager/manage/campaigns?act="
+                                f"{META_AD_ACCOUNT_ID.removeprefix('act_')}&selected_campaign_ids={camp['campaign_id']}")
+
+
+def _dynamic_problems(kind: str, texts: list[str], titles: list[str],
+                      image_paths: list[str], video_paths: list[str]) -> list[str]:
+    """ตรวจชิ้นงานไดนามิกก่อนยิงอะไรเข้า Meta"""
+    p: list[str] = []
+    if kind not in DYNAMIC_KINDS:
+        p.append(creative_options()["dynamic_off_reason"])
+    if not image_paths and not video_paths:
+        p.append("ใส่รูปหรือคลิปอย่างน้อย 1 ชิ้น")
+    if len(image_paths) > MAX_IMAGES:
+        p.append(f"รูปได้ไม่เกิน {MAX_IMAGES} รูป")
+    if len(video_paths) > MAX_VIDEOS:
+        p.append(f"คลิปได้ไม่เกิน {MAX_VIDEOS} คลิป")
+    if len(texts) > MAX_BODIES:
+        p.append(f"ข้อความหลักได้ไม่เกิน {MAX_BODIES} แบบ")
+    if len(titles) > MAX_TITLES:
+        p.append(f"พาดหัวได้ไม่เกิน {MAX_TITLES} แบบ")
+    if len(image_paths) + len(video_paths) + len(texts) + len(titles) + 1 > MAX_ASSETS:
+        p.append(f"ชิ้นงานรวมเกิน {MAX_ASSETS} ชิ้น")
+    total = 0
+    for v in video_paths:
+        try:
+            size = os.path.getsize(v)
+        except OSError:
+            p.append(f"เปิดไฟล์คลิปไม่ได้: {Path(v).name}")
+            continue
+        total += size
+        if Path(v).suffix.lower() not in VIDEO_TYPES:
+            p.append(f"คลิป {Path(v).name} ต้องเป็น MP4 หรือ MOV")
+        if size > MAX_VIDEO_MB * 1024 * 1024:
+            p.append(f"คลิป {Path(v).name} ใหญ่เกิน {MAX_VIDEO_MB}MB")
+    if total > MAX_TOTAL_MB * 1024 * 1024:
+        p.append(f"คลิปรวมกันใหญ่เกิน {MAX_TOTAL_MB // 1024}GB")
+    return p
+
+
+def _create_full_dynamic(name: str, budget: int, texts: list[str], titles: list[str], link_url: str,
+                         image_paths: list[str], video_paths: list[str], start_time: str, end_time: str,
+                         sched: dict[str, str], age_min: Any, languages: Any, aud: dict[str, Any],
+                         objective: str, destination: str,
+                         step: Callable[..., bool], done: Callable[..., dict[str, Any]]) -> dict[str, Any]:
+    """create_full แบบไดนามิก (เช็คสิทธิ์ผ่านแล้ว): อัปโหลดรูปทั้งหมด → อัปโหลดคลิปทั้งหมด → แคมเปญ
+    → Ad Set ไดนามิก → โฆษณา"""
+    # อัปโหลดชิ้นงานทั้งหมดก่อนสร้างอะไรใน Meta — ชิ้นไหนพังจะได้ไม่เหลือแคมเปญค้าง
+    hashes: list[str] = []
+    for i, path in enumerate(image_paths, 1):
+        try:
+            content = Path(path).read_bytes()
+        except OSError as e:
+            step("images", "รูปโฆษณา", {"success": False, "error": f"เปิดไฟล์รูปที่ {i} ไม่ได้: {e}"})
+            return done()
+        ok, h = _upload_image_bytes(content)
+        if not ok:
+            step("images", "รูปโฆษณา", {"success": False, "error": f"รูปที่ {i}: {h}"})
+            return done()
+        hashes.append(h)
+    if image_paths:
+        step("images", "รูปโฆษณา", {"success": True}, f"อัปโหลดแล้ว {len(hashes)}/{len(image_paths)} รูป")
+
+    videos: list[dict[str, str]] = []
+    for i, path in enumerate(video_paths, 1):
+        ok, v = _upload_video_file(path)
+        if not ok:
+            step("videos", "คลิปโฆษณา", {"success": False, "error": f"คลิปที่ {i}: {v}"})
+            return done()
+        videos.append(v)  # type: ignore[arg-type]
+    if video_paths:
+        step("videos", "คลิปโฆษณา", {"success": True},
+             f"อัปโหลดแล้ว {len(videos)}/{len(video_paths)} คลิป (Meta ประมวลผลเสร็จแล้ว)")
+
+    camp = create_campaign(name, objective, budget)
+    if not step("campaign", "แคมเปญ", camp, camp.get("name", "")):
+        return done()
+    adset = _create_adset(camp["campaign_id"], f"{name} - กลุ่มเป้าหมาย", budget, destination, start_time, end_time,
+                          age_min, languages, dynamic=True)
+    if not step("adset", "กลุ่มเป้าหมาย", adset,
+                f"งบ {budget:,} บาท/วัน · {aud['_label']} · {_schedule_label(sched)} · ชิ้นงานแบบไดนามิก"):
+        return done(campaign_id=camp["campaign_id"])
+    ad = _create_dynamic_ad(adset["adset_id"], f"{name} - โฆษณา", texts, titles, link_url, hashes, videos)
+    media = " + ".join(x for x in (f"{len(hashes)} รูป" if hashes else "", f"{len(videos)} คลิป" if videos else "") if x)
+    if not step("ad", "โฆษณา", ad,
+                f"ไดนามิก · {media} · ข้อความหลัก {len(texts)} แบบ · พาดหัว {len(titles)} แบบ · ปุ่ม ดูเพิ่มเติม"):
+        return done(campaign_id=camp["campaign_id"], adset_id=adset["adset_id"])
+
     dash = send_to_dashboard("last_7d")
     return done(campaign_id=camp["campaign_id"], adset_id=adset["adset_id"], ad_id=ad["ad_id"],
                 campaign_name=camp["name"], dashboard_updated=bool(dash.get("delivered")),

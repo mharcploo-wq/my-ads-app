@@ -8,10 +8,12 @@ import { CreateResult, CreateSpec, isAgentId, isLocalRequest, runCreator } from 
 export const dynamic = "force-dynamic";
 
 const IMAGE_TYPES: Record<string, string> = { "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif" };
+const VIDEO_TYPES: Record<string, string> = { "video/mp4": ".mp4", "video/quicktime": ".mov", "video/x-m4v": ".m4v" };
 const MAX_IMAGE = 30 * 1024 * 1024;
 
 /** สร้างโฆษณาครบชุด (PAUSED) จากฟอร์ม — multipart: agent, kind, name, daily_budget_thb, text, link_url, image_url, image,
- *  start_time, end_time, age_min, languages (ส่งซ้ำได้หลายค่า) — ตรวจค่าจริงที่ server.py */
+ *  start_time, end_time, age_min, languages (ส่งซ้ำได้หลายค่า)
+ *  ชิ้นงานแบบไดนามิก: dynamic=1, images, videos, texts, titles (ส่งซ้ำได้หลายค่า) — ตรวจจำนวน/ขนาดจริงที่ server.py */
 export async function POST(req: Request) {
   if (!isLocalRequest(req)) return NextResponse.json({ ok: false, error: "ใช้ได้จากเครื่องนี้เท่านั้น" }, { status: 403 });
   let form: FormData;
@@ -39,6 +41,12 @@ export async function POST(req: Request) {
   if (ageMin) spec.age_min = Number(ageMin);
   const languages = form.getAll("languages").map((v) => String(v).trim()).filter(Boolean);
   if (languages.length) spec.languages = languages;
+  const dynamic = form.get("dynamic") === "1";
+  if (dynamic) {
+    spec.dynamic = true;
+    spec.texts = form.getAll("texts").map((v) => String(v).trim()).filter(Boolean);
+    spec.titles = form.getAll("titles").map((v) => String(v).trim()).filter(Boolean);
+  }
 
   const tmp = path.join(os.tmpdir(), `ads-create-${randomUUID()}`);
   await fs.mkdir(tmp, { recursive: true });
@@ -52,9 +60,33 @@ export async function POST(req: Request) {
       await fs.writeFile(spec.image_path, Buffer.from(await file.arrayBuffer()));
       spec.image_url = "";
     }
+    if (dynamic) {
+      spec.image_paths = [];
+      spec.video_paths = [];
+      let i = 0;
+      for (const f of form.getAll("images")) {
+        if (!(f instanceof File) || f.size === 0) continue;
+        const ext = IMAGE_TYPES[f.type];
+        if (!ext) return NextResponse.json({ ok: false, error: `ไฟล์ ${f.name} ไม่ใช่รูป JPG / PNG / WEBP / GIF` }, { status: 400 });
+        if (f.size > MAX_IMAGE) return NextResponse.json({ ok: false, error: `รูป ${f.name} ใหญ่เกิน 30MB` }, { status: 400 });
+        const p = path.join(tmp, `image-${++i}${ext}`);
+        await fs.writeFile(p, Buffer.from(await f.arrayBuffer()));
+        spec.image_paths.push(p);
+      }
+      for (const f of form.getAll("videos")) {
+        if (!(f instanceof File) || f.size === 0) continue;
+        const ext = VIDEO_TYPES[f.type];
+        if (!ext) return NextResponse.json({ ok: false, error: `ไฟล์ ${f.name} ไม่ใช่คลิป MP4 / MOV` }, { status: 400 });
+        const p = path.join(tmp, `video-${++i}${ext}`);
+        await fs.writeFile(p, Buffer.from(await f.arrayBuffer()));
+        spec.video_paths.push(p);
+      }
+    }
     const specFile = path.join(tmp, "spec.json");
     await fs.writeFile(specFile, JSON.stringify(spec), "utf8");
-    const result = await runCreator<CreateResult>(agent, ["--create-json", specFile], 180_000);
+    // คลิปต้องรอ Meta ประมวลผล — ให้เวลานานขึ้นเมื่อมีคลิป
+    const timeout = spec.video_paths?.length ? 30 * 60_000 : 180_000;
+    const result = await runCreator<CreateResult>(agent, ["--create-json", specFile], timeout);
     return NextResponse.json({ ok: true, result });
   } catch (e) {
     return NextResponse.json({ ok: false, error: (e as Error).message }, { status: 500 });

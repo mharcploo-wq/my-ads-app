@@ -5,6 +5,10 @@ type AgentId = "claude" | "manus" | "chatgpt";
 type Kind = "MESSENGER" | "WEBSITE";
 
 interface CheckItem { key: string; label: string; ok: boolean; detail: string }
+interface CreativeOptions {
+  max_images: number; max_videos: number; max_bodies: number; max_titles: number; max_assets: number;
+  max_video_mb: number; max_total_mb: number; dynamic_kinds: string[]; dynamic_off_reason: string;
+}
 interface AudienceOptions {
   min_age: number; max_age_min: number; default_age: number;
   languages: { key: string; label: string }[]; default_languages: string[]; fixed: string;
@@ -13,6 +17,7 @@ interface AgentStatus {
   agent: AgentId; prefix: string; ready: boolean; configured?: boolean; quota_full?: boolean; reason: string; checks: CheckItem[];
   max_daily_budget_thb: number; max_campaigns_per_day: number; campaigns_today: number | null;
   page_name: string | null; page_cover: string | null; audience?: AudienceOptions;
+  creative?: CreativeOptions;
 }
 interface CreateResult {
   success: boolean; steps: CheckItem[]; campaign_name?: string; ads_manager_url?: string; dashboard_updated?: boolean;
@@ -32,6 +37,30 @@ const KINDS: { id: Kind; icon: string; label: string; hint: string; cta: string 
 const thMs = (d: string, t: string) => Date.parse(`${d}T${t || "00:00"}:00+07:00`);
 const thDate = (offsetDays: number) => new Date(Date.now() + 7 * 3600_000 + offsetDays * 86400_000).toISOString().slice(0, 10);
 const fmtTh = (d: string, t: string) => { const [y, m, dd] = d.split("-"); return `${dd}/${m}/${y} ${t}`; };
+const MB = 1024 * 1024;
+const fmtMb = (bytes: number) => `${Math.max(1, Math.round(bytes / MB))}MB`;
+const fmtDur = (sec: number) => `${Math.floor(sec / 60)}:${String(Math.round(sec % 60)).padStart(2, "0")}`;
+const VIDEO_ACCEPT = "video/mp4,video/quicktime,video/x-m4v";
+const IMAGE_ACCEPT = "image/jpeg,image/png,image/webp,image/gif";
+
+/** URL ชั่วคราวของไฟล์ในเครื่อง (ใช้แสดงตัวอย่าง) — คืนค่าเมื่อรายการไฟล์เปลี่ยน */
+function useObjectUrls(files: File[]) {
+  const urls = useMemo(() => files.map((f) => URL.createObjectURL(f)), [files]);
+  useEffect(() => () => urls.forEach((u) => URL.revokeObjectURL(u)), [urls]);
+  return urls;
+}
+
+function VideoThumb({ url, file, onRemove }: { url: string; file: File; onRemove: () => void }) {
+  const [dur, setDur] = useState<number | null>(null);
+  return (
+    <div className="c-th">
+      <video src={url} muted preload="metadata" onLoadedMetadata={(e) => setDur(e.currentTarget.duration)} />
+      <span className="c-th-play">▶</span>
+      <button type="button" className="c-th-x" aria-label={`เอาคลิป ${file.name} ออก`} onClick={onRemove}>✕</button>
+      <span className="c-th-d">{dur != null && Number.isFinite(dur) ? `${fmtDur(dur)} · ` : ""}{fmtMb(file.size)}</span>
+    </div>
+  );
+}
 
 export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
   const [status, setStatus] = useState<AgentStatus[] | null>(null);
@@ -60,6 +89,18 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
   const [ageMin, setAgeMin] = useState<number | null>(null);
   const [langs, setLangs] = useState<string[] | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  // ชิ้นงานโฆษณาแบบไดนามิก (ค่าเริ่มต้น = ปิด)
+  const [dynamic, setDynamic] = useState(false);
+  const [dynImages, setDynImages] = useState<File[]>([]);
+  const [dynVideos, setDynVideos] = useState<File[]>([]);
+  const [texts, setTexts] = useState<string[]>([""]);
+  const [titles, setTitles] = useState<string[]>([]);
+  const [pvIdx, setPvIdx] = useState(0);
+  const [dynMsg, setDynMsg] = useState<string | null>(null);
+  const imgInput = useRef<HTMLInputElement>(null);
+  const vidInput = useRef<HTMLInputElement>(null);
+  const imgUrls = useObjectUrls(dynImages);
+  const vidUrls = useObjectUrls(dynVideos);
 
   const loadStatus = useCallback(async () => {
     setStatusErr(null);
@@ -101,7 +142,57 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
   function toggleLang(key: string) {
     setLangs(pickedLangs.includes(key) ? pickedLangs.filter((k) => k !== key) : [...pickedLangs, key]);
   }
-  const imageSource = file ? "ไฟล์จากเครื่อง" : imageUrl.trim() ? "ลิงก์รูป" : "รูปปกเพจ (ค่าเริ่มต้น)";
+  const crOpt = status?.find((a) => a.creative)?.creative ?? null;
+  const dynAllowed = !!crOpt && crOpt.dynamic_kinds.includes(kind);
+  const isDyn = dynamic && dynAllowed;
+  const filledTexts = texts.map((t) => t.trim()).filter(Boolean);
+  const filledTitles = titles.map((t) => t.trim()).filter(Boolean);
+  const videoBytes = dynVideos.reduce((n, f) => n + f.size, 0);
+  // ตัวอย่างแต่ละชุดที่ Meta อาจจับคู่: สื่อ × ข้อความหลัก × พาดหัว
+  const media = [
+    ...dynImages.map((_, i) => ({ type: "image" as const, url: imgUrls[i] })),
+    ...dynVideos.map((_, i) => ({ type: "video" as const, url: vidUrls[i] })),
+  ];
+  const combos = isDyn
+    ? media.flatMap((m) => (filledTexts.length ? filledTexts : [""]).flatMap((t) =>
+        (filledTitles.length ? filledTitles : [""]).map((h) => ({ m, t, h }))))
+    : [];
+  const combo = combos.length ? combos[pvIdx % combos.length] : null;
+  const imageSource = isDyn
+    ? `ชิ้นงานไดนามิก ${dynImages.length} รูป · ${dynVideos.length} คลิป`
+    : file ? "ไฟล์จากเครื่อง" : imageUrl.trim() ? "ลิงก์รูป" : "รูปปกเพจ (ค่าเริ่มต้น)";
+
+  function toggleDynamic() {
+    if (!dynAllowed) return;
+    const on = !dynamic;
+    setDynamic(on);
+    setDynMsg(null);
+    if (on) {
+      // เปิดครั้งแรก: ยกรูปและข้อความที่กรอกไว้มาเป็นชิ้นแรก
+      if (!dynImages.length && !dynVideos.length && file) setDynImages([file]);
+      if (!texts.some((t) => t.trim()) && text.trim()) setTexts([text]);
+    }
+  }
+  function addMedia(list: FileList | File[] | null | undefined, type: "image" | "video") {
+    if (!list || !crOpt) return;
+    const files = Array.from(list);
+    const ok = files.filter((f) => f.type.startsWith(`${type}/`));
+    const max = type === "image" ? crOpt.max_images : crOpt.max_videos;
+    const cur = type === "image" ? dynImages : dynVideos;
+    const room = Math.max(0, max - cur.length);
+    const take = ok.slice(0, room);
+    const msgs: string[] = [];
+    if (ok.length < files.length) msgs.push(`ข้ามไฟล์ที่ไม่ใช่${type === "image" ? "รูป" : "คลิป"} ${files.length - ok.length} ไฟล์`);
+    if (take.length < ok.length) msgs.push(`${type === "image" ? "รูป" : "คลิป"}ใส่ได้สูงสุด ${max} ชิ้น — ข้าม ${ok.length - take.length} ไฟล์`);
+    setDynMsg(msgs.length ? msgs.join(" · ") : null);
+    if (type === "image") setDynImages([...cur, ...take]); else setDynVideos([...cur, ...take]);
+    setPvIdx(0);
+  }
+  function dropMedia(fl: FileList) {
+    const files = Array.from(fl);
+    addMedia(files.filter((f) => f.type.startsWith("image/")), "image");
+    addMedia(files.filter((f) => f.type.startsWith("video/")), "video");
+  }
 
   const sched = useMemo(() => {
     const start = startMode === "set" ? thMs(startDate, startTime) : null;
@@ -126,13 +217,20 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
     if (!name.trim()) p.push("ใส่ชื่อแคมเปญ");
     if (!Number.isInteger(budgetNum) || budgetNum <= 0) p.push("ใส่งบต่อวันเป็นตัวเลขเต็ม");
     else if (budgetNum > maxBudget) p.push(`งบเกินเพดาน ${maxBudget.toLocaleString()} บาท/วัน`);
-    if (!text.trim()) p.push("ใส่ข้อความโฆษณา");
+    if (isDyn && crOpt) {
+      if (!dynImages.length && !dynVideos.length) p.push("ใส่รูปหรือคลิปอย่างน้อย 1 ชิ้น");
+      if (!filledTexts.length) p.push("ใส่ข้อความหลักอย่างน้อย 1 แบบ");
+      const big = dynVideos.find((f) => f.size > crOpt.max_video_mb * MB);
+      if (big) p.push(`คลิป ${big.name} ใหญ่เกิน ${crOpt.max_video_mb}MB`);
+      if (videoBytes > crOpt.max_total_mb * MB) p.push(`คลิปรวมกันเกิน ${crOpt.max_total_mb / 1024}GB`);
+    } else if (!text.trim()) p.push("ใส่ข้อความโฆษณา");
     if (kind === "WEBSITE" && !/^https?:\/\//.test(link.trim())) p.push("ใส่ลิงก์เว็บไซต์ (ขึ้นต้น https://)");
     if (left === 0) p.push("วันนี้สร้างครบโควตาแล้ว");
     if (sched.error) p.push(sched.error);
     if (audOpt && pickedLangs.length === 0) p.push("เลือกภาษาอย่างน้อย 1 ภาษา");
     return p;
-  }, [cur, name, budgetNum, maxBudget, text, kind, link, left, sched.error, audOpt, pickedLangs.length]);
+  }, [cur, name, budgetNum, maxBudget, text, kind, link, left, sched.error, audOpt, pickedLangs.length,
+    isDyn, crOpt, dynImages.length, dynVideos, filledTexts.length, videoBytes]);
 
   function pickFile(f: File | undefined | null) {
     if (!f) return;
@@ -153,7 +251,14 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
     if (sched.end_time) fd.set("end_time", sched.end_time);
     if (age != null) fd.set("age_min", String(age));
     pickedLangs.forEach((k) => fd.append("languages", k));
-    if (file) fd.set("image", file); else if (imageUrl.trim()) fd.set("image_url", imageUrl.trim());
+    if (isDyn) {
+      fd.set("dynamic", "1");
+      fd.delete("text");
+      dynImages.forEach((f) => fd.append("images", f));
+      dynVideos.forEach((f) => fd.append("videos", f));
+      filledTexts.forEach((t) => fd.append("texts", t));
+      filledTitles.forEach((t) => fd.append("titles", t));
+    } else if (file) fd.set("image", file); else if (imageUrl.trim()) fd.set("image_url", imageUrl.trim());
     try {
       const r = await fetch("/api/create", { method: "POST", body: fd });
       const j = await r.json();
@@ -170,6 +275,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
 
   function reset() {
     setResult(null); setName(""); setText(""); setLink(""); setImageUrl(""); setFile(null);
+    setDynImages([]); setDynVideos([]); setTexts([""]); setTitles([]); setPvIdx(0);
   }
 
   return (
@@ -214,14 +320,73 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
             <small className="c-hint">สูงสุด {maxBudget.toLocaleString()} บาท/วัน</small></div>
         </div>
 
-        <div className="field"><label htmlFor="c-text">ข้อความโฆษณา</label>
-          <textarea id="c-text" className="input c-text" value={text} maxLength={2000} placeholder="เช่น ทักแชทสอบถามสินค้าได้เลยครับ" onChange={(e) => setText(e.target.value)} /></div>
+        {!isDyn && (<div className="field"><label htmlFor="c-text">ข้อความโฆษณา</label>
+          <textarea id="c-text" className="input c-text" value={text} maxLength={2000} placeholder="เช่น ทักแชทสอบถามสินค้าได้เลยครับ" onChange={(e) => setText(e.target.value)} /></div>)}
 
         {kind === "WEBSITE" && (
           <div className="field"><label htmlFor="c-link">ลิงก์เว็บไซต์ปลายทาง</label>
             <input id="c-link" className="input" value={link} placeholder="https://..." onChange={(e) => setLink(e.target.value)} /></div>
         )}
 
+        {crOpt && (
+          <div className={`c-dyn ${dynAllowed ? "" : "off"}`}>
+            <div>
+              <b>ชิ้นงานโฆษณาแบบไดนามิก</b>
+              <small>{dynAllowed
+                ? "ใส่รูป คลิป และข้อความได้หลายแบบ — Meta จะจับคู่ให้เองและเลือกชุดที่คนตอบสนองดีที่สุด"
+                : crOpt.dynamic_off_reason}</small>
+            </div>
+            <span className="c-dyn-l">{isDyn ? "เปิด" : "ปิด"}</span>
+            <button type="button" role="switch" aria-checked={isDyn} aria-label="ชิ้นงานโฆษณาแบบไดนามิก"
+              className={`c-switch ${isDyn ? "on" : ""}`} disabled={!dynAllowed} onClick={toggleDynamic} />
+          </div>
+        )}
+
+        {isDyn && crOpt ? (<>
+          <div className="c-label c-row-h"><span>🖼 รูป</span><span className={dynImages.length >= crOpt.max_images ? "c-cnt full" : "c-cnt"}>{dynImages.length} / {crOpt.max_images}</span></div>
+          <div className="c-grid" onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); dropMedia(e.dataTransfer.files); }}>
+            {dynImages.map((f, i) => (
+              <div key={`${f.name}-${i}`} className="c-th">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={imgUrls[i]} alt={f.name} />
+                <button type="button" className="c-th-x" aria-label={`เอารูป ${f.name} ออก`} onClick={() => { setDynImages(dynImages.filter((_, j) => j !== i)); setPvIdx(0); }}>✕</button>
+              </div>
+            ))}
+            {dynImages.length < crOpt.max_images && <button type="button" className="c-add" onClick={() => imgInput.current?.click()}>＋<br />เพิ่มรูป</button>}
+          </div>
+          <div className="c-label c-row-h"><span>🎬 คลิป</span><span className={dynVideos.length >= crOpt.max_videos ? "c-cnt full" : "c-cnt"}>{dynVideos.length} / {crOpt.max_videos}</span></div>
+          <div className="c-grid" onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); dropMedia(e.dataTransfer.files); }}>
+            {dynVideos.map((f, i) => (
+              <VideoThumb key={`${f.name}-${i}`} url={vidUrls[i]} file={f} onRemove={() => { setDynVideos(dynVideos.filter((_, j) => j !== i)); setPvIdx(0); }} />
+            ))}
+            {dynVideos.length < crOpt.max_videos && <button type="button" className="c-add" onClick={() => vidInput.current?.click()}>＋<br />เพิ่มคลิป</button>}
+          </div>
+          <small className="c-hint">คลิป MP4 / MOV ไม่เกิน {crOpt.max_video_mb}MB ต่อไฟล์ · รวมทั้งชุด {fmtMb(videoBytes)} / {crOpt.max_total_mb / 1024}GB · ลากรูปหรือคลิปมาวางในช่องได้</small>
+          <div className="c-bar"><i style={{ width: `${Math.min(100, (videoBytes / (crOpt.max_total_mb * MB)) * 100)}%` }} /></div>
+          {dynMsg && <div className="c-hint c-sched bad">{dynMsg}</div>}
+          <input ref={imgInput} type="file" multiple accept={IMAGE_ACCEPT} hidden onChange={(e) => { addMedia(e.target.files, "image"); e.target.value = ""; }} />
+          <input ref={vidInput} type="file" multiple accept={VIDEO_ACCEPT} hidden onChange={(e) => { addMedia(e.target.files, "video"); e.target.value = ""; }} />
+
+          <div className="c-label c-row-h"><span>ข้อความหลัก</span><span className="c-cnt">{texts.length} / {crOpt.max_bodies}</span></div>
+          {texts.map((t, i) => (
+            <div key={i} className="c-multi">
+              <textarea className="input c-text" value={t} maxLength={2000} aria-label={`ข้อความหลักแบบที่ ${i + 1}`}
+                placeholder={i === 0 ? "เช่น รับทำเว็บไซต์ ปรึกษาฟรี" : "ข้อความอีกแบบ"} onChange={(e) => setTexts(texts.map((x, j) => (j === i ? e.target.value : x)))} />
+              {texts.length > 1 && <button type="button" className="btn" aria-label={`ลบข้อความหลักแบบที่ ${i + 1}`} onClick={() => { setTexts(texts.filter((_, j) => j !== i)); setPvIdx(0); }}>✕</button>}
+            </div>
+          ))}
+          {texts.length < crOpt.max_bodies && <button type="button" className="btn c-more" onClick={() => setTexts([...texts, ""])}>＋ เพิ่มข้อความหลัก</button>}
+
+          <div className="c-label c-row-h"><span>พาดหัว <small className="c-hint">(ไม่ใส่ก็ได้)</small></span><span className="c-cnt">{titles.length} / {crOpt.max_titles}</span></div>
+          {titles.map((t, i) => (
+            <div key={i} className="c-multi">
+              <input className="input" value={t} maxLength={255} aria-label={`พาดหัวแบบที่ ${i + 1}`} placeholder="เช่น รับทำระบบ ERP / เว็บไซต์"
+                onChange={(e) => setTitles(titles.map((x, j) => (j === i ? e.target.value : x)))} />
+              <button type="button" className="btn" aria-label={`ลบพาดหัวแบบที่ ${i + 1}`} onClick={() => { setTitles(titles.filter((_, j) => j !== i)); setPvIdx(0); }}>✕</button>
+            </div>
+          ))}
+          {titles.length < crOpt.max_titles && <button type="button" className="btn c-more" onClick={() => setTitles([...titles, ""])}>＋ เพิ่มพาดหัว</button>}
+        </>) : (<>
         <div className="c-label">รูปโฆษณา</div>
         <div className={`c-drop ${dragOver ? "over" : ""}`}
           onDragOver={(e) => { e.preventDefault(); setDragOver(true); }} onDragLeave={() => setDragOver(false)}
@@ -236,6 +401,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
         {!file && (
           <input className="input" style={{ marginTop: 8, width: "100%" }} value={imageUrl} placeholder="หรือวางลิงก์รูป (ไม่ใส่ = ใช้รูปปกเพจ)" onChange={(e) => setImageUrl(e.target.value)} />
         )}
+        </>)}
 
         <div className="c-label">กลุ่มเป้าหมาย</div>
         {!audOpt ? (
@@ -296,7 +462,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
 
         <div className="c-actions">
           <button className="btn primary c-submit" disabled={problems.length > 0 || busy} onClick={submit}>
-            {busy ? "กำลังสร้าง… (ประมาณ 20 วินาที)" : "สร้างโฆษณา"}
+            {busy ? (isDyn && dynVideos.length ? "กำลังอัปโหลดและรอ Meta ประมวลผลคลิป… (อาจนานหลายนาที)" : "กำลังสร้าง… (ประมาณ 20 วินาที)") : "สร้างโฆษณา"}
           </button>
           {left != null && <span className="c-hint">วันนี้สร้างได้อีก {left} จาก {cur!.max_campaigns_per_day} แคมเปญ</span>}
         </div>
@@ -327,18 +493,32 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
         <p className="hint">หน้าตาโดยประมาณบนฟีด Facebook — เปลี่ยนตามที่กรอกทันที</p>
         <div className="fbp">
           <div className="fbp-h"><div className="fbp-av" /><div><b>{cur?.page_name ?? "เพจของคุณ"}</b><small>ได้รับการสนับสนุน</small></div></div>
-          <p className="fbp-text">{text || <span className="fbp-ph">ข้อความโฆษณาจะแสดงตรงนี้</span>}</p>
-          {previewImage
+          <p className="fbp-text">{(isDyn ? combo?.t : text) || <span className="fbp-ph">ข้อความโฆษณาจะแสดงตรงนี้</span>}</p>
+          {isDyn
+            ? combo
+              ? combo.m.type === "video"
+                ? <video className="fbp-img" src={combo.m.url} muted controls preload="metadata" />
+                // eslint-disable-next-line @next/next/no-img-element
+                : <img className="fbp-img" src={combo.m.url} alt="รูปโฆษณา" />
+              : <div className="fbp-img fbp-noimg">รูป / คลิปโฆษณา</div>
+            : previewImage
             // eslint-disable-next-line @next/next/no-img-element
             ? <img className="fbp-img" src={previewImage} alt="รูปโฆษณา" />
             : <div className="fbp-img fbp-noimg">รูปโฆษณา</div>}
           <div className="fbp-cta">
             <div><small>{kind === "MESSENGER" ? "MESSENGER" : (link.replace(/^https?:\/\//, "").split("/")[0] || "เว็บไซต์ของคุณ").toUpperCase()}</small>
-              <b>{name || "ชื่อแคมเปญ"}</b></div>
+              <b>{(isDyn && combo?.h) || name || "ชื่อแคมเปญ"}</b></div>
             <span>{kindInfo.cta}</span>
           </div>
         </div>
-        <p className="c-hint" style={{ textAlign: "center" }}>รูปที่ใช้: {imageSource}</p>
+        {isDyn && combos.length > 0 && (
+          <div className="c-pvnav">
+            <button type="button" className="btn" aria-label="ชุดก่อนหน้า" onClick={() => setPvIdx((pvIdx - 1 + combos.length) % combos.length)}>‹</button>
+            <span>ตัวอย่างชุดที่ {(pvIdx % combos.length) + 1} จาก {combos.length} ({media.length} สื่อ × {Math.max(1, filledTexts.length)} ข้อความ × {Math.max(1, filledTitles.length)} พาดหัว)</span>
+            <button type="button" className="btn" aria-label="ชุดถัดไป" onClick={() => setPvIdx((pvIdx + 1) % combos.length)}>›</button>
+          </div>
+        )}
+        <p className="c-hint" style={{ textAlign: "center" }}>{isDyn ? "ชิ้นงาน" : "รูปที่ใช้"}: {imageSource}</p>
 
         <div className="c-checks">
           <b>เช็คก่อนสร้าง</b>

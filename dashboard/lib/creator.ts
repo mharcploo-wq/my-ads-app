@@ -21,6 +21,19 @@ function pythonPath(): string {
 
 export interface CheckItem { key: string; label: string; ok: boolean; detail: string }
 
+/** ค่าจำกัดชิ้นงาน (ไดนามิก) — มาจาก server.py (หน้าเว็บแค่แสดง) */
+export interface CreativeOptions {
+  max_images: number;
+  max_videos: number;
+  max_bodies: number;
+  max_titles: number;
+  max_assets: number;
+  max_video_mb: number;
+  max_total_mb: number;
+  dynamic_kinds: string[];
+  dynamic_off_reason: string;
+}
+
 /** ตัวเลือกกลุ่มเป้าหมาย — มาจาก server.py (หน้าเว็บแค่แสดง) */
 export interface AudienceOptions {
   min_age: number;
@@ -45,6 +58,7 @@ export interface AgentStatus {
   page_name: string | null;
   page_cover: string | null;
   audience?: AudienceOptions;
+  creative?: CreativeOptions;
 }
 
 export interface CreateSpec {
@@ -59,6 +73,12 @@ export interface CreateSpec {
   end_time?: string;     // ว่าง = ไม่มีวันสิ้นสุด
   age_min?: number;      // ว่าง = ค่าเริ่มต้นของ server.py
   languages?: string[];  // รหัสภาษา เช่น ["th","en_us"] — ว่าง = ค่าเริ่มต้นของ server.py
+  // ชิ้นงานแบบไดนามิก — ตรวจจำนวน/ขนาดที่ server.py
+  dynamic?: boolean;
+  texts?: string[];
+  titles?: string[];
+  image_paths?: string[];
+  video_paths?: string[];
 }
 
 export interface CreateResult {
