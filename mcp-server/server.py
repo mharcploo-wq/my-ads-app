@@ -498,18 +498,24 @@ def _interest_items(interests: Any) -> tuple[list[dict[str, str]], list[str], st
 
 def _search_interests(words: list[str], have: list[dict[str, Any]] | None = None,
                       limit: int = MAX_INTERESTS) -> tuple[list[dict[str, Any]], list[str]]:
-    """ค้นคลังความสนใจของ Meta ทีละคำ (ไม่เอาซ้ำ) แล้วขอชื่อภาษาไทย → (ความสนใจ, คำที่หาไม่เจอ)"""
+    """ค้นคลังความสนใจของ Meta ทีละคำ (ไม่เอาซ้ำ ไม่เอาตัวที่ Meta เลิกใช้) พร้อมชื่อภาษาไทย
+    → (ความสนใจ, คำที่หาไม่เจอ)"""
     out = list(have or [])
     seen = {x["id"] for x in out}
     missed: list[str] = []
-    for w in words:
-        if len(out) >= limit:
-            break
+    pools: list[tuple[str, list[dict[str, Any]]]] = []
+    for w in words[:max(0, limit - len(out))]:
         # ค้นด้วยภาษาเดียวกับคำค้น — คำอังกฤษค้นด้วย th_TH จะไม่เจอหมวดหลัก (ชื่อหมวดถูกแปลเป็นไทย)
         # เช่น "coffee" ได้ "Arabic coffee" แทน "Coffee" 535 ล้านคน
         ok, body = _graph_get("search", {"type": "adinterest", "q": w, "limit": 5,
                                          "locale": "en_US" if w.isascii() else "th_TH"})
-        cands = [r for r in (body.get("data", []) if ok else []) if str(r.get("id")) not in seen]
+        pools.append((w, body.get("data", []) if ok else []))
+    # ผลค้นยังมีตัวที่ Meta เลิกใช้ปนมา (เช่น Payroll) — ใส่ใน Ad Set แล้วโดนปฏิเสธ code 100/1870247
+    valid, th = _interest_validity([str(r.get("id")) for _, c in pools for r in c if r.get("id")])
+    for w, found in pools:
+        if len(out) >= limit:
+            break
+        cands = [r for r in found if str(r.get("id")) not in seen and valid.get(str(r.get("id")), True)]
         # ชื่อตรงคำค้น → หมวดหลัก (ไม่ใช่ชื่องาน/แบรนด์ใต้ "ความสนใจเพิ่มเติม") ตามลำดับของ Meta
         # → ไม่มีเลยค่อยเอาตัวที่คนสนใจมากสุดใน 5 อันดับ
         exact = [r for r in cands if str(r.get("name", "")).strip().lower() == w.lower()]
@@ -520,17 +526,29 @@ def _search_interests(words: list[str], have: list[dict[str, Any]] | None = None
             missed.append(w)
             continue
         seen.add(str(hit["id"]))
-        out.append({"id": str(hit["id"]), "name": hit.get("name", w), "keyword": w,
+        # ชื่อภาษาไทยให้หน้าแอป (ขอไม่ได้ก็ใช้ชื่ออังกฤษไป)
+        out.append({"id": str(hit["id"]), "name": th.get(str(hit["id"])) or hit.get("name", w), "keyword": w,
                     "size_lower": hit.get("audience_size_lower_bound"),
                     "size_upper": hit.get("audience_size_upper_bound")})
-    new = [x["id"] for x in out[len(have or []):]]
-    if new:  # ชื่อภาษาไทยให้หน้าแอป (ขอไม่ได้ก็ใช้ชื่ออังกฤษไป)
-        ok, body = _graph_get("search", {"type": "adinterestvalid", "interest_fbid_list": json.dumps(new),
-                                         "locale": "th_TH"})
-        th = {str(r.get("id")): r.get("name") for r in (body.get("data", []) if ok else []) if r.get("name")}
-        for x in out:
-            x["name"] = th.get(x["id"], x["name"])
     return out, missed
+
+
+def _interest_validity(ids: list[str]) -> tuple[dict[str, bool], dict[str, str]]:
+    """ถาม Meta ว่าความสนใจแต่ละตัวยังใช้ได้ไหม + ชื่อภาษาไทย → ({id: ใช้ได้}, {id: ชื่อไทย})
+    ถาม Meta ไม่ได้ = ไม่รู้ → ไม่ใส่ใน dict (ผู้เรียกถือว่าใช้ได้ ปล่อยให้ Meta ตัดสินตอนสร้าง)"""
+    ids = list(dict.fromkeys(i for i in ids if i))
+    valid: dict[str, bool] = {}
+    th: dict[str, str] = {}
+    for i in range(0, len(ids), 50):
+        ok, body = _graph_get("search", {"type": "adinterestvalid", "interest_fbid_list": json.dumps(ids[i:i + 50]),
+                                         "locale": "th_TH"})
+        for r in (body.get("data", []) if ok else []):
+            rid = str(r.get("id"))
+            if isinstance(r.get("valid"), bool):
+                valid[rid] = r["valid"]
+            if r.get("name"):
+                th[rid] = r["name"]
+    return valid, th
 
 
 def _resolve_interests(interests: Any) -> tuple[list[dict[str, str]], str | None]:
@@ -538,6 +556,11 @@ def _resolve_interests(interests: Any) -> tuple[list[dict[str, str]], str | None
     known, words, err = _interest_items(interests)
     if err:
         return [], err
+    if known:  # รายการที่หน้าแอปส่งมาอาจค้างจากก่อนที่ Meta จะเลิกใช้ — บอกก่อนสร้างอะไรลง Meta
+        valid, _ = _interest_validity([x["id"] for x in known])
+        gone = [x["name"] for x in known if valid.get(x["id"]) is False]
+        if gone:
+            return [], "ความสนใจที่ Meta เลิกใช้แล้ว: " + ", ".join(gone) + " — ลบออกแล้วกดสร้างใหม่"
     if not words:
         return known, None
     found, missed = _search_interests(words, known)
