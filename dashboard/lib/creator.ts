@@ -66,6 +66,7 @@ export interface SuggestResult {
   model?: string;
   keywords?: string[];
   missed?: string[];
+  skipped?: string[];    // ช่องพิมพ์คำค้นเอง: คำที่เกินเพดาน ไม่ได้ค้น
   interests?: Interest[];
 }
 

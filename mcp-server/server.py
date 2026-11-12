@@ -26,6 +26,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -64,6 +65,8 @@ parser.add_argument("--create-json", metavar="PATH", default=None,
                     help="(หน้าแอป) สร้างครบชุดจากไฟล์ JSON แล้วพิมพ์ผลเป็น JSON")
 parser.add_argument("--suggest-json", metavar="PATH", default=None,
                     help="(หน้าแอป) ให้ AI คิดความสนใจจากข้อความในไฟล์ JSON แล้วพิมพ์ผลเป็น JSON")
+parser.add_argument("--search-json", metavar="PATH", default=None,
+                    help="(หน้าแอป) ค้นความสนใจจากคำค้นในไฟล์ JSON (ไม่ใช้ AI) แล้วพิมพ์ผลเป็น JSON")
 ARGS, _ = parser.parse_known_args()
 
 AGENT = (ARGS.agent or os.getenv("AGENT") or "claude").lower()
@@ -516,12 +519,13 @@ def _search_interests(words: list[str], have: list[dict[str, Any]] | None = None
         if len(out) >= limit:
             break
         cands = [r for r in found if str(r.get("id")) not in seen and valid.get(str(r.get("id")), True)]
-        # ชื่อตรงคำค้น → หมวดหลัก (ไม่ใช่ชื่องาน/แบรนด์ใต้ "ความสนใจเพิ่มเติม") ตามลำดับของ Meta
-        # → ไม่มีเลยค่อยเอาตัวที่คนสนใจมากสุดใน 5 อันดับ
-        exact = [r for r in cands if str(r.get("name", "")).strip().lower() == w.lower()]
-        core = [r for r in cands if not set(r.get("path") or []) & EXTRA_INTERESTS]
-        hit = (exact or core or [max(cands, key=lambda r: r.get("audience_size_lower_bound") or 0)])[0] \
-            if cands else None
+        # ชื่อตรงคำค้น → หมวดหลักที่มีคำตรงกับคำค้น → ตัวที่คำตรงมากสุด (เสมอกันเอาตามลำดับของ Meta)
+        # ไม่มีคำตรงเลย = ไม่เอา: Meta ค้นแบบคลุมเครือ เช่น "ERP" ได้ Reptiles · "Business owner" ได้ Air travel
+        exact = [r for r in cands if _base_name(r.get("name", "")) == w.strip().lower()]
+        scored = [(s, r) for r in cands if (s := _relevance(w, str(r.get("name", "")))) > 0]
+        core = [r for _, r in scored if not set(r.get("path") or []) & EXTRA_INTERESTS]
+        hit = exact[0] if exact else core[0] if core else \
+            max(scored, key=lambda x: x[0])[1] if scored else None
         if not hit:
             missed.append(w)
             continue
@@ -531,6 +535,31 @@ def _search_interests(words: list[str], have: list[dict[str, Any]] | None = None
                     "size_lower": hit.get("audience_size_lower_bound"),
                     "size_upper": hit.get("audience_size_upper_bound")})
     return out, missed
+
+
+def _base_name(name: str) -> str:
+    """ชื่อความสนใจไม่เอาหมวดในวงเล็บท้าย — "กาแฟ (อาหารและเครื่องดื่ม)" → "กาแฟ" """
+    return str(name).split(" (")[0].strip().lower()
+
+
+def _relevance(word: str, name: str) -> float:
+    """คำค้นกับชื่อความสนใจเกี่ยวกันแค่ไหน (0 = ไม่มีคำตรงกันเลย)"""
+    w, n = word.strip().lower(), _base_name(name)
+    if not w or not n:
+        return 0
+    if not w.isascii():
+        if n.isascii():
+            return 0.5   # คำไทยแต่ Meta ไม่มีชื่อไทย (เช่น Accounting software) — เทียบไม่ได้ ให้ผ่านแบบอันดับท้าย
+        return 1 if w in n or n in w else 0   # ไทยไม่เว้นวรรคระหว่างคำ → ดูว่าอยู่ในกันและกัน
+    stem = lambda t: t[:-1] if len(t) > 3 and t.endswith("s") else t  # noqa: E731
+    wt = [stem(t) for t in re.findall(r"[a-z0-9]+", w)]
+    nt = [stem(t) for t in re.findall(r"[a-z0-9]+", n)]
+    if len(wt) == 1 and len(nt) > 1 and "".join(t[0] for t in nt) == wt[0]:
+        return 1   # ตัวย่อ: "ERP" = Enterprise Resource Planning
+    score = float(len(set(wt) & set(nt)))
+    if not score and any(len(a) >= 3 and a in b for a in wt for b in nt):
+        score = 0.5   # อยู่ในคำ เช่น "erp" ใน "OpenERP"
+    return score
 
 
 def _interest_validity(ids: list[str]) -> tuple[dict[str, bool], dict[str, str]]:
@@ -611,8 +640,7 @@ def _audience(age_min: Any = None, languages: Any = None, age_max: Any = None,
         targeting["flexible_spec"] = [{"interests": [{"id": x["id"], "name": x["name"]} for x in interests]}]
     ages = f"อายุ {age}–{age_hi} (แนะนำ)" if age_hi < NO_MAX_AGE else f"อายุ {age}+"
     label = f"{ages} · ภาษา " + " / ".join(LANGUAGES[k][1] for k in resolved)
-    if interests:
-        label += f" · ความสนใจ {len(interests)} รายการ (แนะนำ)"
+    label += f" · ความสนใจ {len(interests)} รายการ (แนะนำ)" if interests else " · ไม่มีความสนใจ (Meta หาเอง)"
     label += f" · คลังเนื้อหา{BRAND_SAFETY_LABEL}"
     return {"age_min": age, "age_max": age_hi, "interests": interests, "targeting": targeting, "_label": label}, None
 
@@ -1383,6 +1411,30 @@ def suggest_interests(spec: dict[str, Any]) -> dict[str, Any]:
             "interests": found}
 
 
+def search_interests_app(spec: dict[str, Any]) -> dict[str, Any]:
+    """(ช่องพิมพ์คำค้นเองในหน้าแอป) คำค้น → ความสนใจในคลังของ Meta — ไม่ใช้ AI
+    spec: words (list หรือข้อความคั่นด้วย ,) · have (id ที่เลือกไว้แล้ว ไม่เอาซ้ำ และนับรวมเพดาน)"""
+    raw = spec.get("words") or []
+    if isinstance(raw, str):
+        raw = raw.replace("，", ",").split(",")
+    words = list(dict.fromkeys(str(w).strip()[:60] for w in raw if str(w).strip()))
+    have = [{"id": str(i)} for i in (spec.get("have") or []) if str(i).isdigit()]
+    if not words:
+        return {"success": False, "error": "พิมพ์คำค้นก่อน เช่น ERP, บัญชี (คั่นหลายคำด้วย ,)"}
+    room = MAX_INTERESTS - len(have)
+    if room <= 0:
+        return {"success": False, "error": f"ความสนใจครบ {MAX_INTERESTS} รายการแล้ว — ลบออกก่อนแล้วค่อยค้นเพิ่ม"}
+    found, missed = _search_interests(words, have)
+    found = found[len(have):]
+    skipped = words[room:]   # เกินเพดาน ไม่ได้ค้น
+    log_action("search_interests", bool(found), {"words": words, "interests": [x["name"] for x in found],
+                                                 "missed": missed, "skipped": skipped})
+    if not found:
+        return {"success": False, "error": "ไม่เจอในคลังของ Meta: " + ", ".join(missed or words)
+                + " — ลองคำอื่น (ภาษาอังกฤษมักเจอง่ายกว่า)"}
+    return {"success": True, "interests": found, "missed": missed, "skipped": skipped}
+
+
 def build_server():
     from mcp.server.mcpserver import MCPServer
 
@@ -1438,11 +1490,13 @@ def run_http(server, host: str, port: int) -> None:
 
 
 if __name__ == "__main__":
-    if ARGS.status or ARGS.create_json or ARGS.suggest_json:
+    if ARGS.status or ARGS.create_json or ARGS.suggest_json or ARGS.search_json:
         if ARGS.status:
             out = app_status()
         elif ARGS.suggest_json:
             out = suggest_interests(json.loads(Path(ARGS.suggest_json).read_text(encoding="utf-8")))
+        elif ARGS.search_json:
+            out = search_interests_app(json.loads(Path(ARGS.search_json).read_text(encoding="utf-8")))
         else:
             out = create_full(json.loads(Path(ARGS.create_json).read_text(encoding="utf-8")))
         sys.stdout.reconfigure(encoding="utf-8")
