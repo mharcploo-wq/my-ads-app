@@ -105,7 +105,7 @@ MCP_HTTP_TOKEN = os.getenv("MCP_HTTP_TOKEN", "").strip()            # กุญ�
 MCP_PUBLIC_HOST = os.getenv("MCP_PUBLIC_HOST", "").strip()          # เช่น xxxx.ngrok-free.app
 
 BASE_URL = f"https://graph.facebook.com/{GRAPH_API_VERSION}"
-__version__ = "0.8.1"
+__version__ = "0.8.2"
 REQUIRED_STATUS = "PAUSED"           # ห้ามเปลี่ยน
 TH_TZ = timezone(timedelta(hours=7))  # "วันนี้" นับตามเวลาไทย
 HTTP_TIMEOUT = 20
