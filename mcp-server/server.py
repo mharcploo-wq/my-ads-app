@@ -157,15 +157,25 @@ def _meta_error(body: Any) -> str:
     return str(body)[:300]
 
 
+def _graph_body(r: requests.Response) -> tuple[bool, Any]:
+    """แปลงคำตอบ Meta — ถ้าไม่ใช่ JSON (เช่นหน้า error ของ gateway) เก็บ HTTP status + เนื้อหาไว้เป็นหลักฐาน"""
+    try:
+        body = r.json()
+    except ValueError:
+        snippet = " ".join(r.text.split())[:200] or "(ว่าง)"
+        return False, {"error": {"message": f"Meta ตอบกลับไม่ใช่ JSON (HTTP {r.status_code}): {snippet}",
+                                 "non_json": True}}
+    return (r.status_code == 200 and "error" not in body), body
+
+
 def _graph_get(path: str, params: dict[str, Any] | None = None) -> tuple[bool, Any]:
     p = dict(params or {})
     p["access_token"] = META_ACCESS_TOKEN
     try:
         r = requests.get(f"{BASE_URL}/{path}", params=p, timeout=HTTP_TIMEOUT)
-        body = r.json()
     except Exception as e:  # noqa: BLE001
         return False, {"error": {"message": f"เชื่อมต่อ Meta ไม่ได้: {e}"}}
-    return (r.status_code == 200 and "error" not in body), body
+    return _graph_body(r)
 
 
 def _graph_post(path: str, data: dict[str, Any]) -> tuple[bool, Any]:
@@ -176,10 +186,9 @@ def _graph_post(path: str, data: dict[str, Any]) -> tuple[bool, Any]:
     payload["access_token"] = META_ACCESS_TOKEN
     try:
         r = requests.post(f"{BASE_URL}/{path}", data=payload, timeout=HTTP_TIMEOUT)
-        body = r.json()
     except Exception as e:  # noqa: BLE001
         return False, {"error": {"message": f"เชื่อมต่อ Meta ไม่ได้: {e}"}}
-    return (r.status_code == 200 and "error" not in body), body
+    return _graph_body(r)
 
 
 def _graph_get_all(path: str, params: dict[str, Any], max_pages: int = 20) -> tuple[bool, list[dict], Any]:
@@ -587,8 +596,12 @@ def _upload_image_bytes(content: bytes) -> tuple[bool, str]:
     """อัปโหลดไฟล์รูปเข้า /adimages ได้ image_hash กลับมา"""
     if len(content) > 30 * 1024 * 1024:
         return False, "รูปใหญ่เกิน 30MB"
-    ok, body = _graph_post(f"{META_AD_ACCOUNT_ID}/adimages",
-                           {"bytes": base64.b64encode(content).decode("ascii")})
+    data = {"bytes": base64.b64encode(content).decode("ascii")}
+    ok, body = _graph_post(f"{META_AD_ACCOUNT_ID}/adimages", data)
+    if not ok and body.get("error", {}).get("non_json"):
+        # คำตอบเสียระหว่างทาง ลองใหม่ 1 ครั้ง (อัปโหลดซ้ำได้ hash เดิม ไม่เกิดของซ้ำ)
+        time.sleep(3)
+        ok, body = _graph_post(f"{META_AD_ACCOUNT_ID}/adimages", data)
     if not ok:
         return False, f"อัปโหลดรูปเข้า Meta ไม่ได้: {_meta_error(body)}"
     images = body.get("images", {})
