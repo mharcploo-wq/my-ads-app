@@ -1294,10 +1294,11 @@ def _create_full_live(spec: dict[str, Any], name: str, budget: int,
                         f"&selected_campaign_ids={camp['campaign_id']}",
         live_next={
             "live_name": live["name"], "start_time": live["start_time"], "text": text,
+            "adset_name": adset["name"],   # ให้ผู้ใช้เทียบชื่อใน Ads Manager — กันเปิดฉบับร่างชุดอื่นแทน
             "adset_url": f"https://adsmanager.facebook.com/adsmanager/manage/adsets/edit?act={act}"
                          f"&selected_campaign_ids={camp['campaign_id']}&selected_adset_ids={adset['adset_id']}",
             "steps": [
-                "กดปุ่มด้านล่าง → เปิดชุดโฆษณานี้ใน Ads Manager",
+                f"กดปุ่มด้านล่าง → เปิดชุดโฆษณา \"{adset['name']}\" ใน Ads Manager (ชื่อต้องตรง และไม่มีป้าย \"เป็นฉบับร่าง\")",
                 "เปิดสวิตช์ \"โฆษณาวิดีโอถ่ายทอดสด\" → เลือก \"วิดีโอถ่ายทอดสดที่กำลังจะมาถึง\"",
                 f"สร้างโฆษณาในชุดนี้ → ชิ้นงาน \"ใช้รายการที่มีอยู่แล้ว\" → เลือก \"{live['name']}\"",
                 "วางข้อความโฆษณา (ปุ่มคัดลอก) → กดเผยแพร่ · ยังหยุดอยู่จนคุณกดเปิด",

@@ -135,6 +135,7 @@ export interface LivesResult { success: boolean; error?: string; lives: LiveEven
 /** สร้าง Live เสร็จ → สิ่งที่ผู้ใช้ต้องทำต่อใน Ads Manager (API ผูก Live นัดหมายไม่ได้) */
 export interface LiveNext {
   live_name: string; start_time: string; text: string; adset_url: string; steps: string[]; lead_hours: number;
+  adset_name: string;   // ชื่อชุดที่ต้องเปิดใน Ads Manager (ให้ผู้ใช้เทียบ)
 }
 
 export interface CreateSpec {

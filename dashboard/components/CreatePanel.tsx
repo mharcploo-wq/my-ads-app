@@ -762,6 +762,13 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
             {result.success && result.live_next && (
               <div className="c-next">
                 <b>ทำต่อใน Ads Manager</b>
+                {result.live_next.adset_name && (
+                  <div className="c-target">
+                    🎯 ชุดที่ต้องเปิด: <b>{result.live_next.adset_name}</b>
+                    {result.adset_id && <span className="c-target-id"> · เลข {result.adset_id}</span>}
+                    <small>⚠ ถ้า Ads Manager ขึ้นป้าย &quot;เป็นฉบับร่าง&quot; หรือชื่อไม่ตรงนี้ = เปิดผิดชุด (ฉบับร่างที่สร้างเองใน Ads Manager ไม่มีความสนใจจากแอป)</small>
+                  </div>
+                )}
                 <ol>{result.live_next.steps.map((s, i) => <li key={i}>{s}</li>)}</ol>
                 <div className="c-actions">
                   <a className="btn primary" href={result.live_next.adset_url} target="_blank" rel="noreferrer">↗ เปิดชุดโฆษณาใน Ads Manager</a>
