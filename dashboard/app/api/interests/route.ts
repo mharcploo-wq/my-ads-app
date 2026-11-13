@@ -3,37 +3,42 @@ import { promises as fs } from "fs";
 import os from "os";
 import path from "path";
 import { randomUUID } from "crypto";
-import { isAgentId, isLocalRequest, runCreator, SuggestResult } from "@/lib/creator";
+import { isAgentId, isLocalRequest, ReachResult, runCreator, SuggestResult } from "@/lib/creator";
 
 export const dynamic = "force-dynamic";
 
 /** หาความสนใจให้หน้าสร้างโฆษณา (หน้าเว็บแค่แสดงผล — server.py ตัดสินทั้งหมด)
  *  - mode "ai" (ปุ่ม ✨): {agent, ai_agent?, texts[], titles[], link_url?} — ai_agent = ยืม AI ของ agent อื่นเมื่อ AI ของตัวเองใช้ไม่ได้
  *  - mode "search" (ช่องพิมพ์คำค้น): {agent, ai_agent?, text, have[], texts[], titles[], link_url?}
- *    คำสั้นคั่นด้วย , = ค้นตรงใน Meta · ประโยคบอกความต้องการ = server.py ให้ AI อ่านก่อน (ตัดสินที่ server.py) */
+ *    คำสั้นคั่นด้วย , = ค้นตรงใน Meta · ประโยคบอกความต้องการ = server.py ให้ AI อ่านก่อน (ตัดสินที่ server.py)
+ *  - mode "reach" (แถบรวมคนในไทย): {agent, ids[]} — ไม่ใช้ AI */
 export async function POST(req: Request) {
   if (!isLocalRequest(req)) return NextResponse.json({ ok: false, error: "ใช้ได้จากเครื่องนี้เท่านั้น" }, { status: 403 });
   const body = (await req.json().catch(() => null)) as {
     agent?: string; mode?: string; ai_agent?: string; text?: unknown;
-    texts?: unknown; titles?: unknown; link_url?: unknown; words?: unknown; have?: unknown;
+    texts?: unknown; titles?: unknown; link_url?: unknown; words?: unknown; have?: unknown; ids?: unknown;
   } | null;
   const agent = body?.agent ?? "";
   if (!body || !isAgentId(agent)) return NextResponse.json({ ok: false, error: "เลือกผู้สร้างไม่ถูกต้อง" }, { status: 400 });
   const list = (v: unknown) => (Array.isArray(v) ? v.map((x) => String(x).trim()).filter(Boolean) : []);
   const search = body.mode === "search";
-  const runner = body.ai_agent ? body.ai_agent : agent;
+  const reach = body.mode === "reach";
+  const runner = body.ai_agent && !reach ? body.ai_agent : agent;
   if (!isAgentId(runner)) return NextResponse.json({ ok: false, error: "เลือก AI ไม่ถูกต้อง" }, { status: 400 });
   const copy = { texts: list(body.texts), titles: list(body.titles), link_url: String(body.link_url ?? "").trim() };
-  const spec = search
-    ? { text: String(body.text ?? "").slice(0, 500), words: list(body.words), have: list(body.have), ...copy }
-    : copy;
+  const spec = reach
+    ? { ids: list(body.ids) }
+    : search
+      ? { text: String(body.text ?? "").slice(0, 500), words: list(body.words), have: list(body.have), ...copy }
+      : copy;
+  const flag = reach ? "--reach-json" : search ? "--search-json" : "--suggest-json";
 
   const tmp = path.join(os.tmpdir(), `ads-suggest-${randomUUID()}`);
   await fs.mkdir(tmp, { recursive: true });
   try {
     const file = path.join(tmp, "spec.json");
     await fs.writeFile(file, JSON.stringify(spec), "utf8");
-    const result = await runCreator<SuggestResult>(runner, [search ? "--search-json" : "--suggest-json", file], 120_000);
+    const result = await runCreator<SuggestResult | ReachResult>(runner, [flag, file], 120_000);
     return NextResponse.json({ ok: true, result });
   } catch (e) {
     return NextResponse.json({ ok: false, error: (e as Error).message }, { status: 500 });

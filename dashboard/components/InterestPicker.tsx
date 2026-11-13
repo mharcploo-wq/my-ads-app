@@ -4,7 +4,13 @@ import { Dispatch, RefObject, SetStateAction, useEffect, useState } from "react"
 type AgentId = "claude" | "manus" | "chatgpt";
 
 /** ความสนใจจากคลังของ Meta · gone = Meta เลิกใช้แล้ว (ต้องลบก่อนบันทึก) */
-export interface Interest { id: string; name: string; size_lower?: number | null; size_upper?: number | null; gone?: boolean }
+export interface Interest {
+  id: string; name: string; gone?: boolean;
+  size_lower?: number | null; size_upper?: number | null;   // ทั่วโลก
+  th_lower?: number | null; th_upper?: number | null;       // คนในไทย อายุ 20+
+}
+/** คนในไทยที่สนใจอย่างน้อย 1 อย่างในชุด (server.py interests_reach) */
+interface Reach { lower: number; upper: number; share?: number | null; age_min?: number }
 export interface PickerAI { provider: string; label: string; ready: boolean; missing: string | null }
 /** ส่วนของสถานะ agent ที่กล่องนี้ใช้ (มาจาก /api/agents) */
 export interface PickerAgent { agent: AgentId; prefix: string; audience?: { ai: PickerAI } }
@@ -12,11 +18,13 @@ export interface AdCopy { texts: string[]; titles: string[]; link_url: string }
 /** อายุ/ภาษาที่ AI แนะนำ — server.py ตัดให้อยู่ในช่วงที่ Meta รับแล้ว */
 export interface AudienceHint { age_min: number; age_max: number; languages: string[]; label: string; reason: string }
 
-/** ขนาดกลุ่มคนจาก Meta เช่น 150,000,000–176,000,000 → "≈150–176 ล้าน" · 86,760–102,030 → "≈87–102 พัน" */
+/** ขนาดกลุ่มคนจาก Meta เช่น 150,000,000–176,000,000 → "≈150–176 ล้าน" · 1,100,000–1,300,000 → "≈1.1–1.3 ล้าน"
+ *  · 86,760–102,030 → "≈87–102 พัน" */
 export const fmtSize = (lo?: number | null, hi?: number | null) => {
   if (!lo || !hi) return "";
   const [d, unit] = hi >= 1e6 ? [1e6, "ล้าน"] : [1e3, "พัน"];
-  return `≈${Math.max(1, Math.round(lo / d))}–${Math.max(1, Math.round(hi / d))} ${unit}`;
+  const n = (v: number) => (hi / d < 10 ? String(Math.round((v / d) * 10) / 10) : String(Math.max(1, Math.round(v / d))));
+  return `≈${n(lo)}–${n(hi)} ${unit}`;
 };
 
 /** กล่องเลือกความสนใจ — ใช้ทั้งตอนสร้างโฆษณาและตอนเพิ่มให้ Ad Set ที่สร้างไปแล้ว
@@ -48,6 +56,30 @@ export default function InterestPicker({ agent, agents, interests, setInterests,
   const fallback = (!ai?.ready || aiDown) ? (claudeReady.find((a) => a.agent === "claude") ?? claudeReady[0] ?? null) : null;
   useEffect(() => { setAiDown(false); setAiMsg(null); }, [agent]);
   useEffect(() => { onBusy?.(aiBusy || kwBusy); }, [aiBusy, kwBusy, onBusy]);
+
+  // รวมคนในไทยของทั้งชุด — ถาม Meta ใหม่เมื่อรายการเปลี่ยน (รอให้หยุดแก้ก่อนสักครู่)
+  const [reach, setReach] = useState<Reach | null>(null);
+  const [reachBusy, setReachBusy] = useState(false);
+  const reachKey = interests.filter((x) => !x.gone).map((x) => x.id).join(",");
+  useEffect(() => {
+    setReach(null);
+    if (!reachKey) return;
+    const ctl = new AbortController();
+    const t = setTimeout(async () => {
+      setReachBusy(true);
+      try {
+        const r = await fetch("/api/interests", {
+          method: "POST", headers: { "content-type": "application/json" }, signal: ctl.signal,
+          body: JSON.stringify({ agent, mode: "reach", ids: reachKey.split(",") }),
+        });
+        const j = await r.json();
+        if (j.ok && j.result.success) setReach(j.result);
+      } catch { /* ถามไม่ได้ = ไม่แสดงแถบ */ } finally {
+        if (!ctl.signal.aborted) setReachBusy(false);
+      }
+    }, 700);
+    return () => { clearTimeout(t); ctl.abort(); setReachBusy(false); };
+  }, [agent, reachKey]);
 
   /** ปุ่ม ✨ — via = ยืม AI ของ agent อื่น */
   async function suggest(via?: PickerAgent) {
@@ -128,11 +160,22 @@ export default function InterestPicker({ agent, agents, interests, setInterests,
         <div className="c-chips">
           {interests.map((it) => (
             <span key={it.id} className={`c-itag ${it.gone ? "gone" : ""}`} title={it.gone ? "Meta เลิกใช้ความสนใจนี้แล้ว — ต้องลบออกก่อนบันทึก" : undefined}>
-              {it.gone && "⚠ "}{it.name} {fmtSize(it.size_lower, it.size_upper) && <small>{fmtSize(it.size_lower, it.size_upper)}</small>}
+              {it.gone && "⚠ "}{it.name}{" "}
+              {fmtSize(it.th_lower, it.th_upper)
+                ? <small title="คนในไทย อายุ 20+ ที่ Meta ส่งโฆษณาถึงได้ต่อเดือน">ไทย {fmtSize(it.th_lower, it.th_upper)}</small>
+                : fmtSize(it.size_lower, it.size_upper) && <small>ทั่วโลก {fmtSize(it.size_lower, it.size_upper)}</small>}
               {it.gone && <small>Meta เลิกใช้แล้ว</small>}
               <button type="button" aria-label={`ลบความสนใจ ${it.name}`} onClick={() => setInterests(interests.filter((x) => x.id !== it.id))}>✕</button>
             </span>
           ))}
+        </div>
+      )}
+      {(reach || reachBusy) && (
+        <div className="c-reach">
+          {reachBusy || !reach ? "👥 กำลังถาม Meta ว่ากลุ่มนี้มีคนในไทยเท่าไร…" : <>
+            👥 รวมคนในไทยที่สนใจอย่างน้อย 1 อย่าง <b>{fmtSize(reach.lower, reach.upper)} คน</b>
+            {reach.share != null && <small> · ราว {reach.share}% ของคนอายุ {reach.age_min ?? 20}+ ในไทยบน Facebook/Instagram</small>}
+          </>}
         </div>
       )}
       {ai && !ai.ready && <div className="c-warn">{ai.missing}</div>}

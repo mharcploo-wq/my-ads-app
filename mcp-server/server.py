@@ -67,6 +67,8 @@ parser.add_argument("--suggest-json", metavar="PATH", default=None,
                     help="(หน้าแอป) ให้ AI คิดความสนใจจากข้อความในไฟล์ JSON แล้วพิมพ์ผลเป็น JSON")
 parser.add_argument("--search-json", metavar="PATH", default=None,
                     help="(หน้าแอป) ค้นความสนใจจากคำค้นในไฟล์ JSON (ไม่ใช้ AI) แล้วพิมพ์ผลเป็น JSON")
+parser.add_argument("--reach-json", metavar="PATH", default=None,
+                    help="(หน้าแอป) ขนาดคนในไทยของความสนใจทั้งชุดจากไฟล์ JSON แล้วพิมพ์ผลเป็น JSON")
 parser.add_argument("--adset-json", metavar="PATH", default=None,
                     help="(หน้าแอป) อ่าน/บันทึกความสนใจของ Ad Set ที่สร้างไปแล้ว (เฉพาะที่หยุดอยู่) แล้วพิมพ์ผลเป็น JSON")
 ARGS, _ = parser.parse_known_args()
@@ -536,7 +538,55 @@ def _search_interests(words: list[str], have: list[dict[str, Any]] | None = None
         out.append({"id": str(hit["id"]), "name": th.get(str(hit["id"])) or hit.get("name", w), "keyword": w,
                     "size_lower": hit.get("audience_size_lower_bound"),
                     "size_upper": hit.get("audience_size_upper_bound")})
+    _with_th_reach(out[len(have or []):])
     return out, missed
+
+
+TH_REACH_AGE_MIN = MIN_AGE   # ขนาดคนในไทย = อายุ 20+ ทั้งประเทศ (ก่อนกรองอายุ/ภาษาของโฆษณา)
+TH_REACH_WORKERS = 6         # ถาม Meta พร้อมกันกี่รายการ (รายการละ ~1 วินาที)
+
+
+def _th_reach(interest_ids: list[str] | None) -> tuple[int, int] | None:
+    """คนในไทยที่ Meta ส่งโฆษณาถึงได้ (ต่อเดือน) → (ต่ำ, สูง) · interest_ids = None/[] คือทั้งประเทศ
+    หลายรายการ = คนที่สนใจอย่างน้อย 1 อย่าง (OR แบบที่ Ad Set ใช้) · ถาม Meta ไม่ได้ = None"""
+    spec: dict[str, Any] = {"geo_locations": {"countries": ["TH"]}, "age_min": TH_REACH_AGE_MIN}
+    if interest_ids:
+        spec["flexible_spec"] = [{"interests": [{"id": i} for i in interest_ids]}]
+    ok, body = _graph_get(f"{META_AD_ACCOUNT_ID}/delivery_estimate",
+                          {"targeting_spec": json.dumps(spec), "optimization_goal": "REACH"})
+    d = (body.get("data") or [{}])[0] if ok and isinstance(body, dict) else {}
+    lo, hi = d.get("estimate_mau_lower_bound"), d.get("estimate_mau_upper_bound")
+    return (int(lo), int(hi)) if isinstance(lo, int) and isinstance(hi, int) and hi > 0 else None
+
+
+def _with_th_reach(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """ใส่ขนาดคนในไทย (th_lower/th_upper) ให้ความสนใจแต่ละรายการ — ถามพร้อมกัน · ถามไม่ได้ก็ข้ามไป"""
+    todo = [x for x in items if str(x.get("id", "")).isdigit()]
+    if not todo:
+        return items
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=TH_REACH_WORKERS) as pool:
+        sizes = list(pool.map(lambda x: _th_reach([str(x["id"])]), todo))
+    for x, size in zip(todo, sizes):
+        if size:
+            x["th_lower"], x["th_upper"] = size
+    return items
+
+
+def interests_reach(spec: dict[str, Any]) -> dict[str, Any]:
+    """(แถบ "รวมคนในไทย" ในหน้าแอป) ความสนใจทั้งชุด → คนในไทยที่สนใจอย่างน้อย 1 อย่าง เทียบกับทั้งประเทศ
+    spec: ids[] (id ความสนใจ)"""
+    ids = list(dict.fromkeys(str(i) for i in (spec.get("ids") or []) if str(i).isdigit()))[:MAX_INTERESTS]
+    if not ids:
+        return {"success": False, "error": "ยังไม่มีความสนใจ"}
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        total, everyone = pool.map(_th_reach, [ids, None])
+    if not total:
+        return {"success": False, "error": "ถามขนาดกลุ่มจาก Meta ไม่ได้ — ลองใหม่อีกครั้ง"}
+    share = round(100 * (total[0] + total[1]) / (everyone[0] + everyone[1])) if everyone else None
+    return {"success": True, "count": len(ids), "lower": total[0], "upper": total[1], "share": share,
+            "age_min": TH_REACH_AGE_MIN}
 
 
 def _base_name(name: str) -> str:
@@ -1570,7 +1620,8 @@ def adset_interests(spec: dict[str, Any]) -> dict[str, Any]:
     if not spec.get("save"):
         if now:   # ชื่อภาษาไทย + ตัวที่ Meta เลิกใช้แล้ว (ต้องลบก่อนบันทึก)
             valid, th = _interest_validity([x["id"] for x in now])
-            now = [{**x, "name": th.get(x["id"]) or x["name"], "gone": valid.get(x["id"]) is False} for x in now]
+            now = _with_th_reach([{**x, "name": th.get(x["id"]) or x["name"], "gone": valid.get(x["id"]) is False}
+                                  for x in now])
         return {"success": True, **base, "interests": now, **_ad_copy(adset_id)}
 
     if not paused:
@@ -1658,9 +1709,11 @@ def run_http(server, host: str, port: int) -> None:
 
 
 if __name__ == "__main__":
-    if ARGS.status or ARGS.create_json or ARGS.suggest_json or ARGS.search_json or ARGS.adset_json:
+    if ARGS.status or ARGS.create_json or ARGS.suggest_json or ARGS.search_json or ARGS.adset_json or ARGS.reach_json:
         if ARGS.status:
             out = app_status()
+        elif ARGS.reach_json:
+            out = interests_reach(json.loads(Path(ARGS.reach_json).read_text(encoding="utf-8")))
         elif ARGS.adset_json:
             out = adset_interests(json.loads(Path(ARGS.adset_json).read_text(encoding="utf-8")))
         elif ARGS.suggest_json:

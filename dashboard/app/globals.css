@@ -251,6 +251,8 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .c-aud-hint-act { display: inline-flex; gap: 6px; }
 .c-aud-hint .btn { padding: 3px 10px; font-size: 12.5px; }
 .c-itag.gone { border-color: var(--warning); color: var(--warning); }
+.c-reach { font-size: 13px; line-height: 1.6; }
+.c-reach small { color: var(--text-muted); }
 /* กล่องลอย: เพิ่มความสนใจให้ Ad Set ที่สร้างไปแล้ว */
 .modal-bg { position: fixed; inset: 0; background: rgba(0, 0, 0, .6); display: flex; align-items: flex-start; justify-content: center; padding: 6vh 16px; z-index: 50; overflow-y: auto; }
 .modal { width: min(720px, 100%); font-size: 13.5px; line-height: 1.85; }

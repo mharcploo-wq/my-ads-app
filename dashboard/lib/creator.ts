@@ -55,8 +55,21 @@ export interface Interest {
   id: string;
   name: string;
   keyword?: string;
-  size_lower?: number | null;
+  size_lower?: number | null;   // ทั่วโลก
   size_upper?: number | null;
+  th_lower?: number | null;     // คนในไทย อายุ 20+
+  th_upper?: number | null;
+}
+
+/** คนในไทยที่สนใจอย่างน้อย 1 อย่างในชุด (mode "reach") · share = % ของผู้ใหญ่ในไทยบน Meta */
+export interface ReachResult {
+  success: boolean;
+  error?: string;
+  count?: number;
+  lower?: number;
+  upper?: number;
+  share?: number | null;
+  age_min?: number;
 }
 
 export interface SuggestResult {
