@@ -3,7 +3,7 @@ import { promises as fs } from "fs";
 import os from "os";
 import path from "path";
 import { randomUUID } from "crypto";
-import { CreateResult, CreateSpec, isAgentId, isLocalRequest, runCreator } from "@/lib/creator";
+import { CreateResult, CreateSpec, isAgentId, isLocalRequest, portfolioArgs, portfolioOf, runCreator } from "@/lib/creator";
 
 export const dynamic = "force-dynamic";
 
@@ -12,7 +12,7 @@ const VIDEO_TYPES: Record<string, string> = { "video/mp4": ".mp4", "video/quickt
 const MAX_IMAGE = 30 * 1024 * 1024;
 
 /** สร้างโฆษณาครบชุด (PAUSED) จากฟอร์ม — multipart: agent, kind, name, daily_budget_thb, text, link_url, image_url, image,
- *  page_id (เพจที่จะยิง), start_time, end_time, age_min, age_max, languages (ส่งซ้ำได้หลายค่า), interests (JSON [{id,name}])
+ *  portfolio (พอร์ตโฟลิโอ 1–5 · 1 = พอร์ตหลัก), page_id (เพจที่จะยิง), start_time, end_time, age_min, age_max, languages (ส่งซ้ำได้หลายค่า), interests (JSON [{id,name}])
  *  ชิ้นงานแบบไดนามิก: dynamic=1, images, videos, texts, titles (ส่งซ้ำได้หลายค่า) — ตรวจจำนวน/ขนาดจริงที่ server.py */
 export async function POST(req: Request) {
   if (!isLocalRequest(req)) return NextResponse.json({ ok: false, error: "ใช้ได้จากเครื่องนี้เท่านั้น" }, { status: 403 });
@@ -107,7 +107,8 @@ export async function POST(req: Request) {
     await fs.writeFile(specFile, JSON.stringify(spec), "utf8");
     // คลิปต้องรอ Meta ประมวลผล — ให้เวลานานขึ้นเมื่อมีคลิป
     const timeout = spec.video_paths?.length ? 30 * 60_000 : 180_000;
-    const result = await runCreator<CreateResult>(agent, ["--create-json", specFile], timeout);
+    const portfolio = portfolioOf(form.get("portfolio"));
+    const result = await runCreator<CreateResult>(agent, ["--create-json", specFile, ...portfolioArgs(portfolio)], timeout);
     return NextResponse.json({ ok: true, result });
   } catch (e) {
     return NextResponse.json({ ok: false, error: (e as Error).message }, { status: 500 });

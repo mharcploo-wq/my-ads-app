@@ -4,12 +4,12 @@ import AdsetInterests from "@/components/AdsetInterests";
 import { LiveOnAirButton } from "@/components/LiveAds";
 import InterestPicker, { Interest } from "@/components/InterestPicker";
 import { clearDraft, FileGroup, FormDraft, loadDraft, loadFiles, saveDraft, saveFiles } from "@/lib/draft";
-import type { AdPage, LiveEvent, LiveNext, LiveOptions } from "@/lib/creator";
+import type { AdPage, LiveEvent, LiveNext, LiveOptions, Portfolio } from "@/lib/creator";
 
 type AgentId = "claude" | "manus" | "chatgpt";
 type Kind = "MESSENGER" | "WEBSITE" | "LIVE";
 
-interface CheckItem { key: string; label: string; ok: boolean; detail: string }
+interface CheckItem { key: string; label: string; ok: boolean; detail: string; warn?: boolean }
 interface CreativeOptions {
   max_images: number; max_videos: number; max_bodies: number; max_titles: number; max_assets: number;
   max_video_mb: number; max_total_mb: number; dynamic_kinds: string[]; dynamic_off_reason: string;
@@ -27,10 +27,12 @@ interface AgentStatus {
   page_name: string | null; page_cover: string | null; audience?: AudienceOptions;
   creative?: CreativeOptions; live?: LiveOptions;
   pages?: AdPage[]; pages_error?: string | null; default_page_id?: string;
+  portfolio?: number; portfolios?: Portfolio[] | null;
 }
 interface CreateResult {
   success: boolean; steps: CheckItem[]; campaign_name?: string; ads_manager_url?: string; dashboard_updated?: boolean;
   adset_id?: string; live_next?: LiveNext; page?: { id: string; name: string };
+  portfolio?: number;   // พอร์ตที่สร้าง (หน้าเว็บจำไว้เอง) — ปุ่มแก้ชุดหลังสร้างใช้ได้เฉพาะพอร์ตหลัก
 }
 
 const AGENTS: { id: AgentId; label: string; color: string; prefix: string }[] = [
@@ -93,7 +95,7 @@ const blankForm = (): Omit<FormDraft, "agent" | "savedAt"> => ({
   kind: "MESSENGER", name: "", budget: "300", text: "", link: "", imageUrl: "",
   startMode: "now", startDate: thDate(1), startTime: "08:00", hasEnd: false, endDate: thDate(8), endTime: "23:59",
   ageMin: null, ageMax: null, langs: null, interests: [], dynamic: false, texts: [""], titles: [],
-  liveId: "", liveHours: null, pageId: "",
+  liveId: "", liveHours: null, pageId: "", portfolio: 1,
 });
 
 export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
@@ -157,6 +159,10 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
   const [copied, setCopied] = useState(false);
   const [now, setNow] = useState(() => Date.now());   // นับเวลาที่เหลือก่อนเริ่ม Live
   const [pageId, setPageId] = useState(d0.pageId ?? "");   // "" = เพจประจำ agent
+  // พอร์ตโฟลิโอธุรกิจ: 1 = พอร์ตหลัก (ค่าเดิมของ agent) · 2–5 = พอร์ตที่ตั้งเพิ่มในหน้าเชื่อมต่อ API
+  const [portfolio, setPortfolio] = useState<number>(d0.portfolio ?? 1);
+  const [pfStatus, setPfStatus] = useState<AgentStatus | null>(null);   // สถานะของพอร์ตที่เลือก (ถ้าไม่ใช่พอร์ตหลัก)
+  const [pfErr, setPfErr] = useState<string | null>(null);
 
   const loadStatus = useCallback(async () => {
     setStatusErr(null);
@@ -178,6 +184,22 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
   }, []);
   useEffect(() => { loadStatus(); }, [loadStatus]);
 
+  // สถานะของพอร์ตที่เลือก (บัญชี · เพจ · โควตาวันนี้ · Pixel) — พอร์ตหลักมากับ /api/agents อยู่แล้ว
+  const loadPf = useCallback(async () => {
+    setPfStatus(null); setPfErr(null);
+    if (portfolio === 1) return;
+    try {
+      const r = await fetch(`/api/agents?agent=${agent}&portfolio=${portfolio}`, { cache: "no-store" });
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error);
+      setPfStatus(j.agents[0] as AgentStatus);
+    } catch (e) {
+      setPfErr((e as Error).message);
+    }
+  }, [agent, portfolio]);
+  useEffect(() => { loadPf(); }, [loadPf]);
+  const reloadAll = () => { loadStatus(); loadPf(); };
+
   // รูป/คลิปที่เก็บไว้ในร่าง — โหลดครั้งเดียวตอนเปิดฟอร์ม
   useEffect(() => {
     let alive = true;
@@ -196,14 +218,14 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
   useEffect(() => {
     const t = setTimeout(() => {
       const form = { kind, name, budget, text, link, imageUrl, startMode, startDate, startTime, hasEnd, endDate,
-        endTime, ageMin, ageMax, langs, interests, dynamic, texts, titles, liveId, liveHours, pageId };
+        endTime, ageMin, ageMax, langs, interests, dynamic, texts, titles, liveId, liveHours, pageId, portfolio };
       if (JSON.stringify(form) === JSON.stringify(blankForm()) && !loadDraft()) return;
       const at = Date.now();
       if (saveDraft({ ...form, agent, savedAt: at })) setSavedAt(at);
     }, 400);
     return () => clearTimeout(t);
   }, [agent, kind, name, budget, text, link, imageUrl, startMode, startDate, startTime, hasEnd, endDate, endTime,
-    ageMin, ageMax, langs, interests, dynamic, texts, titles, liveId, liveHours, pageId]);
+    ageMin, ageMax, langs, interests, dynamic, texts, titles, liveId, liveHours, pageId, portfolio]);
 
   // บันทึกรูป/คลิปเมื่อรายการเปลี่ยน (ข้ามชุดที่เพิ่งโหลดมา ไม่ต้องเขียนซ้ำ)
   useEffect(() => {
@@ -226,14 +248,23 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
     return () => URL.revokeObjectURL(u);
   }, [file]);
 
-  const cur = status?.find((a) => a.agent === agent) ?? null;
+  const main = status?.find((a) => a.agent === agent) ?? null;
+  const pfList = useMemo(() => main?.portfolios ?? [], [main]);
+  const pfInfo = pfList.find((p) => p.slot === portfolio) ?? null;
+  // สถานะที่ใช้ทั้งฟอร์ม: พอร์ตหลัก → สถานะเดิม · พอร์ตอื่น → สถานะของพอร์ตนั้น (ระหว่างโหลด = ยังไม่มี)
+  const cur = portfolio === 1 ? main : pfStatus?.agent === agent && pfStatus.portfolio === portfolio ? pfStatus : null;
+  // พอร์ตที่เลือกไว้หายไป/ใช้ไม่ได้แล้ว (เช่น ลบในหน้าเชื่อมต่อ API) → กลับพอร์ตหลัก
+  useEffect(() => {
+    if (main && portfolio !== 1 && !pfList.some((p) => p.slot === portfolio && p.ok)) { setPortfolio(1); setPageId(""); }
+  }, [main, portfolio, pfList]);
   const kindInfo = KINDS.find((k) => k.id === kind)!;
   const maxBudget = cur?.max_daily_budget_thb || 1000;
   const left = cur && cur.campaigns_today != null ? Math.max(0, cur.max_campaigns_per_day - cur.campaigns_today) : null;
   const budgetNum = Number(budget);
   // เพจที่จะยิง: ที่เลือกไว้ (ถ้ายังอยู่ในรายการของ agent นี้) → เพจประจำ agent
   const pages = cur?.pages ?? [];
-  const page = pages.find((p) => p.id === pageId) ?? pages.find((p) => p.id === cur?.default_page_id) ?? null;
+  const page = pages.find((p) => p.id === pageId) ?? pages.find((p) => p.id === cur?.default_page_id)
+    ?? (portfolio !== 1 ? pages[0] : null) ?? null;   // พอร์ตอื่นที่ไม่ได้ตั้งเพจประจำ → เพจแรก
   const pageName = page?.name ?? cur?.page_name ?? null;
   const pageCover = page ? page.cover ?? null : cur?.page_cover ?? null;
   const previewImage = filePreview || imageUrl.trim() || pageCover || null;
@@ -280,7 +311,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
   const loadLives = useCallback(async () => {
     setLivesBusy(true); setLivesErr(null);
     try {
-      const r = await fetch(`/api/lives?agent=${agent}${page ? `&page_id=${page.id}` : ""}`, { cache: "no-store" });
+      const r = await fetch(`/api/lives?agent=${agent}&portfolio=${portfolio}${page ? `&page_id=${page.id}` : ""}`, { cache: "no-store" });
       const j = await r.json();
       if (!j.ok) throw new Error(j.error);
       if (!j.result.success) throw new Error(j.result.error);
@@ -291,7 +322,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
     } finally {
       setLivesBusy(false);
     }
-  }, [agent, page?.id]);   // eslint-disable-line react-hooks/exhaustive-deps
+  }, [agent, portfolio, page?.id]);   // eslint-disable-line react-hooks/exhaustive-deps
   const canLoadLives = isLive && !!cur?.configured;
   useEffect(() => { if (canLoadLives) loadLives(); }, [canLoadLives, loadLives]);
   // Live ที่เลือกไว้หายไป (เริ่มแล้ว/ยกเลิก) หรือยังไม่ได้เลือก → เลือกอันที่ใกล้สุดให้
@@ -409,6 +440,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
     setBusy(true); setResult(null); setSubmitErr(null);
     const fd = new FormData();
     fd.set("agent", agent); fd.set("kind", kind); fd.set("name", name.trim());
+    fd.set("portfolio", String(portfolio));
     if (page) fd.set("page_id", page.id);
     fd.set("daily_budget_thb", String(budgetNum)); fd.set("text", text.trim());
     if (kind === "WEBSITE") fd.set("link_url", link.trim());
@@ -433,9 +465,9 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
       const r = await fetch("/api/create", { method: "POST", body: fd });
       const j = await r.json();
       if (!j.ok) throw new Error(j.error);
-      setResult(j.result as CreateResult);
+      setResult({ ...(j.result as CreateResult), portfolio });
       if (j.result.success) onCreated();
-      loadStatus();
+      reloadAll();
     } catch (e) {
       setSubmitErr((e as Error).message);
     } finally {
@@ -452,7 +484,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
     setHasEnd(b.hasEnd); setEndDate(b.endDate); setEndTime(b.endTime);
     setAgeMin(b.ageMin); setAgeMax(b.ageMax); setLangs(b.langs); setInterests([]); setPickerKey((k) => k + 1);
     setDynamic(b.dynamic); setTexts(b.texts); setTitles(b.titles); setPvIdx(0); setDynMsg(null);
-    setLiveId(b.liveId); setLiveHours(b.liveHours); setPageId(b.pageId ?? "");
+    setLiveId(b.liveId); setLiveHours(b.liveHours); setPageId(b.pageId ?? ""); setPortfolio(1);
     stored.current = { single: [], images: [], videos: [] };
     setFile(null); setDynImages([]); setDynVideos([]); setLostFiles([]);
     await clearDraft();
@@ -503,7 +535,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
             return (
               <button key={a.id} type="button" className={`c-opt ${agent === a.id ? "on" : ""}`} disabled={off}
                 title={off ? st?.reason ?? "กำลังเช็คสถานะ…" : undefined}
-                onClick={() => { if (a.id !== agent) { setAgent(a.id); setPageId(""); } }}>
+                onClick={() => { if (a.id !== agent) { setAgent(a.id); setPortfolio(1); setPageId(""); } }}>
                 <b><span className="c-dot" style={{ background: a.color }} />{a.label}
                   {!status && <span className="c-tag wait">กำลังเช็ค…</span>}
                   {status && off && <span className="c-tag">ยังไม่ตั้งค่า</span>}
@@ -514,10 +546,39 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
           })}
         </div>
 
+        {main?.configured && pfList.length > 0 && (<>
+          <div className="c-label c-row-h">
+            <span>พอร์ตโฟลิโอธุรกิจ</span>
+            <button type="button" className="btn" onClick={reloadAll} disabled={busy}>↻ โหลดใหม่</button>
+          </div>
+          <div className="c-pages" role="radiogroup" aria-label="พอร์ตโฟลิโอธุรกิจที่จะยิงโฆษณา">
+            {pfList.map((p) => (
+              <button key={p.slot} type="button" role="radio" aria-checked={p.slot === portfolio} disabled={!p.ok}
+                className={`c-page ${p.slot === portfolio ? "on" : ""} ${p.ok ? "" : "off"}`}
+                title={p.reason ?? undefined}
+                onClick={() => { if (p.slot !== portfolio) { setPortfolio(p.slot); setPageId(""); setResult(null); } }}>
+                <span className="c-radio" />
+                <span className="c-page-av">{p.name.slice(0, 1)}</span>
+                <span className="c-page-t">
+                  <b>{p.name}{p.main && <span className="c-tag ok">พอร์ตหลัก</span>}</b>
+                  <small>{p.account
+                    ? `บัญชีโฆษณา ${p.account.name ?? ""} · ${p.account.id} · ${p.account.currency ?? "?"}${p.campaigns_today != null ? ` · วันนี้สร้างแล้ว ${p.campaigns_today}/${main.max_campaigns_per_day}` : ""}`
+                    : `token พอร์ต ${p.slot} ของ ${AGENTS.find((a) => a.id === agent)?.label}${p.user ? ` (${p.user})` : ""}`}</small>
+                  {!p.ok && p.reason && <small className="c-why">⚠ {p.reason}</small>}
+                </span>
+              </button>
+            ))}
+          </div>
+          <div className="c-hint">พอร์ตที่ไม่อยู่ในรายการ → ใส่ token ของ system user ในพอร์ตนั้นที่หน้า <b>เชื่อมต่อ API</b> · เปลี่ยนพอร์ตแล้ว บัญชีโฆษณา · เพจ · Live · Pixel เปลี่ยนตาม · เพดานงบและจำนวนแคมเปญนับแยกต่อบัญชี</div>
+          {portfolio !== 1 && !cur && !pfErr && <div className="c-hint">กำลังเช็คพอร์ต {pfInfo?.name ?? portfolio}…</div>}
+          {pfErr && <div className="msg bad">เช็คพอร์ตไม่ได้: {pfErr} <button className="btn" onClick={loadPf}>ลองใหม่</button></div>}
+          {portfolio !== 1 && cur && !cur.configured && <div className="msg bad">พอร์ตนี้ยังใช้ไม่ได้: {cur.reason}</div>}
+        </>)}
+
         {cur?.configured && (<>
           <div className="c-label c-row-h">
-            <span>ยิงในนามเพจ</span>
-            <button type="button" className="btn" onClick={loadStatus} disabled={busy}>↻ โหลดเพจใหม่</button>
+            <span>ยิงในนามเพจ{portfolio !== 1 && <span className="c-hint"> (เฉพาะเพจในพอร์ตที่เลือก)</span>}</span>
+            <button type="button" className="btn" onClick={reloadAll} disabled={busy}>↻ โหลดเพจใหม่</button>
           </div>
           {cur.pages_error && <div className="msg bad">อ่านรายการเพจไม่ได้: {cur.pages_error} — ใช้เพจประจำ agent ไปก่อน</div>}
           <div className="c-pages" role="radiogroup" aria-label="เพจที่จะยิงโฆษณา">
@@ -527,7 +588,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
                 <span className="c-radio" />
                 {p.picture ? <img className="c-page-av" src={p.picture} alt="" /> : <span className="c-page-av">{p.name.slice(0, 1)}</span>}
                 <span className="c-page-t">
-                  <b>{p.name}{p.id === cur.default_page_id && <span className="c-tag ok">เพจประจำ {AGENTS.find((a) => a.id === agent)?.label}</span>}</b>
+                  <b>{p.name}{p.id === cur.default_page_id && <span className="c-tag ok">{portfolio === 1 ? `เพจประจำ ${AGENTS.find((a) => a.id === agent)?.label}` : "เพจประจำพอร์ตนี้"}</span>}</b>
                   <small>{p.followers != null ? `ผู้ติดตาม ${p.followers.toLocaleString()}` : `เลขเพจ ${p.id}`}{p.business ? ` · ${p.business}` : ""}</small>
                 </span>
               </button>
@@ -794,7 +855,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
             {result.page && <div className="c-hint">📄 เพจ: <b>{result.page.name}</b></div>}
             {result.success && result.live_next && (
               <>
-              {result.adset_id && <LiveOnAirButton agent={agent} adsetId={result.adset_id} liveName={result.live_next.live_name} pageId={result.page?.id} />}
+              {result.adset_id && (result.portfolio ?? 1) === 1 && <LiveOnAirButton agent={agent} adsetId={result.adset_id} liveName={result.live_next.live_name} pageId={result.page?.id} />}
               <details className="c-next">
                 <summary>ทางสำรอง: ผูก Live เองใน Ads Manager</summary>
                 {result.live_next.adset_name && (
@@ -818,7 +879,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
             {result.success && (
               <div className="c-actions">
                 {result.ads_manager_url && <a className="btn" href={result.ads_manager_url} target="_blank" rel="noreferrer">เปิดใน Ads Manager ↗</a>}
-                {result.adset_id && <button className="btn" onClick={() => setEditAdset(true)}>＋ เพิ่มความสนใจให้ Ad Set นี้</button>}
+                {result.adset_id && (result.portfolio ?? 1) === 1 && <button className="btn" onClick={() => setEditAdset(true)}>＋ เพิ่มความสนใจให้ Ad Set นี้</button>}
                 <button className="btn" onClick={() => { setResult(null); setEditAdset(false); }}
                   title="ข้อมูลในฟอร์มยังอยู่ครบ — แก้ชื่อหรืองบแล้วกดสร้างใหม่ได้เลย">สร้างอีกชุด</button>
                 {result.dashboard_updated && <span className="c-hint">อัปเดตหน้าภาพรวมแล้ว</span>}
@@ -873,7 +934,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
           <b>เช็คก่อนสร้าง</b>
           {!status && <div className="c-hint">กำลังเช็คสถานะ…</div>}
           {cur?.checks.filter((c) => c.key !== "budget").map((c) => (
-            <div key={c.key} className={c.ok ? "ok" : "bad"}>{c.ok ? "✔" : "✖"} {c.label} — {c.detail}</div>
+            <div key={c.key} className={c.ok ? "ok" : c.warn ? "warn" : "bad"}>{c.ok ? "✔" : c.warn ? "⚠" : "✖"} {c.label} — {c.detail}</div>
           ))}
           {status && (
             <div className={budgetNum > 0 && budgetNum <= maxBudget ? "ok" : "bad"}>

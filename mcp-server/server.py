@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import contextvars
 import json
 import os
@@ -80,6 +81,12 @@ parser.add_argument("--live-ad-json", metavar="PATH", default=None,
                     help="(หน้าแอป) เติมโฆษณาให้ชุด Live ที่สร้างไปแล้ว (รูปชวนดู / คลิป Live ที่ออกอากาศ) แล้วพิมพ์ผลเป็น JSON")
 parser.add_argument("--adset-json", metavar="PATH", default=None,
                     help="(หน้าแอป) อ่าน/บันทึกความสนใจของ Ad Set ที่สร้างไปแล้ว (เฉพาะที่หยุดอยู่) แล้วพิมพ์ผลเป็น JSON")
+parser.add_argument("--portfolio", type=int, default=1,
+                    help="(หน้าแอป) พอร์ตโฟลิโอที่ใช้ในคำสั่งนี้ 1 = พอร์ตหลัก · 2–5 = META_PORTFOLIO_n_* ใน .env")
+parser.add_argument("--portfolios", action="store_true",
+                    help="(หน้าแอป) รายการพอร์ตโฟลิโอของ agent นี้ + สถานะ แล้วพิมพ์ผลเป็น JSON")
+parser.add_argument("--check-portfolio", action="store_true",
+                    help="(หน้าแอป) ตรวจ token ของพอร์ต (token ใหม่ส่งทาง env PORTFOLIO_CHECK_TOKEN) แล้วพิมพ์ผลเป็น JSON")
 ARGS, _ = parser.parse_known_args()
 
 AGENT = (ARGS.agent or os.getenv("AGENT") or "claude").lower()
@@ -98,6 +105,39 @@ for _k, _v in (dotenv_values(ENV_FILE) if ENV_FILE.exists() else {}).items():
 META_ACCESS_TOKEN = os.getenv("META_ACCESS_TOKEN", "").strip()
 META_AD_ACCOUNT_ID = os.getenv("META_AD_ACCOUNT_ID", "").strip()   # ต้องขึ้นต้นด้วย act_
 META_PAGE_ID = os.getenv("META_PAGE_ID", "").strip()       # เพจประจำ agent (ค่าเริ่มต้น)
+META_PIXEL_ID = os.getenv("META_PIXEL_ID", "").strip()             # ใช้เฉพาะ OUTCOME_SALES / OUTCOME_LEADS
+# เลขผู้ลงโฆษณาที่ยืนยันตัวตนแล้ว (Meta บังคับสำหรับโฆษณาที่ยิงในไทย) — ดูได้จาก Ad Set เดิมใน Ads Manager
+META_VERIFIED_IDENTITY_ID = os.getenv("META_VERIFIED_IDENTITY_ID", "").strip()
+
+# พอร์ตโฟลิโอธุรกิจ — พอร์ต 1 = ค่าข้างบน (พอร์ตหลัก) · พอร์ต 2–5 = token ของ system user ในพอร์ตนั้น
+# ตั้งใน .env เป็น META_PORTFOLIO_{n}_TOKEN / _AD_ACCOUNT_ID / _PAGE_ID / _PIXEL_ID / _VERIFIED_IDENTITY_ID
+MAX_PORTFOLIO = 5
+PORTFOLIO_FIELDS = ("TOKEN", "AD_ACCOUNT_ID", "PAGE_ID", "PIXEL_ID", "VERIFIED_IDENTITY_ID")
+MAIN_AD_ACCOUNT_ID = META_AD_ACCOUNT_ID
+
+
+def _portfolio_cfg(n: int) -> dict[str, str]:
+    if n == 1:
+        return {"TOKEN": META_ACCESS_TOKEN, "AD_ACCOUNT_ID": META_AD_ACCOUNT_ID, "PAGE_ID": META_PAGE_ID,
+                "PIXEL_ID": META_PIXEL_ID, "VERIFIED_IDENTITY_ID": META_VERIFIED_IDENTITY_ID}
+    return {f: os.getenv(f"META_PORTFOLIO_{n}_{f}", "").strip() for f in PORTFOLIO_FIELDS}
+
+
+# หน้าแอปเลือกพอร์ตได้ทีละคำสั่ง (1 คำสั่ง = 1 process) → สลับค่าทั้งชุดตั้งแต่เริ่ม โค้ดสร้างโฆษณาเดิมใช้ต่อได้เลย
+# เครื่องมือ MCP (stdio/HTTP) ใช้พอร์ตหลักเสมอ
+PORTFOLIO = ARGS.portfolio
+if not 1 <= PORTFOLIO <= MAX_PORTFOLIO:
+    sys.exit(f"--portfolio ต้องเป็น 1–{MAX_PORTFOLIO}")
+if PORTFOLIO != 1:
+    if ARGS.http or not any((ARGS.status, ARGS.create_json, ARGS.lives, ARGS.pages, ARGS.check_portfolio)):
+        sys.exit("--portfolio ใช้ได้เฉพาะคำสั่งของหน้าแอป (--status / --create-json / --lives / --pages)")
+    _pf = _portfolio_cfg(PORTFOLIO)
+    META_ACCESS_TOKEN, META_AD_ACCOUNT_ID, META_PAGE_ID = _pf["TOKEN"], _pf["AD_ACCOUNT_ID"], _pf["PAGE_ID"]
+    META_PIXEL_ID, META_VERIFIED_IDENTITY_ID = _pf["PIXEL_ID"], _pf["VERIFIED_IDENTITY_ID"]
+# ที่มาของ Pixel / เลขยืนยันตัวตน: "env" = ตั้งไว้ · "auto" = ดึงจาก Meta (_auto_portfolio_ids)
+PIXEL_SOURCE = "env" if META_PIXEL_ID else None
+IDENTITY_SOURCE = "env" if META_VERIFIED_IDENTITY_ID else None
+
 # เพจที่ใช้ยิงในคำขอนี้ — หน้าแอปเลือกเพจอื่นได้ (ผ่าน _use_page ที่ตรวจสิทธิ์ก่อน) · เครื่องมือ MCP ใช้เพจประจำเสมอ
 _ACTIVE_PAGE: contextvars.ContextVar[str] = contextvars.ContextVar("active_page", default=META_PAGE_ID)
 NO_PAGE = "ยังไม่ได้เลือกเพจ — ตั้งเพจประจำ agent ในหน้าเชื่อมต่อ API"
@@ -105,9 +145,6 @@ NO_PAGE = "ยังไม่ได้เลือกเพจ — ตั้ง�
 
 def _page() -> str:
     return _ACTIVE_PAGE.get()
-META_PIXEL_ID = os.getenv("META_PIXEL_ID", "").strip()             # ใช้เฉพาะ OUTCOME_SALES / OUTCOME_LEADS
-# เลขผู้ลงโฆษณาที่ยืนยันตัวตนแล้ว (Meta บังคับสำหรับโฆษณาที่ยิงในไทย) — ดูได้จาก Ad Set เดิมใน Ads Manager
-META_VERIFIED_IDENTITY_ID = os.getenv("META_VERIFIED_IDENTITY_ID", "").strip()
 AGENT_PREFIX = os.getenv("AGENT_PREFIX", AGENT_PREFIX_MAP[AGENT]).strip()
 # เพดานที่ตกลงกันไว้ — ตั้งในไฟล์ .env ให้ต่ำกว่านี้ได้ แต่สูงกว่านี้ไม่ได้
 HARD_MAX_DAILY_BUDGET_THB = 1000
@@ -155,6 +192,7 @@ def log_action(action: str, ok: bool, data: dict[str, Any]) -> None:
         "time": datetime.now(TH_TZ).isoformat(timespec="seconds"),
         "agent": AGENT,
         "prefix": AGENT_PREFIX,
+        "ad_account": META_AD_ACCOUNT_ID,
         "action": action,
         "ok": ok,
         "data": data,
@@ -173,6 +211,9 @@ def _count_campaigns_today_local() -> int:
             try:
                 e = json.loads(line)
             except json.JSONDecodeError:
+                continue
+            # นับแยกต่อบัญชีโฆษณา — บันทึกเก่าที่ไม่มี ad_account เป็นของพอร์ตหลัก
+            if e.get("ad_account", MAIN_AD_ACCOUNT_ID) != META_AD_ACCOUNT_ID:
                 continue
             if e.get("action") == "create_campaign" and e.get("ok") and str(e.get("time", "")).startswith(today):
                 n += 1
@@ -317,28 +358,33 @@ def _run_checks(daily_budget_thb: int | None, count_campaigns: bool) -> dict[str
 
     # 3.5 จำนวนแคมเปญวันนี้ (นับจาก Meta จริง + audit log เอาค่าที่มากกว่า)
     if count_campaigns:
-        today = datetime.now(TH_TZ).date()
-        ok, rows, err = _graph_get_all(f"{META_AD_ACCOUNT_ID}/campaigns",
-                                       {"fields": "name,created_time", "filtering": _prefix_filter(), "limit": 200})
-        remote = 0
-        if ok:
-            for c in rows:
-                if not c.get("name", "").startswith(AGENT_PREFIX):
-                    continue
-                try:
-                    created = datetime.strptime(c["created_time"], "%Y-%m-%dT%H:%M:%S%z").astimezone(TH_TZ).date()
-                except (KeyError, ValueError):
-                    continue
-                if created == today:
-                    remote += 1
-        local = _count_campaigns_today_local()
-        used = max(remote, local)
-        src = "Meta" if ok else f"audit log (อ่านจาก Meta ไม่ได้: {_meta_error(err)})"
+        used, src = _campaigns_today()
         add("daily_limit", "จำนวนแคมเปญวันนี้", used < MAX_CAMPAIGNS_PER_DAY,
-            f"สร้างแล้ว {used}/{MAX_CAMPAIGNS_PER_DAY} แคมเปญ ({AGENT_PREFIX}, นับจาก {src})")
+            f"สร้างแล้ว {used}/{MAX_CAMPAIGNS_PER_DAY} แคมเปญ ({AGENT_PREFIX}, นับจาก {src})"
+            + (f" · บัญชี {META_AD_ACCOUNT_ID}" if PORTFOLIO != 1 else ""))
         checks[-1]["used"] = used
 
     return _summarize(checks)
+
+
+def _campaigns_today() -> tuple[int, str]:
+    """แคมเปญของ agent นี้ที่สร้างวันนี้ในบัญชีโฆษณาปัจจุบัน (นับจาก Meta จริง + audit log เอาค่าที่มากกว่า)"""
+    today = datetime.now(TH_TZ).date()
+    ok, rows, err = _graph_get_all(f"{META_AD_ACCOUNT_ID}/campaigns",
+                                   {"fields": "name,created_time", "filtering": _prefix_filter(), "limit": 200})
+    remote = 0
+    if ok:
+        for c in rows:
+            if not c.get("name", "").startswith(AGENT_PREFIX):
+                continue
+            try:
+                created = datetime.strptime(c["created_time"], "%Y-%m-%dT%H:%M:%S%z").astimezone(TH_TZ).date()
+            except (KeyError, ValueError):
+                continue
+            if created == today:
+                remote += 1
+    used = max(remote, _count_campaigns_today_local())
+    return used, ("Meta" if ok else f"audit log (อ่านจาก Meta ไม่ได้: {_meta_error(err)})")
 
 
 def _summarize(checks: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1127,17 +1173,164 @@ def app_status() -> dict[str, Any]:
     configured = all(c["ok"] for c in chk["checks"] if c["key"] != "daily_limit")
     page_name, cover = _page_cover() if configured else (None, None)
     pages, pages_err = ad_pages() if META_ACCESS_TOKEN else ([], None)
+    checks = chk["checks"] + (_id_checks() if configured else [])
     return {
+        "portfolio": PORTFOLIO,
+        # พอร์ตหลักบอกรายการพอร์ตทั้งหมดให้ฟอร์มเลือก · พอร์ตอื่นไม่ต้อง (ฟอร์มมีรายการอยู่แล้ว)
+        "portfolios": portfolios_list(used) if PORTFOLIO == 1 else None,
         "pages": pages, "pages_error": pages_err, "default_page_id": META_PAGE_ID,
         "agent": AGENT, "prefix": AGENT_PREFIX, "ready": chk["allowed"], "reason": chk["reason"],
         "configured": configured, "quota_full": configured and not chk["allowed"],
-        "checks": chk["checks"], "max_daily_budget_thb": MAX_DAILY_BUDGET_THB,
+        "checks": checks, "max_daily_budget_thb": MAX_DAILY_BUDGET_THB,
         "max_campaigns_per_day": MAX_CAMPAIGNS_PER_DAY,
         "campaigns_today": used, "page_name": page_name, "page_cover": cover,
         "audience": audience_options(),
         "creative": creative_options(),
         "live": live_options(),
     }
+
+
+# ---------------------------------------------------------------------------
+# พอร์ตโฟลิโอธุรกิจ (หน้าแอปเท่านั้น)
+# ---------------------------------------------------------------------------
+@contextlib.contextmanager
+def _as_portfolio(token: str, account: str):
+    """ใช้ token/บัญชีของพอร์ตอื่นชั่วคราว (โหมดบรรทัดคำสั่ง 1 process = 1 คำสั่ง ไม่มีงานอื่นแทรก)"""
+    global META_ACCESS_TOKEN, META_AD_ACCOUNT_ID
+    old = META_ACCESS_TOKEN, META_AD_ACCOUNT_ID
+    META_ACCESS_TOKEN, META_AD_ACCOUNT_ID = token, account
+    try:
+        yield
+    finally:
+        META_ACCESS_TOKEN, META_AD_ACCOUNT_ID = old
+
+
+def _find_ids(account: str) -> tuple[str | None, str | None]:
+    """Pixel แรกของบัญชีโฆษณา + เลขผู้ลงโฆษณาที่ยืนยันตัวตนจาก Ad Set ล่าสุดที่มี (ไม่เจอ = None)"""
+    pixel = identity = None
+    ok, body = _graph_get(f"{account}/adspixels", {"fields": "id", "limit": 5})
+    if ok and body.get("data"):
+        pixel = str(body["data"][0]["id"])
+    ok, body = _graph_get(f"{account}/adsets", {"fields": "regional_regulation_identities", "limit": 25})
+    for a in (body.get("data") or []) if ok else []:
+        v = (a.get("regional_regulation_identities") or {}).get("universal_beneficiary")
+        if v:
+            identity = str(v)
+            break
+    return pixel, identity
+
+
+def _auto_portfolio_ids() -> None:
+    """พอร์ตอื่นที่ไม่ได้ตั้ง Pixel / เลขยืนยันตัวตนไว้ → ดึงจาก Meta (ตั้งไว้ในหน้าเชื่อมต่อ API ชนะเสมอ)"""
+    global META_PIXEL_ID, META_VERIFIED_IDENTITY_ID, PIXEL_SOURCE, IDENTITY_SOURCE
+    if (META_PIXEL_ID and META_VERIFIED_IDENTITY_ID) or not META_ACCESS_TOKEN or not META_AD_ACCOUNT_ID.startswith("act_"):
+        return
+    pixel, identity = _find_ids(META_AD_ACCOUNT_ID)
+    if not META_PIXEL_ID and pixel:
+        META_PIXEL_ID, PIXEL_SOURCE = pixel, "auto"
+    if not META_VERIFIED_IDENTITY_ID and identity:
+        META_VERIFIED_IDENTITY_ID, IDENTITY_SOURCE = identity, "auto"
+
+
+def _id_checks() -> list[dict[str, Any]]:
+    """Pixel / เลขยืนยันตัวตนที่จะใช้ — ไม่มีก็ยังสร้างได้ (warn) จึงไม่นับรวมใน ready"""
+    src = {"env": "ตั้งไว้", "auto": "ดึงจาก Meta"}
+    return [
+        {"key": "pixel", "label": "Pixel", "ok": bool(META_PIXEL_ID), "warn": not META_PIXEL_ID,
+         "detail": f"{META_PIXEL_ID} ({src.get(PIXEL_SOURCE, '')})" if META_PIXEL_ID
+         else "ไม่มี Pixel ในบัญชีนี้ — ใช้ได้เฉพาะแคมเปญที่ไม่วัด conversion (ตั้งเองได้ที่หน้าเชื่อมต่อ API)"},
+        {"key": "identity", "label": "เลขผู้ลงโฆษณาที่ยืนยันตัวตน", "ok": bool(META_VERIFIED_IDENTITY_ID),
+         "warn": not META_VERIFIED_IDENTITY_ID,
+         "detail": f"{META_VERIFIED_IDENTITY_ID} ({src.get(IDENTITY_SOURCE, '')})" if META_VERIFIED_IDENTITY_ID
+         else "ไม่เจอใน Ad Set เดิมของบัญชีนี้ — กรอกได้ที่หน้าเชื่อมต่อ API (Meta อาจถามตอนเผยแพร่)"},
+    ]
+
+
+NO_AD_ACCOUNT = "ยังไม่มีบัญชีโฆษณาที่ token นี้เข้าถึง — สร้างบัญชีโฆษณา (THB) แล้ว assign ให้ system user ในพอร์ตนั้น"
+
+
+def _account_problem(acc: dict[str, Any]) -> str | None:
+    if acc.get("currency") != "THB":
+        return f"บัญชีใช้สกุลเงิน {acc.get('currency')} — แอปคิดงบเป็นบาท จึงเลือกไม่ได้"
+    if acc.get("account_status") != 1:
+        return f"บัญชีโฆษณาไม่ได้เปิดใช้งาน (account_status={acc.get('account_status')})"
+    return None
+
+
+def _token_accounts() -> tuple[bool, list[dict[str, Any]], str | None]:
+    """บัญชีโฆษณาที่ token ปัจจุบันเข้าถึง → (ok, รายการ, error)"""
+    ok, rows, err = _graph_get_all("me/adaccounts", {
+        "fields": "id,name,currency,account_status,business{id,name}", "limit": 50}, max_pages=3)
+    if not ok:
+        return False, [], f"อ่านบัญชีโฆษณาไม่ได้: {_meta_error(err)}"
+    out = [{"id": a["id"], "name": a.get("name") or a["id"], "currency": a.get("currency"),
+            "business": (a.get("business") or {}).get("name"), "problem": _account_problem(a)} for a in rows]
+    return True, out, None
+
+
+def _portfolio_summary(n: int, cfg: dict[str, str], used: int | None = None) -> dict[str, Any]:
+    """สถานะพอร์ตเดียวสำหรับการ์ดในฟอร์ม — ok = เลือกยิงได้ (ไม่รวมโควตาวันนี้ ซึ่งบอกเป็นตัวเลขแยก)"""
+    out: dict[str, Any] = {"slot": n, "main": n == 1, "name": f"พอร์ต {n}", "user": None, "account": None,
+                           "ok": False, "reason": None, "campaigns_today": None, "page_id": cfg["PAGE_ID"]}
+    if not cfg["TOKEN"]:
+        out["reason"] = "ยังไม่ได้ใส่ token ของพอร์ตนี้ — ใส่ที่หน้าเชื่อมต่อ API"
+        return out
+    with _as_portfolio(cfg["TOKEN"], cfg["AD_ACCOUNT_ID"]):
+        ok, me = _graph_get("me", {"fields": "id,name"})
+        if not ok:
+            out["reason"] = f"Meta ไม่รับ token นี้ — สร้าง token ใหม่จาก system user ({_meta_error(me)})"
+            return out
+        out["user"] = me.get("name")
+        if not cfg["AD_ACCOUNT_ID"]:
+            ok, accs, err = _token_accounts()
+            biz = next((a["business"] for a in accs if a["business"]), None)
+            if biz:
+                out["name"] = biz
+            out["reason"] = err or ("ยังไม่ได้เลือกบัญชีโฆษณา — เลือกที่หน้าเชื่อมต่อ API" if accs else NO_AD_ACCOUNT)
+            return out
+        ok, acc = _graph_get(cfg["AD_ACCOUNT_ID"], {"fields": "name,currency,account_status,business{id,name}"})
+        if not ok:
+            out["reason"] = f"เข้าบัญชี {cfg['AD_ACCOUNT_ID']} ไม่ได้ — assign บัญชีให้ system user ก่อน ({_meta_error(acc)})"
+            return out
+        out["name"] = (acc.get("business") or {}).get("name") or acc.get("name") or out["name"]
+        out["account"] = {"id": cfg["AD_ACCOUNT_ID"], "name": acc.get("name"), "currency": acc.get("currency")}
+        out["reason"] = _account_problem(acc)
+        out["ok"] = out["reason"] is None
+        if out["ok"]:
+            out["campaigns_today"] = used if used is not None else _campaigns_today()[0]
+    return out
+
+
+def portfolios_list(main_used: int | None = None) -> list[dict[str, Any]]:
+    """พอร์ตหลัก + พอร์ตเพิ่มเติมที่ตั้งไว้ (พอร์ตที่ไม่ได้ตั้งอะไรเลยไม่แสดง)"""
+    out = []
+    for n in range(1, MAX_PORTFOLIO + 1):
+        cfg = _portfolio_cfg(n)
+        if n > 1 and not any(cfg.values()):
+            continue
+        out.append(_portfolio_summary(n, cfg, main_used if n == 1 else None))
+    return out
+
+
+def check_portfolio() -> dict[str, Any]:
+    """ปุ่ม "↻ ตรวจ token" ในหน้าเชื่อมต่อ API — token ใหม่ส่งมาทาง env (ไม่ผ่านบรรทัดคำสั่ง) · ว่าง = token ที่บันทึกไว้
+    คืนบัญชีโฆษณา (+ Pixel / เลขยืนยันตัวตนที่หาเจอ) และเพจที่ token นี้ใช้ได้ · ไม่ส่ง token กลับ"""
+    token = os.environ.pop("PORTFOLIO_CHECK_TOKEN", "").strip() or META_ACCESS_TOKEN
+    if not token:
+        return {"success": False, "error": "ยังไม่ได้ใส่ token", "accounts": [], "pages": []}
+    with _as_portfolio(token, ""):
+        ok, me = _graph_get("me", {"fields": "id,name"})
+        if not ok:
+            return {"success": False, "error": f"Meta ไม่รับ token นี้ — สร้าง token ใหม่จาก system user ({_meta_error(me)})",
+                    "accounts": [], "pages": []}
+        ok, accs, err = _token_accounts()
+        for a in accs:
+            a["pixel"], a["identity"] = _find_ids(a["id"]) if not a["problem"] else (None, None)
+        pages, pages_err = ad_pages()
+    return {"success": ok, "error": err, "user": me.get("name"), "accounts": accs,
+            "business": next((a["business"] for a in accs if a["business"]), None)
+                        or next((p["business"] for p in pages if p.get("business")), None),
+            "pages": pages, "pages_error": pages_err, "no_account": ok and not accs and NO_AD_ACCOUNT or None}
 
 
 def live_options() -> dict[str, Any]:
@@ -2100,8 +2293,15 @@ def run_http(server, host: str, port: int) -> None:
 
 if __name__ == "__main__":
     if (ARGS.status or ARGS.create_json or ARGS.suggest_json or ARGS.search_json or ARGS.adset_json
-            or ARGS.reach_json or ARGS.lives or ARGS.live_ad_json or ARGS.pages):
-        if ARGS.status:
+            or ARGS.reach_json or ARGS.lives or ARGS.live_ad_json or ARGS.pages
+            or ARGS.portfolios or ARGS.check_portfolio):
+        if PORTFOLIO != 1 and (ARGS.status or ARGS.create_json):
+            _auto_portfolio_ids()
+        if ARGS.check_portfolio:
+            out = check_portfolio()
+        elif ARGS.portfolios:
+            out = {"success": True, "portfolios": portfolios_list()}
+        elif ARGS.status:
             out = app_status()
         elif ARGS.pages:
             pages, err = ad_pages()

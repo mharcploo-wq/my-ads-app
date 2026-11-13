@@ -1,16 +1,23 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import { AGENTS, Prefix, PREFIXES } from "@/lib/types";
-import type { AdPage } from "@/lib/creator";
+import type { AdPage, Portfolio, PortfolioCheck } from "@/lib/creator";
+import PortfolioSlots, { PfKey, PfRow } from "@/components/PortfolioSlots";
 
 type Values = Record<string, string>;
 type SecretInfo = { set: boolean; last4: string | null };
 type EnvView = {
   agent: string; prefix: string; file: string; exists: boolean; values: Values; token: SecretInfo; secret: SecretInfo;
   aiKey: SecretInfo & { name: string; label: string; workspace: boolean; userKey: boolean };
+  portfolios: { slot: number; token: SecretInfo; values: Record<PfKey, string> }[];
 };
-type Check = { key: string; label: string; ok: boolean; detail: string };
-type Status = { ready?: boolean; configured?: boolean; reason?: string; checks?: Check[]; error?: string };
+type Check = { key: string; label: string; ok: boolean; detail: string; warn?: boolean };
+type Status = { ready?: boolean; configured?: boolean; reason?: string; checks?: Check[]; error?: string; portfolios?: Portfolio[] | null };
+
+const rowsOf = (env: EnvView): PfRow[] => env.portfolios.map((p) => ({
+  slot: p.slot, saved: true, tokenInfo: p.token, token: "", values: p.values, remove: false,
+  check: null, checking: false, checkErr: null,
+}));
 
 const MAIN: { key: string; label: string; hint?: string; num?: boolean }[] = [
   { key: "META_AD_ACCOUNT_ID", label: "บัญชีโฆษณา", hint: "act_ ตามด้วยตัวเลข" },
@@ -42,6 +49,34 @@ export default function AgentEnvForm() {
   // เพจที่ Token ลงโฆษณาได้ (ดึงจาก Meta) — มีรายการ = ช่องเพจเป็นรายการเลือก · ไม่มี = พิมพ์เลขเพจเหมือนเดิม
   const [pages, setPages] = useState<AdPage[] | null>(null);
   const [pagesErr, setPagesErr] = useState<string | null>(null);
+  // พอร์ตโฟลิโอเพิ่มเติม (พอร์ต 2–5)
+  const [pfRows, setPfRows] = useState<PfRow[]>([]);
+  const patchRow = (slot: number, patch: Partial<PfRow>) => setPfRows((rows) =>
+    rows.some((r) => r.slot === slot) ? rows.map((r) => (r.slot === slot ? { ...r, ...patch } : r))
+      : [...rows, patch as PfRow].sort((a, b) => a.slot - b.slot));
+
+  /** ปุ่ม ↻ ตรวจ token — token ที่พิมพ์ไว้ (ยังไม่บันทึก) หรือ token ที่บันทึกไว้ของพอร์ตนั้น */
+  const checkRow = useCallback(async (slot: number, token: string) => {
+    patchRow(slot, { checking: true, checkErr: null });
+    try {
+      const r = await fetch("/api/portfolio-check", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ agent: key, slot, token }),
+      });
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error);
+      const c = j.result as PortfolioCheck;
+      setPfRows((rows) => rows.map((x) => {
+        if (x.slot !== slot) return x;
+        // มีบัญชีที่ใช้ได้บัญชีเดียวและยังไม่ได้เลือก → เลือกให้เลย
+        const usable = c.accounts.filter((a) => !a.problem);
+        const values = !x.values.AD_ACCOUNT_ID && usable.length === 1 ? { ...x.values, AD_ACCOUNT_ID: usable[0].id } : x.values;
+        return { ...x, check: c, checking: false, values };
+      }));
+    } catch (e) {
+      patchRow(slot, { checking: false, checkErr: (e as Error).message });
+    }
+  }, [key]);
 
   const loadPages = useCallback(async () => {
     setPages(null); setPagesErr(null);
@@ -65,6 +100,8 @@ export default function AgentEnvForm() {
       if (!j.ok) throw new Error(j.error);
       setEnv(j.env);
       setValues(j.env.values);
+      setPfRows(rowsOf(j.env));
+      (j.env as EnvView).portfolios.filter((p) => p.token.set).forEach((p) => checkRow(p.slot, ""));
       if (j.env.token.set) loadPages(); else { setPages(null); setPagesErr(null); }
     } catch (e) {
       setEnv(null);
@@ -72,7 +109,7 @@ export default function AgentEnvForm() {
     } finally {
       setBusy("");
     }
-  }, [key, loadPages]);
+  }, [key, loadPages, checkRow]);
   useEffect(() => { load(); }, [load]);
 
   const save = async () => {
@@ -82,7 +119,12 @@ export default function AgentEnvForm() {
       const r = await fetch("/api/agent-env", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ agent: key, values, token, secret, aiKey }),
+        body: JSON.stringify({
+          agent: key, values, token, secret, aiKey,
+          // พอร์ตที่เพิ่มแล้วลบก่อนบันทึก = ไม่ต้องส่ง · พอร์ตในไฟล์ที่กดลบ = remove
+          portfolios: pfRows.filter((r) => r.saved || !r.remove)
+            .map((r) => ({ slot: r.slot, token: r.token, values: r.values, remove: r.remove })),
+        }),
       });
       const j = await r.json();
       if (!j.ok) {
@@ -92,6 +134,8 @@ export default function AgentEnvForm() {
       }
       setEnv(j.env);
       setValues(j.env.values);
+      // คงผลตรวจ token เดิมไว้ (รายการบัญชี/เพจ) — token ที่พิมพ์ไว้ถูกบันทึกแล้วจึงล้างช่อง
+      setPfRows((old) => rowsOf(j.env).map((r) => ({ ...r, check: old.find((o) => o.slot === r.slot)?.check ?? null })));
       setToken(""); setSecret(""); setAiKey("");
       setStatus(j.status);
       if (j.env.token.set) loadPages();
@@ -188,6 +232,8 @@ export default function AgentEnvForm() {
           )}
           <div className="env-grid">{MAIN.map(field)}</div>
           {pagesErr && <div className="d" style={{ marginTop: 6 }}>อ่านรายการเพจจาก Meta ไม่ได้ ({pagesErr}) — พิมพ์เลขเพจเองไปก่อน</div>}
+          <PortfolioSlots rows={pfRows} agentLabel={AGENTS[agent].label} errors={errors} disabled={busy !== ""}
+            onChange={patchRow} onCheck={(slot) => checkRow(slot, pfRows.find((r) => r.slot === slot)?.token ?? "")} />
           <details className="env-adv">
             <summary>ตั้งค่าขั้นสูง (ปกติไม่ต้องแตะ)</summary>
             <div className="env-grid" style={{ marginTop: 10 }}>
@@ -220,8 +266,15 @@ export default function AgentEnvForm() {
             <ul className="checks">
               {status.checks.map((c) => (
                 <li key={c.key ?? c.label}>
-                  <span className={`ic ${c.ok ? "ok" : "no"}`}>{c.ok ? "✓" : "✕"}</span>
+                  <span className={`ic ${c.ok ? "ok" : c.warn ? "warn" : "no"}`}>{c.ok ? "✓" : c.warn ? "⚠" : "✕"}</span>
                   <span>{c.label}<div className="d">{c.detail}</div></span>
+                </li>
+              ))}
+              {(status.portfolios ?? []).filter((p) => !p.main).map((p) => (
+                <li key={`pf${p.slot}`}>
+                  <span className={`ic ${p.ok ? "ok" : "no"}`}>{p.ok ? "✓" : "✕"}</span>
+                  <span>พอร์ต {p.slot} · {p.name}
+                    <div className="d">{p.ok ? `บัญชี ${p.account?.name} (${p.account?.id}) · เลือกยิงได้ในฟอร์มสร้างโฆษณา` : p.reason}</div></span>
                 </li>
               ))}
             </ul>

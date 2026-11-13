@@ -19,7 +19,7 @@ function pythonPath(): string {
   return process.platform === "win32" ? "python" : "python3";
 }
 
-export interface CheckItem { key: string; label: string; ok: boolean; detail: string }
+export interface CheckItem { key: string; label: string; ok: boolean; detail: string; warn?: boolean }   // warn = ไม่มีก็ยังสร้างได้
 
 /** ค่าจำกัดชิ้นงาน (ไดนามิก) — มาจาก server.py (หน้าเว็บแค่แสดง) */
 export interface CreativeOptions {
@@ -110,8 +110,25 @@ export interface AdPage { id: string; name: string; followers?: number | null; b
 
 export interface PagesResult { success: boolean; error?: string | null; pages: AdPage[]; default_page_id: string }
 
+/** พอร์ตโฟลิโอธุรกิจ 1 พอร์ตของ agent (server.py ตรวจกับ Meta สด ๆ) · ok = เลือกยิงได้ */
+export interface Portfolio {
+  slot: number; main: boolean; name: string; user: string | null;
+  account: { id: string; name: string | null; currency: string | null } | null;
+  ok: boolean; reason: string | null; campaigns_today: number | null; page_id: string;
+}
+
+/** ผลปุ่ม "↻ ตรวจ token" ของพอร์ต (หน้าเชื่อมต่อ API) — ไม่มี token กลับมา */
+export interface PortfolioCheck {
+  success: boolean; error?: string | null; user?: string | null; business?: string | null;
+  accounts: { id: string; name: string; currency: string | null; business: string | null; problem: string | null;
+    pixel: string | null; identity: string | null }[];
+  pages: AdPage[]; pages_error?: string | null; no_account?: string | null;
+}
+
 export interface AgentStatus {
   agent: AgentId;
+  portfolio?: number;          // พอร์ตของสถานะชุดนี้ (1 = พอร์ตหลัก)
+  portfolios?: Portfolio[] | null;   // เฉพาะสถานะพอร์ตหลัก: รายการพอร์ตทั้งหมด
   prefix: string;
   ready: boolean;
   configured?: boolean;
@@ -173,7 +190,7 @@ export interface LiveAdsResult {
 
 export interface CreateSpec {
   kind: "MESSENGER" | "WEBSITE" | "LIVE";
-  page_id?: string;      // เพจที่จะยิง — ว่าง = เพจประจำ agent · server.py ตรวจสิทธิ์ซ้ำ
+  page_id?: string;      // เพจที่จะยิง — ว่าง = เพจประจำของพอร์ต · server.py ตรวจสิทธิ์ซ้ำ      // เพจที่จะยิง — ว่าง = เพจประจำ agent · server.py ตรวจสิทธิ์ซ้ำ
   live_id?: string;      // Live: กิจกรรม fb_live ที่นัดไว้ — server.py ตรวจว่าอยู่ในเพจและยังไม่เริ่ม
   live_hours?: number;   // Live: ความยาว (ชม.) — daily_budget_thb = งบรวมทั้ง Live
   name: string;
@@ -210,12 +227,20 @@ export interface CreateResult {
   page?: { id: string; name: string };   // เพจที่ยิงจริง
 }
 
-/** รัน server.py แล้วอ่านผล JSON บรรทัดสุดท้าย */
-export function runCreator<T>(agent: AgentId, args: string[], timeoutMs = 120_000): Promise<T> {
+/** พอร์ตโฟลิโอ 1–5 (1 = พอร์ตหลัก) — ค่าจากหน้าเว็บที่ไม่ถูกต้อง = พอร์ตหลัก */
+export const MAX_PORTFOLIO = 5;
+export const portfolioOf = (v: unknown): number => {
+  const n = Number(v);
+  return Number.isInteger(n) && n >= 1 && n <= MAX_PORTFOLIO ? n : 1;
+};
+export const portfolioArgs = (n: number): string[] => (n > 1 ? ["--portfolio", String(n)] : []);
+
+/** รัน server.py แล้วอ่านผล JSON บรรทัดสุดท้าย · extraEnv = ค่าลับที่ไม่ควรอยู่บนบรรทัดคำสั่ง (เช่น token ที่กำลังตรวจ) */
+export function runCreator<T>(agent: AgentId, args: string[], timeoutMs = 120_000, extraEnv: Record<string, string> = {}): Promise<T> {
   return new Promise((resolve, reject) => {
     const p = spawn(pythonPath(), [SERVER_PY, "--agent", agent, ...args], {
       cwd: SERVER_DIR,
-      env: { ...process.env, PYTHONIOENCODING: "utf-8" },
+      env: { ...process.env, ...extraEnv, PYTHONIOENCODING: "utf-8" },
       windowsHide: true,
     });
     let out = "";
