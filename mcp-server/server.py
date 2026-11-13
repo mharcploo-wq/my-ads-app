@@ -1105,6 +1105,26 @@ def _schedule_label(sched: dict[str, str]) -> str:
     return f"{start} {end}"
 
 
+def _verify_interests(adset_id: str, sent: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """อ่านความสนใจกลับจาก Meta หลังสร้าง Ad Set → ขั้น "ความสนใจบน Meta" บนการ์ดผลลัพธ์
+    (หลักฐานในแอปว่า Meta เก็บครบ · ไม่ส่งความสนใจไป = ไม่มีอะไรให้ตรวจ → None)"""
+    if not sent:
+        return None
+    ok, body = _graph_get(adset_id, {"fields": "targeting"})
+    if not ok:
+        return {"key": "verify", "label": "ความสนใจบน Meta", "ok": False,
+                "detail": "อ่านกลับจาก Meta ไม่ได้ตอนนี้ — กดปุ่ม \"＋ เพิ่มความสนใจให้ Ad Set นี้\" เพื่อดูเอง"}
+    groups = (body.get("targeting") or {}).get("flexible_spec") or []
+    on_meta = {str(x.get("id")) for g in groups for x in (g.get("interests") or [])}
+    missing = [str(x.get("name") or x.get("id")) for x in sent if str(x.get("id")) not in on_meta]
+    got = len(sent) - len(missing)
+    if missing:
+        return {"key": "verify", "label": "ความสนใจบน Meta", "ok": False,
+                "detail": f"Meta บันทึก {got}/{len(sent)} อย่าง · ขาด: {', '.join(missing)}"}
+    return {"key": "verify", "label": "ความสนใจบน Meta", "ok": True,
+            "detail": f"Meta บันทึกครบ {got}/{len(sent)} อย่าง (อ่านค่าจริงหลังสร้าง)"}
+
+
 def create_full(spec: dict[str, Any]) -> dict[str, Any]:
     """สร้างครบชุด: check_permission → แคมเปญ → Ad Set → โฆษณา (PAUSED ทั้งหมด) แล้วส่งผลเข้า Dashboard
     spec: kind (MESSENGER/WEBSITE), name, daily_budget_thb, text, link_url?, image_path?, image_url?,
@@ -1120,7 +1140,7 @@ def create_full(spec: dict[str, Any]) -> dict[str, Any]:
         return ok
 
     def done(**extra: Any) -> dict[str, Any]:
-        return {"success": all(s["ok"] for s in steps), "agent": AGENT, "steps": steps, **extra}
+        return {"success": all(s["ok"] for s in steps if s["key"] != "verify"), "agent": AGENT, "steps": steps, **extra}
 
     kind = str(spec.get("kind", "")).upper()
     name = str(spec.get("name", "")).strip()
@@ -1213,6 +1233,8 @@ def create_full(spec: dict[str, Any]) -> dict[str, Any]:
     who = aud["_label"]
     if not step("adset", "กลุ่มเป้าหมาย", adset, f"งบ {budget:,} บาท/วัน · {who} · {when}"):
         return done(campaign_id=camp["campaign_id"])
+    if (chk := _verify_interests(adset["adset_id"], aud["interests"])):
+        step(chk["key"], chk["label"], {"success": chk["ok"], "error": chk["detail"]}, chk["detail"])
     ad = _create_ad(adset["adset_id"], f"{name} - โฆษณา", text, link_url, lambda: (True, image_hash))
     if not step("ad", "โฆษณา", ad, "ปุ่ม ส่งข้อความ" if kind == "MESSENGER" else "ปุ่ม ดูเพิ่มเติม"):
         return done(campaign_id=camp["campaign_id"], adset_id=adset["adset_id"])
@@ -1284,6 +1306,8 @@ def _create_full_live(spec: dict[str, Any], name: str, budget: int,
                 f"งบรวม {budget:,} บาท · {fmt(start)}–{end.strftime('%H:%M')} ({hours} ชม.) · เข้าถึงคนมากที่สุด · "
                 f"{aud['_label']}"):
         return done(campaign_id=camp["campaign_id"])
+    if (chk := _verify_interests(adset["adset_id"], aud["interests"])):
+        step(chk["key"], chk["label"], {"success": chk["ok"], "error": chk["detail"]}, chk["detail"])
 
     act = META_AD_ACCOUNT_ID.removeprefix("act_")
     dash = send_to_dashboard("last_7d")
@@ -1384,6 +1408,8 @@ def _create_full_dynamic(name: str, budget: int, texts: list[str], titles: list[
     if not step("adset", "กลุ่มเป้าหมาย", adset,
                 f"งบ {budget:,} บาท/วัน · {aud['_label']} · {_schedule_label(sched)} · ชิ้นงานแบบไดนามิก"):
         return done(campaign_id=camp["campaign_id"])
+    if (chk := _verify_interests(adset["adset_id"], aud["interests"])):
+        step(chk["key"], chk["label"], {"success": chk["ok"], "error": chk["detail"]}, chk["detail"])
     ad = _create_dynamic_ad(adset["adset_id"], f"{name} - โฆษณา", texts, titles, link_url, hashes, videos)
     media = " + ".join(x for x in (f"{len(hashes)} รูป" if hashes else "", f"{len(videos)} คลิป" if videos else "") if x)
     if not step("ad", "โฆษณา", ad,
