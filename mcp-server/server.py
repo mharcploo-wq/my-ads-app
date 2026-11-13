@@ -1300,24 +1300,57 @@ TOOLS = [check_permission, create_campaign, create_adset, create_ad, send_to_das
 
 
 AI_SYSTEM = (
-    "You plan Meta (Facebook) ad targeting for ads shown in Thailand. From the ad copy, propose short search "
-    "keywords for Meta's detailed-targeting interest catalog: interests, hobbies, activities, industries, "
-    "products and job fields the likely customers have. Prefer common English terms (Meta's catalog matches "
-    "them best); Thai is fine for Thailand-only topics. Do not propose age, gender, location, or sensitive "
-    "categories (health conditions, religion, politics, sexual orientation, ethnicity, financial hardship). "
-    "Order from most to least relevant."
+    "You plan Meta (Facebook) ad targeting for ads shown in Thailand. From the advertiser's brief (what they sell "
+    "and to whom, often in Thai) and/or the ad copy, propose short search keywords for Meta's detailed-targeting "
+    "interest catalog: interests, hobbies, activities, industries, products and job fields the likely customers "
+    "have. Prefer common English terms (Meta's catalog matches them best); Thai is fine for Thailand-only topics. "
+    "Keywords must not be age, gender, location, or sensitive categories (health conditions, religion, politics, "
+    "sexual orientation, ethnicity, financial hardship). Order from most to least relevant. "
+    "Also suggest the audience: age_min (20-25), age_max (30-65; 65 means no upper limit), and languages "
+    "(keys from: " + ", ".join(f"{k}={v[1]}" for k, v in LANGUAGES.items()) + "), plus a one-line reason in Thai."
 )
-AI_KEYWORDS_SCHEMA = {
+AI_PLAN_SCHEMA = {
     "type": "object",
-    "properties": {"keywords": {"type": "array", "items": {"type": "string"}}},
-    "required": ["keywords"],
+    "properties": {
+        "keywords": {"type": "array", "items": {"type": "string"}},
+        "audience": {
+            "type": "object",
+            "properties": {
+                "age_min": {"type": "integer"},
+                "age_max": {"type": "integer"},
+                "languages": {"type": "array", "items": {"type": "string", "enum": list(LANGUAGES)}},
+                "reason": {"type": "string"},
+            },
+            "required": ["age_min", "age_max", "languages", "reason"],
+            "additionalProperties": False,
+        },
+    },
+    "required": ["keywords", "audience"],
     "additionalProperties": False,
 }
 
 
-def _ai_keywords(copy: str) -> tuple[list[str], str | None]:
-    """ถาม AI ของ agent นี้ → คำค้นความสนใจ 6–8 คำ"""
-    prompt = f"Ad copy:\n{copy}\n\nReturn 8 keywords."
+def _audience_hint(raw: Any) -> dict[str, Any] | None:
+    """อายุ/ภาษาที่ AI แนะนำ → ค่าที่ใช้ได้จริง (ตัดให้อยู่ในช่วงที่ Meta รับ) · หน้าแอปแค่แสดง + ให้ผู้ใช้กดใช้เอง"""
+    if not isinstance(raw, dict):
+        return None
+    try:
+        lo = min(max(int(raw.get("age_min")), MIN_AGE), MAX_AGE_MIN)
+        hi = min(max(int(raw.get("age_max")), MIN_AGE_MAX), NO_MAX_AGE)
+    except (TypeError, ValueError):
+        return None
+    langs = [k for k in dict.fromkeys(raw.get("languages") or []) if k in LANGUAGES]
+    if not langs:
+        return None
+    label = (f"อายุ {lo}–{hi}" if hi < NO_MAX_AGE else f"อายุ {lo}+") + " · ภาษา " + " / ".join(LANGUAGES[k][1] for k in langs)
+    return {"age_min": lo, "age_max": hi, "languages": langs, "label": label,
+            "reason": str(raw.get("reason") or "").strip()[:200]}
+
+
+def _ai_keywords(copy: str) -> tuple[list[str], dict[str, Any] | None, str | None]:
+    """ถาม AI ของ agent นี้ → (คำค้นความสนใจ ~8 คำ, อายุ/ภาษาที่แนะนำ, ข้อผิดพลาด)
+    copy = บรีฟของผู้ใช้ และ/หรือ ข้อความโฆษณา (ติดหัวข้อไว้แล้ว)"""
+    prompt = f"{copy}\n\nReturn 8 keywords and the audience suggestion."
     if AI_PROVIDER == "anthropic":
         import anthropic  # โหลดเฉพาะตอนใช้ปุ่ม ✨ — เครื่องมือ MCP อื่นไม่ต้องพึ่ง
         client = anthropic.Anthropic(
@@ -1327,43 +1360,43 @@ def _ai_keywords(copy: str) -> tuple[list[str], str | None]:
             resp = client.messages.create(
                 model=AI_MODEL, max_tokens=4000, system=AI_SYSTEM,
                 messages=[{"role": "user", "content": prompt}],
-                output_config={"effort": "low", "format": {"type": "json_schema", "schema": AI_KEYWORDS_SCHEMA}},
+                output_config={"effort": "low", "format": {"type": "json_schema", "schema": AI_PLAN_SCHEMA}},
             )
         except anthropic.AuthenticationError:
-            return [], "คีย์ Claude ไม่ถูกต้องหรือหมดอายุ — ตรวจ ANTHROPIC_API_KEY ที่แท็บ \"เชื่อมต่อ API\""
+            return [], None, "คีย์ Claude ไม่ถูกต้องหรือหมดอายุ — ตรวจ ANTHROPIC_API_KEY ที่แท็บ \"เชื่อมต่อ API\""
         except anthropic.RateLimitError:
-            return [], "Claude ถูกใช้ถี่เกินไป — รอสักครู่แล้วกดใหม่"
+            return [], None, "Claude ถูกใช้ถี่เกินไป — รอสักครู่แล้วกดใหม่"
         except anthropic.APIStatusError as e:
             why = _api_error_text(e.body)
             # 400 "not scoped to a workspace" / 403-404 workspace ผิด — แยกบอกเพราะแก้ที่ช่อง Workspace ID
             if "workspace" in why.lower():
                 if not ANTHROPIC_WORKSPACE_ID:
-                    return [], CLAUDE_NEEDS_WORKSPACE
-                return [], (f"Workspace ID \"{ANTHROPIC_WORKSPACE_ID}\" ใช้กับคีย์นี้ไม่ได้ — ตรวจที่แท็บ \"เชื่อมต่อ API\" "
+                    return [], None, CLAUDE_NEEDS_WORKSPACE
+                return [], None, (f"Workspace ID \"{ANTHROPIC_WORKSPACE_ID}\" ใช้กับคีย์นี้ไม่ได้ — ตรวจที่แท็บ \"เชื่อมต่อ API\" "
                             f"(Claude: {why})")
             if isinstance(e, anthropic.NotFoundError):
-                return [], f"ไม่พบรุ่น AI \"{AI_MODEL}\" — แก้ AI_MODEL ใน .env หรือเว้นว่างเพื่อใช้ค่าเริ่มต้น"
+                return [], None, f"ไม่พบรุ่น AI \"{AI_MODEL}\" — แก้ AI_MODEL ใน .env หรือเว้นว่างเพื่อใช้ค่าเริ่มต้น"
             if isinstance(e, anthropic.PermissionDeniedError):
-                return [], f"คีย์ Claude นี้ไม่มีสิทธิ์เรียกใช้ — ตรวจสิทธิ์ของคีย์ (Claude: {why or 'ไม่ระบุ'})"
-            return [], f"Claude ปฏิเสธคำขอ (HTTP {e.status_code}): {why or 'ไม่ระบุสาเหตุ'}"
+                return [], None, f"คีย์ Claude นี้ไม่มีสิทธิ์เรียกใช้ — ตรวจสิทธิ์ของคีย์ (Claude: {why or 'ไม่ระบุ'})"
+            return [], None, f"Claude ปฏิเสธคำขอ (HTTP {e.status_code}): {why or 'ไม่ระบุสาเหตุ'}"
         except anthropic.APIConnectionError:
-            return [], "เชื่อมต่อ Claude ไม่ได้ — ตรวจอินเทอร์เน็ต"
+            return [], None, "เชื่อมต่อ Claude ไม่ได้ — ตรวจอินเทอร์เน็ต"
         if resp.stop_reason == "refusal":
-            return [], "Claude ไม่คิดกลุ่มเป้าหมายให้ข้อความนี้ — ลองปรับข้อความโฆษณา"
+            return [], None, "Claude ไม่คิดกลุ่มเป้าหมายให้ข้อความนี้ — ลองปรับข้อความโฆษณา"
         text = next((b.text for b in resp.content if b.type == "text"), "")
     else:
         try:
             r = requests.post("https://api.openai.com/v1/chat/completions", timeout=60,
                               headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
                               json={"model": AI_MODEL, "response_format": {"type": "json_object"},
-                                    "messages": [{"role": "system", "content": AI_SYSTEM + ' Reply as JSON: {"keywords": [...]}'},
+                                    "messages": [{"role": "system", "content": AI_SYSTEM + ' Reply as JSON: {"keywords": [...], "audience": {"age_min": 20, "age_max": 65, "languages": ["th"], "reason": "..."}}'},
                                                  {"role": "user", "content": prompt}]})
         except requests.RequestException:
-            return [], "เชื่อมต่อ OpenAI ไม่ได้ — ตรวจอินเทอร์เน็ต"
+            return [], None, "เชื่อมต่อ OpenAI ไม่ได้ — ตรวจอินเทอร์เน็ต"
         if r.status_code == 401:
-            return [], "คีย์ OpenAI ไม่ถูกต้องหรือหมดอายุ — ตรวจ OPENAI_API_KEY ที่แท็บ \"เชื่อมต่อ API\""
+            return [], None, "คีย์ OpenAI ไม่ถูกต้องหรือหมดอายุ — ตรวจ OPENAI_API_KEY ที่แท็บ \"เชื่อมต่อ API\""
         if r.status_code == 404:
-            return [], f"ไม่พบรุ่น AI \"{AI_MODEL}\" — แก้ AI_MODEL ใน .env หรือเว้นว่างเพื่อใช้ค่าเริ่มต้น"
+            return [], None, f"ไม่พบรุ่น AI \"{AI_MODEL}\" — แก้ AI_MODEL ใน .env หรือเว้นว่างเพื่อใช้ค่าเริ่มต้น"
         try:
             err_body = r.json() if r.status_code != 200 else {}
         except ValueError:
@@ -1372,20 +1405,21 @@ def _ai_keywords(copy: str) -> tuple[list[str], str | None]:
             # เครดิตหมด (insufficient_quota) กับใช้ถี่เกิน ได้ 429 เหมือนกัน แต่แก้คนละทาง
             err = err_body.get("error") if isinstance(err_body, dict) else None
             if isinstance(err, dict) and err.get("type") == "insufficient_quota":
-                return [], ("เครดิต OpenAI หมด — เติมเครดิตที่ platform.openai.com → Settings → Billing "
+                return [], None, ("เครดิต OpenAI หมด — เติมเครดิตที่ platform.openai.com → Settings → Billing "
                             "แล้วกดใหม่ (กดซ้ำตอนนี้ก็ไม่ผ่าน)")
-            return [], "OpenAI ถูกใช้ถี่เกินไป — รอสักครู่แล้วกดใหม่"
+            return [], None, "OpenAI ถูกใช้ถี่เกินไป — รอสักครู่แล้วกดใหม่"
         if r.status_code != 200:
-            return [], f"OpenAI ปฏิเสธคำขอ (HTTP {r.status_code}): {_api_error_text(err_body) or 'ไม่ระบุสาเหตุ'}"
+            return [], None, f"OpenAI ปฏิเสธคำขอ (HTTP {r.status_code}): {_api_error_text(err_body) or 'ไม่ระบุสาเหตุ'}"
         try:
             text = r.json()["choices"][0]["message"]["content"] or ""
         except (ValueError, KeyError, IndexError):
-            return [], "OpenAI ตอบกลับในรูปแบบที่อ่านไม่ได้"
+            return [], None, "OpenAI ตอบกลับในรูปแบบที่อ่านไม่ได้"
     try:
-        words = [str(w).strip() for w in json.loads(text).get("keywords", []) if str(w).strip()]
+        plan = json.loads(text)
+        words = [str(w).strip() for w in plan.get("keywords", []) if str(w).strip()]
     except (ValueError, AttributeError):
-        return [], "AI ตอบกลับในรูปแบบที่อ่านไม่ได้ — กดใหม่อีกครั้ง"
-    return list(dict.fromkeys(words))[:12], None
+        return [], None, "AI ตอบกลับในรูปแบบที่อ่านไม่ได้ — กดใหม่อีกครั้ง"
+    return list(dict.fromkeys(words))[:12], _audience_hint(plan.get("audience")), None
 
 
 def suggest_interests(spec: dict[str, Any]) -> dict[str, Any]:
@@ -1399,42 +1433,89 @@ def suggest_interests(spec: dict[str, Any]) -> dict[str, Any]:
     link = str(spec.get("link_url") or "").strip()
     if not texts:
         return {"success": False, "error": "ใส่ข้อความโฆษณาก่อน แล้วค่อยให้ AI คิดกลุ่มเป้าหมาย"}
-    copy = "\n".join(texts + [f"Headline: {t}" for t in titles] + ([f"Link: {link}"] if link else []))[:4000]
-    words, err = _ai_keywords(copy)
+    words, aud, err = _ai_keywords(_copy_block(texts, titles, link))
     if err:
         log_action("suggest_interests", False, {"ai": info["label"], "model": AI_MODEL, "error": err})
         return {"success": False, "error": err}
     found, missed = _search_interests(words)
     log_action("suggest_interests", bool(found), {"ai": info["label"], "model": AI_MODEL, "keywords": words,
-                                                  "interests": [x["name"] for x in found], "missed": missed})
+                                                  "interests": [x["name"] for x in found], "missed": missed,
+                                                  "audience": aud and aud["label"]})
     if not found:
         return {"success": False, "error": "AI คิดคำค้นได้ แต่ไม่ตรงกับความสนใจในคลังของ Meta — ลองปรับข้อความแล้วกดใหม่"}
     return {"success": True, "ai": info["label"], "model": AI_MODEL, "keywords": words, "missed": missed,
-            "interests": found}
+            "interests": found, "audience": aud}
+
+
+def _copy_block(texts: list[str], titles: list[str], link: str) -> str:
+    """ข้อความโฆษณา → ข้อความที่ส่งให้ AI"""
+    lines = texts + [f"Headline: {t}" for t in titles] + ([f"Link: {link}"] if link else [])
+    return ("Ad copy:\n" + "\n".join(lines))[:4000] if lines else ""
+
+
+BRIEF_MIN_CHARS = 30   # ช่องคำค้นยาวกว่านี้ (และไม่มี ,) = ประโยคบอกความต้องการ → ให้ AI อ่าน
+BRIEF_MIN_WORDS = 5    # หรือมีคำ (เว้นวรรค) ตั้งแต่เท่านี้
+
+
+def _is_brief(text: str) -> bool:
+    """ข้อความในช่องคำค้นเป็นประโยคบอกความต้องการ (ไม่ใช่คำค้นสั้น ๆ คั่นด้วย ,) ไหม"""
+    t = text.strip()
+    return "," not in t.replace("，", ",") and (len(t) >= BRIEF_MIN_CHARS or len(t.split()) >= BRIEF_MIN_WORDS)
 
 
 def search_interests_app(spec: dict[str, Any]) -> dict[str, Any]:
-    """(ช่องพิมพ์คำค้นเองในหน้าแอป) คำค้น → ความสนใจในคลังของ Meta — ไม่ใช้ AI
-    spec: words (list หรือข้อความคั่นด้วย ,) · have (id ที่เลือกไว้แล้ว ไม่เอาซ้ำ และนับรวมเพดาน)"""
-    raw = spec.get("words") or []
+    """(ช่องพิมพ์คำค้นเองในหน้าแอป)
+    - คำสั้น ๆ คั่นด้วย , → ค้นตรงในคลังของ Meta (ไม่ใช้ AI)
+    - เป็นประโยคบอกความต้องการ หรือค้นตรงแล้วไม่เจอเลย → ให้ AI อ่าน (คู่กับข้อความโฆษณาถ้ามี) แล้วค่อยค้น
+    spec: text (ข้อความในช่อง) หรือ words[] · have (id ที่เลือกไว้แล้ว ไม่เอาซ้ำ และนับรวมเพดาน)
+          texts[]/titles[]/link_url (ข้อความโฆษณา ใช้ตอนให้ AI อ่าน)"""
+    text = str(spec.get("text") or "").strip()[:500]
+    raw = spec.get("words") or text
     if isinstance(raw, str):
         raw = raw.replace("，", ",").split(",")
     words = list(dict.fromkeys(str(w).strip()[:60] for w in raw if str(w).strip()))
     have = [{"id": str(i)} for i in (spec.get("have") or []) if str(i).isdigit()]
     if not words:
-        return {"success": False, "error": "พิมพ์คำค้นก่อน เช่น ERP, บัญชี (คั่นหลายคำด้วย ,)"}
+        return {"success": False, "error": "พิมพ์คำค้น เช่น ERP, บัญชี หรือเล่าว่าขายอะไรให้ใคร"}
     room = MAX_INTERESTS - len(have)
     if room <= 0:
         return {"success": False, "error": f"ความสนใจครบ {MAX_INTERESTS} รายการแล้ว — ลบออกก่อนแล้วค่อยค้นเพิ่ม"}
+    if not (text and _is_brief(text)):
+        found, missed = _search_interests(words, have)
+        found = found[len(have):]
+        skipped = words[room:]   # เกินเพดาน ไม่ได้ค้น
+        log_action("search_interests", bool(found), {"words": words, "interests": [x["name"] for x in found],
+                                                     "missed": missed, "skipped": skipped})
+        if found:
+            return {"success": True, "interests": found, "missed": missed, "skipped": skipped}
+        if not (text and ai_info()["ready"]):   # ไม่เจอเลย → ให้ AI ลองอ่านแทน (ถ้ามี AI)
+            return {"success": False, "error": "ไม่เจอในคลังของ Meta: " + ", ".join(missed or words)
+                    + " — ลองคำอื่น (ภาษาอังกฤษมักเจอง่ายกว่า) หรือเล่าเป็นประโยคให้ AI อ่าน"}
+    return _brief_interests(text, have, spec)
+
+
+def _brief_interests(text: str, have: list[dict[str, Any]], spec: dict[str, Any]) -> dict[str, Any]:
+    """ประโยคบอกความต้องการ → AI แตกเป็นคำค้น (+ แนะนำอายุ/ภาษา) → ค้นคลังของ Meta ต่อท้ายรายการเดิม"""
+    info = ai_info()
+    if not info["ready"]:
+        return {"success": False, "brief": True, "error": f"ประโยคต้องให้ AI อ่านก่อน แต่ {info['missing']} "
+                                           "— หรือพิมพ์เป็นคำสั้น ๆ คั่นด้วย , เช่น ERP, โรงงาน"}
+    clean = lambda v: [str(x).strip() for x in (v or []) if str(x).strip()]  # noqa: E731
+    copy = _copy_block(clean(spec.get("texts")), clean(spec.get("titles")), str(spec.get("link_url") or "").strip())
+    words, aud, err = _ai_keywords(f"Advertiser's brief:\n{text}" + (f"\n\n{copy}" if copy else ""))
+    if err:
+        log_action("brief_interests", False, {"ai": info["label"], "brief": text, "error": err})
+        return {"success": False, "brief": True, "error": err}
     found, missed = _search_interests(words, have)
     found = found[len(have):]
-    skipped = words[room:]   # เกินเพดาน ไม่ได้ค้น
-    log_action("search_interests", bool(found), {"words": words, "interests": [x["name"] for x in found],
-                                                 "missed": missed, "skipped": skipped})
+    log_action("brief_interests", bool(found), {"ai": info["label"], "model": AI_MODEL, "brief": text,
+                                                "keywords": words, "interests": [x["name"] for x in found],
+                                                "audience": aud and aud["label"]})
     if not found:
-        return {"success": False, "error": "ไม่เจอในคลังของ Meta: " + ", ".join(missed or words)
-                + " — ลองคำอื่น (ภาษาอังกฤษมักเจอง่ายกว่า)"}
-    return {"success": True, "interests": found, "missed": missed, "skipped": skipped}
+        return {"success": False, "error": "AI อ่านแล้วได้คำค้น " + ", ".join(words[:6])
+                + " แต่ไม่ตรงกับคลังของ Meta — ลองเล่าให้ชัดขึ้นว่าลูกค้าเป็นใคร"}
+    return {"success": True, "brief": True, "ai": info["label"], "keywords": words, "interests": found,
+            "missed": missed, "skipped": [], "audience": aud}
 
 
 def _ad_copy(adset_id: str) -> dict[str, Any]:

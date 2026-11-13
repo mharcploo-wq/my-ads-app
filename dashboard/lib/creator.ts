@@ -67,8 +67,13 @@ export interface SuggestResult {
   keywords?: string[];
   missed?: string[];
   skipped?: string[];    // ช่องพิมพ์คำค้นเอง: คำที่เกินเพดาน ไม่ได้ค้น
+  brief?: boolean;       // ช่องพิมพ์คำค้น: เป็นประโยค → AI อ่านก่อนค้น
   interests?: Interest[];
+  audience?: AudienceHint | null;   // อายุ/ภาษาที่ AI แนะนำ (ผู้ใช้กดใช้เอง)
 }
+
+/** อายุ/ภาษาที่ AI แนะนำ — ตัดให้อยู่ในช่วงที่ Meta รับแล้วที่ server.py */
+export interface AudienceHint { age_min: number; age_max: number; languages: string[]; label: string; reason: string }
 
 /** ความสนใจของ Ad Set ที่สร้างไปแล้ว (ปุ่ม "＋ เพิ่มความสนใจให้ Ad Set นี้") */
 export interface AdsetInterestsResult {

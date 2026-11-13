@@ -246,6 +246,10 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .c-itag small { color: var(--text-muted); }
 .c-itag button { background: none; border: 0; color: var(--text-muted); cursor: pointer; padding: 0 4px; font-size: 12px; }
 .c-warn { color: var(--warning); font-size: 12.5px; line-height: 1.6; }
+.c-aud-hint { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; border: 1px dashed var(--accent); border-radius: 10px; padding: 6px 10px; font-size: 13px; line-height: 1.6; }
+.c-aud-hint small { color: var(--text-muted); }
+.c-aud-hint-act { display: inline-flex; gap: 6px; }
+.c-aud-hint .btn { padding: 3px 10px; font-size: 12.5px; }
 .c-itag.gone { border-color: var(--warning); color: var(--warning); }
 /* กล่องลอย: เพิ่มความสนใจให้ Ad Set ที่สร้างไปแล้ว */
 .modal-bg { position: fixed; inset: 0; background: rgba(0, 0, 0, .6); display: flex; align-items: flex-start; justify-content: center; padding: 6vh 16px; z-index: 50; overflow-y: auto; }

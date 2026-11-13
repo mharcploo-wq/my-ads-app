@@ -454,6 +454,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
               <span>🎯 ความสนใจ</span>
               <InterestPicker key={pickerKey} agent={agent} agents={status} interests={interests} setInterests={setInterests}
                 max={audOpt.max_interests} kwRef={kwInput}
+                onAudience={(a) => { setAgeMin(a.age_min); setAgeMax(a.age_max); setLangs(a.languages); }}
                 copyHint={`ข้อความหลัก${isDyn ? " + พาดหัว" : ""}${kind === "WEBSITE" ? " + ลิงก์" : ""}`}
                 copy={() => ({ texts: isDyn ? filledTexts : [text.trim()].filter(Boolean), titles: isDyn ? filledTitles : [],
                   link_url: kind === "WEBSITE" ? link.trim() : "" })} />
