@@ -16,6 +16,7 @@ export interface FormDraft {
     th_lower?: number | null; th_upper?: number | null }[];
   dynamic: boolean; texts: string[]; titles: string[];
   liveId: string; liveHours: number | null;   // ชนิด Live สด: Live ที่เลือก + ความยาว (null = ค่าเริ่มต้นของ server.py)
+  pageId?: string;   // เพจที่จะยิง ("" = เพจประจำ agent)
   savedAt: number;
 }
 

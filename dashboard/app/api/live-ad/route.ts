@@ -11,7 +11,7 @@ const IMAGE_TYPES: Record<string, string> = { "image/jpeg": ".jpg", "image/png":
 const MAX_IMAGE = 30 * 1024 * 1024;
 
 /** เติมโฆษณาให้ชุด Live ที่สร้างไปแล้ว (หน้าเว็บแค่ส่งต่อ — server.py เช็คเจ้าของ/สิทธิ์ และสร้างเป็น PAUSED เสมอ)
- *  multipart: agent, mode (info | teaser | live), adset_id | campaign_id, live_id?, text?, image? (ไฟล์รูป) */
+ *  multipart: agent, mode (info | teaser | live), adset_id | campaign_id, live_id?, page_id? (ใช้เมื่อชุดยังไม่มีโฆษณา), text?, image? (ไฟล์รูป) */
 export async function POST(req: Request) {
   if (!isLocalRequest(req)) return NextResponse.json({ ok: false, error: "ใช้ได้จากเครื่องนี้เท่านั้น" }, { status: 403 });
   let form: FormData;
@@ -26,7 +26,7 @@ export async function POST(req: Request) {
   if (mode !== "info" && mode !== "teaser" && mode !== "live") return NextResponse.json({ ok: false, error: "ไม่รู้ว่าจะทำอะไร" }, { status: 400 });
   const id = (k: string) => (/^\d+$/.test(String(form.get(k) ?? "")) ? String(form.get(k)) : "");
   const spec: Record<string, string> = {
-    mode, adset_id: id("adset_id"), campaign_id: id("campaign_id"), live_id: id("live_id"),
+    mode, adset_id: id("adset_id"), campaign_id: id("campaign_id"), live_id: id("live_id"), page_id: id("page_id"),
     text: String(form.get("text") ?? "").trim().slice(0, 2000),
   };
   if (!spec.adset_id && !spec.campaign_id) return NextResponse.json({ ok: false, error: "ไม่รู้ว่าจะเติมโฆษณาให้ชุดไหน" }, { status: 400 });

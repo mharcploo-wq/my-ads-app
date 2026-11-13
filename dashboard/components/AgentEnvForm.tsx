@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import { AGENTS, Prefix, PREFIXES } from "@/lib/types";
+import type { AdPage } from "@/lib/creator";
 
 type Values = Record<string, string>;
 type SecretInfo = { set: boolean; last4: string | null };
@@ -13,7 +14,7 @@ type Status = { ready?: boolean; configured?: boolean; reason?: string; checks?:
 
 const MAIN: { key: string; label: string; hint?: string; num?: boolean }[] = [
   { key: "META_AD_ACCOUNT_ID", label: "บัญชีโฆษณา", hint: "act_ ตามด้วยตัวเลข" },
-  { key: "META_PAGE_ID", label: "เพจ (เลขเพจ)" },
+  { key: "META_PAGE_ID", label: "เพจประจำ agent" },
   { key: "MAX_DAILY_BUDGET_THB", label: "งบสูงสุดต่อวัน (บาท) · ไม่เกิน 1,000", num: true },
   { key: "MAX_CAMPAIGNS_PER_DAY", label: "แคมเปญสูงสุดต่อวัน · ไม่เกิน 5", num: true },
   { key: "META_PIXEL_ID", label: "Pixel (เว้นว่างได้)" },
@@ -38,6 +39,22 @@ export default function AgentEnvForm() {
   const [busy, setBusy] = useState<"" | "load" | "save">("load");
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
+  // เพจที่ Token ลงโฆษณาได้ (ดึงจาก Meta) — มีรายการ = ช่องเพจเป็นรายการเลือก · ไม่มี = พิมพ์เลขเพจเหมือนเดิม
+  const [pages, setPages] = useState<AdPage[] | null>(null);
+  const [pagesErr, setPagesErr] = useState<string | null>(null);
+
+  const loadPages = useCallback(async () => {
+    setPages(null); setPagesErr(null);
+    try {
+      const r = await fetch(`/api/pages?agent=${key}`, { cache: "no-store" });
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error);
+      if (!j.result.success) throw new Error(j.result.error);
+      setPages(j.result.pages);
+    } catch (e) {
+      setPagesErr((e as Error).message);
+    }
+  }, [key]);
 
   const load = useCallback(async () => {
     setBusy("load");
@@ -48,13 +65,14 @@ export default function AgentEnvForm() {
       if (!j.ok) throw new Error(j.error);
       setEnv(j.env);
       setValues(j.env.values);
+      if (j.env.token.set) loadPages(); else { setPages(null); setPagesErr(null); }
     } catch (e) {
       setEnv(null);
       setMsg({ ok: false, text: `อ่านไฟล์ตั้งค่าไม่ได้: ${(e as Error).message}` });
     } finally {
       setBusy("");
     }
-  }, [key]);
+  }, [key, loadPages]);
   useEffect(() => { load(); }, [load]);
 
   const save = async () => {
@@ -76,6 +94,7 @@ export default function AgentEnvForm() {
       setValues(j.env.values);
       setToken(""); setSecret(""); setAiKey("");
       setStatus(j.status);
+      if (j.env.token.set) loadPages();
       setMsg({ ok: true, text: `บันทึกลง ${j.env.file} แล้ว` });
     } catch (e) {
       setMsg({ ok: false, text: (e as Error).message });
@@ -85,7 +104,7 @@ export default function AgentEnvForm() {
   };
 
   const set = (k: string, v: string) => setValues((s) => ({ ...s, [k]: v }));
-  const field = (f: { key: string; label: string; hint?: string; num?: boolean }) => (
+  const field = (f: { key: string; label: string; hint?: string; num?: boolean }) => f.key === "META_PAGE_ID" && pages?.length ? pageField(f.label) : (
     <div className="field" key={f.key}>
       <label htmlFor={`env-${f.key}`}>{f.label}</label>
       <input id={`env-${f.key}`} className={`input${errors[f.key] ? " invalid" : ""}`} value={values[f.key] ?? ""}
@@ -94,6 +113,26 @@ export default function AgentEnvForm() {
       {errors[f.key] && <div className="err">{errors[f.key]}</div>}
     </div>
   );
+
+  /** เพจประจำ agent เป็นรายการเลือก — เพจที่บันทึกไว้แต่หลุดจากรายการ (Token เสียสิทธิ์) ยังโชว์ไว้พร้อมเตือน */
+  const pageField = (label: string) => {
+    const v = values.META_PAGE_ID ?? "";
+    const lost = !!v && !pages!.some((p) => p.id === v);
+    return (
+      <div className="field" key="META_PAGE_ID">
+        <label htmlFor="env-META_PAGE_ID">{label}</label>
+        <select id="env-META_PAGE_ID" className={`input${errors.META_PAGE_ID || lost ? " invalid" : ""}`} value={v}
+          onChange={(e) => set("META_PAGE_ID", e.target.value)}>
+          {!v && <option value="">— เลือกเพจ —</option>}
+          {lost && <option value={v}>เลข {v} (ไม่อยู่ในรายการ)</option>}
+          {pages!.map((p) => <option key={p.id} value={p.id}>{p.name} · {p.id}</option>)}
+        </select>
+        {errors.META_PAGE_ID ? <div className="err">{errors.META_PAGE_ID}</div>
+          : lost ? <div className="err">⚠ เพจที่บันทึกไว้ไม่อยู่ในรายการแล้ว — Token อาจเสียสิทธิ์เพจนี้ · เลือกเพจใหม่แล้วกดบันทึก</div>
+          : <div className="d">รายการมาจากเพจที่ Token ของ agent นี้ลงโฆษณาได้ · เปลี่ยน Token แล้วกดบันทึกก่อน รายการจะอัปเดต</div>}
+      </div>
+    );
+  };
 
   return (
     <div className="card">
@@ -148,6 +187,7 @@ export default function AgentEnvForm() {
             </div>
           )}
           <div className="env-grid">{MAIN.map(field)}</div>
+          {pagesErr && <div className="d" style={{ marginTop: 6 }}>อ่านรายการเพจจาก Meta ไม่ได้ ({pagesErr}) — พิมพ์เลขเพจเองไปก่อน</div>}
           <details className="env-adv">
             <summary>ตั้งค่าขั้นสูง (ปกติไม่ต้องแตะ)</summary>
             <div className="env-grid" style={{ marginTop: 10 }}>

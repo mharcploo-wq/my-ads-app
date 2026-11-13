@@ -26,8 +26,8 @@ async function callLiveAd(agent: AgentId, target: { adsetId?: string; campaignId
 }
 
 /** ปุ่ม "🔴 สร้างโฆษณาจาก Live ที่กำลังออกอากาศ" + ผลลัพธ์ (ใช้ในการ์ดหลังสร้าง และในกล่อง ＋ โฆษณา) */
-export function LiveOnAirButton({ agent, adsetId, liveName, onDone }: {
-  agent: AgentId; adsetId: string; liveName?: string; onDone?: (r: LiveAdsResult) => void;
+export function LiveOnAirButton({ agent, adsetId, liveName, pageId, onDone }: {
+  agent: AgentId; adsetId: string; liveName?: string; pageId?: string; onDone?: (r: LiveAdsResult) => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [res, setRes] = useState<LiveAdsResult | null>(null);
@@ -36,7 +36,7 @@ export function LiveOnAirButton({ agent, adsetId, liveName, onDone }: {
   async function go() {
     setBusy(true); setErr(null); setRes(null);
     try {
-      const r = await callLiveAd(agent, { adsetId }, "live");
+      const r = await callLiveAd(agent, { adsetId }, "live", { page_id: pageId });
       setRes(r);
       if (r.success) onDone?.(r);
     } catch (e) {
@@ -85,6 +85,7 @@ export default function LiveAds({ agent, adsetId, campaignId, onClose }: {
   const [text, setText] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [liveId, setLiveId] = useState("");
+  const [pageId, setPageId] = useState("");   // ชุดยังว่าง: เพจที่เลือกในกล่องนี้ ("" = เพจประจำ agent)
   const [busy, setBusy] = useState(false);
   const [res, setRes] = useState<LiveAdsResult | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -92,15 +93,15 @@ export default function LiveAds({ agent, adsetId, campaignId, onClose }: {
 
   const load = useCallback(() => {
     setLoadErr(null);
-    callLiveAd(agent, { adsetId, campaignId }, "info")
+    callLiveAd(agent, { adsetId, campaignId }, "info", { page_id: pageId })
       .then((r) => {
         if (!r.success) throw new Error(r.error);
         setInfo(r);
-        setLiveId((cur) => cur || r.lives?.[0]?.id || "");
+        setLiveId((cur) => (r.lives?.some((l) => l.id === cur) ? cur : r.lives?.[0]?.id || ""));
         if (r.on_air) setTab("live");
       })
       .catch((e: Error) => setLoadErr(e.message));
-  }, [agent, adsetId, campaignId]);
+  }, [agent, adsetId, campaignId, pageId]);
   useEffect(load, [load]);
   useEffect(() => {
     const esc = (e: KeyboardEvent) => { if (e.key === "Escape" && !busy) onClose(); };
@@ -111,7 +112,7 @@ export default function LiveAds({ agent, adsetId, campaignId, onClose }: {
   async function makeTeaser() {
     setBusy(true); setErr(null); setRes(null);
     try {
-      const r = await callLiveAd(agent, { adsetId: info!.adset_id }, "teaser", { live_id: liveId, text: text.trim(), image: file ?? undefined });
+      const r = await callLiveAd(agent, { adsetId: info!.adset_id }, "teaser", { live_id: liveId, text: text.trim(), image: file ?? undefined, page_id: pageChoice });
       if (!r.success) throw new Error(r.error);
       setRes(r);
       setInfo({ ...info!, ads: r.ads });
@@ -123,6 +124,8 @@ export default function LiveAds({ agent, adsetId, campaignId, onClose }: {
   }
 
   const lives = info?.lives ?? [];
+  // ชุดที่มีโฆษณาแล้ว = เพจล็อกตามโฆษณาเดิม · ชุดว่าง = ส่งเพจที่เลือกไปด้วยทุกครั้ง
+  const pageChoice = info && !info.page_locked ? info.page?.id : undefined;
   return (
     <div className="modal-bg" onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
       <div className="card modal" role="dialog" aria-modal="true" aria-label="สร้างโฆษณาให้ชุดนี้">
@@ -137,6 +140,25 @@ export default function LiveAds({ agent, adsetId, campaignId, onClose }: {
             {info.adset_name} · {info.ads == null ? "" : info.ads ? `มีโฆษณา ${info.ads} ตัว` : "ยังไม่มีโฆษณา"}
             {info.start_time ? ` · ${fmtTh(info.start_time)}–${fmtTh(info.end_time).replace(/^.* (\d\d:\d\d)/, "$1")}` : ""}
           </p>
+          <div className="c-label">{info.page_locked ? "เพจของชุดนี้" : "ยิงในนามเพจ"}</div>
+          {info.page_locked ? (
+            <div className="c-page on" aria-disabled="true">
+              <span className="c-page-t"><b>{info.page?.name}</b>
+                <small>🔒 อ่านจากโฆษณาเดิมในชุด — โฆษณาใหม่ใช้เพจเดียวกัน · Live ที่นัดไว้ดึงจากเพจนี้</small></span>
+            </div>
+          ) : (<>
+            <div className="c-pages" role="radiogroup" aria-label="เพจที่จะยิงโฆษณา">
+              {(info.pages ?? []).map((p) => (
+                <button key={p.id} type="button" role="radio" aria-checked={p.id === info.page?.id} disabled={busy}
+                  className={`c-page ${p.id === info.page?.id ? "on" : ""}`} onClick={() => { if (p.id !== info.page?.id) { setInfo(null); setPageId(p.id); } }}>
+                  <span className="c-radio" />
+                  {p.picture ? <img className="c-page-av" src={p.picture} alt="" /> : <span className="c-page-av">{p.name.slice(0, 1)}</span>}
+                  <span className="c-page-t"><b>{p.name}</b><small>{p.followers != null ? `ผู้ติดตาม ${p.followers.toLocaleString()}` : `เลขเพจ ${p.id}`}</small></span>
+                </button>
+              ))}
+            </div>
+            <small className="c-hint">ชุดนี้ยังไม่มีโฆษณา — เลือกเพจที่จะยิง (โฆษณาตัวต่อไปในชุดจะใช้เพจเดียวกันนี้)</small>
+          </>)}
           <div className="c-tabs" role="tablist">
             <button role="tab" aria-selected={tab === "teaser"} className={`btn ${tab === "teaser" ? "on" : ""}`} onClick={() => setTab("teaser")}>🖼 รูปชวนดู Live</button>
             <button role="tab" aria-selected={tab === "live"} className={`btn ${tab === "live" ? "on" : ""}`} onClick={() => setTab("live")}>
@@ -175,7 +197,7 @@ export default function LiveAds({ agent, adsetId, campaignId, onClose }: {
               <button className="btn" onClick={onClose} disabled={busy}>ปิด</button>
             </div>
           </>)) : (
-            <LiveOnAirButton agent={agent} adsetId={info.adset_id!} onDone={(r) => setInfo({ ...info, ads: r.ads })} />
+            <LiveOnAirButton agent={agent} adsetId={info.adset_id!} pageId={pageChoice} onDone={(r) => setInfo({ ...info, ads: r.ads })} />
           )}
         </>)}
       </div>

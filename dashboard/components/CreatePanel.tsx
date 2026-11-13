@@ -4,7 +4,7 @@ import AdsetInterests from "@/components/AdsetInterests";
 import { LiveOnAirButton } from "@/components/LiveAds";
 import InterestPicker, { Interest } from "@/components/InterestPicker";
 import { clearDraft, FileGroup, FormDraft, loadDraft, loadFiles, saveDraft, saveFiles } from "@/lib/draft";
-import type { LiveEvent, LiveNext, LiveOptions } from "@/lib/creator";
+import type { AdPage, LiveEvent, LiveNext, LiveOptions } from "@/lib/creator";
 
 type AgentId = "claude" | "manus" | "chatgpt";
 type Kind = "MESSENGER" | "WEBSITE" | "LIVE";
@@ -26,10 +26,11 @@ interface AgentStatus {
   max_daily_budget_thb: number; max_campaigns_per_day: number; campaigns_today: number | null;
   page_name: string | null; page_cover: string | null; audience?: AudienceOptions;
   creative?: CreativeOptions; live?: LiveOptions;
+  pages?: AdPage[]; pages_error?: string | null; default_page_id?: string;
 }
 interface CreateResult {
   success: boolean; steps: CheckItem[]; campaign_name?: string; ads_manager_url?: string; dashboard_updated?: boolean;
-  adset_id?: string; live_next?: LiveNext;
+  adset_id?: string; live_next?: LiveNext; page?: { id: string; name: string };
 }
 
 const AGENTS: { id: AgentId; label: string; color: string; prefix: string }[] = [
@@ -92,7 +93,7 @@ const blankForm = (): Omit<FormDraft, "agent" | "savedAt"> => ({
   kind: "MESSENGER", name: "", budget: "300", text: "", link: "", imageUrl: "",
   startMode: "now", startDate: thDate(1), startTime: "08:00", hasEnd: false, endDate: thDate(8), endTime: "23:59",
   ageMin: null, ageMax: null, langs: null, interests: [], dynamic: false, texts: [""], titles: [],
-  liveId: "", liveHours: null,
+  liveId: "", liveHours: null, pageId: "",
 });
 
 export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
@@ -155,6 +156,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
   const [livesBusy, setLivesBusy] = useState(false);
   const [copied, setCopied] = useState(false);
   const [now, setNow] = useState(() => Date.now());   // นับเวลาที่เหลือก่อนเริ่ม Live
+  const [pageId, setPageId] = useState(d0.pageId ?? "");   // "" = เพจประจำ agent
 
   const loadStatus = useCallback(async () => {
     setStatusErr(null);
@@ -194,14 +196,14 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
   useEffect(() => {
     const t = setTimeout(() => {
       const form = { kind, name, budget, text, link, imageUrl, startMode, startDate, startTime, hasEnd, endDate,
-        endTime, ageMin, ageMax, langs, interests, dynamic, texts, titles, liveId, liveHours };
+        endTime, ageMin, ageMax, langs, interests, dynamic, texts, titles, liveId, liveHours, pageId };
       if (JSON.stringify(form) === JSON.stringify(blankForm()) && !loadDraft()) return;
       const at = Date.now();
       if (saveDraft({ ...form, agent, savedAt: at })) setSavedAt(at);
     }, 400);
     return () => clearTimeout(t);
   }, [agent, kind, name, budget, text, link, imageUrl, startMode, startDate, startTime, hasEnd, endDate, endTime,
-    ageMin, ageMax, langs, interests, dynamic, texts, titles, liveId, liveHours]);
+    ageMin, ageMax, langs, interests, dynamic, texts, titles, liveId, liveHours, pageId]);
 
   // บันทึกรูป/คลิปเมื่อรายการเปลี่ยน (ข้ามชุดที่เพิ่งโหลดมา ไม่ต้องเขียนซ้ำ)
   useEffect(() => {
@@ -229,7 +231,12 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
   const maxBudget = cur?.max_daily_budget_thb || 1000;
   const left = cur && cur.campaigns_today != null ? Math.max(0, cur.max_campaigns_per_day - cur.campaigns_today) : null;
   const budgetNum = Number(budget);
-  const previewImage = filePreview || imageUrl.trim() || cur?.page_cover || null;
+  // เพจที่จะยิง: ที่เลือกไว้ (ถ้ายังอยู่ในรายการของ agent นี้) → เพจประจำ agent
+  const pages = cur?.pages ?? [];
+  const page = pages.find((p) => p.id === pageId) ?? pages.find((p) => p.id === cur?.default_page_id) ?? null;
+  const pageName = page?.name ?? cur?.page_name ?? null;
+  const pageCover = page ? page.cover ?? null : cur?.page_cover ?? null;
+  const previewImage = filePreview || imageUrl.trim() || pageCover || null;
   const audOpt = status?.find((a) => a.audience)?.audience ?? null;
   const age = ageMin ?? audOpt?.default_age ?? null;
   const pickedLangs = langs ?? audOpt?.default_languages ?? [];
@@ -273,7 +280,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
   const loadLives = useCallback(async () => {
     setLivesBusy(true); setLivesErr(null);
     try {
-      const r = await fetch(`/api/lives?agent=${agent}`, { cache: "no-store" });
+      const r = await fetch(`/api/lives?agent=${agent}${page ? `&page_id=${page.id}` : ""}`, { cache: "no-store" });
       const j = await r.json();
       if (!j.ok) throw new Error(j.error);
       if (!j.result.success) throw new Error(j.result.error);
@@ -284,7 +291,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
     } finally {
       setLivesBusy(false);
     }
-  }, [agent]);
+  }, [agent, page?.id]);   // eslint-disable-line react-hooks/exhaustive-deps
   const canLoadLives = isLive && !!cur?.configured;
   useEffect(() => { if (canLoadLives) loadLives(); }, [canLoadLives, loadLives]);
   // Live ที่เลือกไว้หายไป (เริ่มแล้ว/ยกเลิก) หรือยังไม่ได้เลือก → เลือกอันที่ใกล้สุดให้
@@ -402,6 +409,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
     setBusy(true); setResult(null); setSubmitErr(null);
     const fd = new FormData();
     fd.set("agent", agent); fd.set("kind", kind); fd.set("name", name.trim());
+    if (page) fd.set("page_id", page.id);
     fd.set("daily_budget_thb", String(budgetNum)); fd.set("text", text.trim());
     if (kind === "WEBSITE") fd.set("link_url", link.trim());
     if (isLive) { fd.set("live_id", liveId); fd.set("live_hours", String(hours)); }
@@ -444,7 +452,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
     setHasEnd(b.hasEnd); setEndDate(b.endDate); setEndTime(b.endTime);
     setAgeMin(b.ageMin); setAgeMax(b.ageMax); setLangs(b.langs); setInterests([]); setPickerKey((k) => k + 1);
     setDynamic(b.dynamic); setTexts(b.texts); setTitles(b.titles); setPvIdx(0); setDynMsg(null);
-    setLiveId(b.liveId); setLiveHours(b.liveHours);
+    setLiveId(b.liveId); setLiveHours(b.liveHours); setPageId(b.pageId ?? "");
     stored.current = { single: [], images: [], videos: [] };
     setFile(null); setDynImages([]); setDynVideos([]); setLostFiles([]);
     await clearDraft();
@@ -494,7 +502,8 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
             const off = !st?.configured;
             return (
               <button key={a.id} type="button" className={`c-opt ${agent === a.id ? "on" : ""}`} disabled={off}
-                title={off ? st?.reason ?? "กำลังเช็คสถานะ…" : undefined} onClick={() => setAgent(a.id)}>
+                title={off ? st?.reason ?? "กำลังเช็คสถานะ…" : undefined}
+                onClick={() => { if (a.id !== agent) { setAgent(a.id); setPageId(""); } }}>
                 <b><span className="c-dot" style={{ background: a.color }} />{a.label}
                   {!status && <span className="c-tag wait">กำลังเช็ค…</span>}
                   {status && off && <span className="c-tag">ยังไม่ตั้งค่า</span>}
@@ -504,6 +513,31 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
             );
           })}
         </div>
+
+        {cur?.configured && (<>
+          <div className="c-label c-row-h">
+            <span>ยิงในนามเพจ</span>
+            <button type="button" className="btn" onClick={loadStatus} disabled={busy}>↻ โหลดเพจใหม่</button>
+          </div>
+          {cur.pages_error && <div className="msg bad">อ่านรายการเพจไม่ได้: {cur.pages_error} — ใช้เพจประจำ agent ไปก่อน</div>}
+          <div className="c-pages" role="radiogroup" aria-label="เพจที่จะยิงโฆษณา">
+            {pages.map((p) => (
+              <button key={p.id} type="button" role="radio" aria-checked={p.id === page?.id}
+                className={`c-page ${p.id === page?.id ? "on" : ""}`} onClick={() => setPageId(p.id)}>
+                <span className="c-radio" />
+                {p.picture ? <img className="c-page-av" src={p.picture} alt="" /> : <span className="c-page-av">{p.name.slice(0, 1)}</span>}
+                <span className="c-page-t">
+                  <b>{p.name}{p.id === cur.default_page_id && <span className="c-tag ok">เพจประจำ {AGENTS.find((a) => a.id === agent)?.label}</span>}</b>
+                  <small>{p.followers != null ? `ผู้ติดตาม ${p.followers.toLocaleString()}` : `เลขเพจ ${p.id}`}{p.business ? ` · ${p.business}` : ""}</small>
+                </span>
+              </button>
+            ))}
+          </div>
+          {!cur.pages_error && cur.default_page_id && !pages.some((p) => p.id === cur.default_page_id) && (
+            <div className="c-warn">เพจประจำ agent ({cur.default_page_id}) ไม่อยู่ในรายการที่ Token ลงโฆษณาได้ — เลือกเพจจากรายการ หรือแก้เพจประจำในหน้าเชื่อมต่อ API</div>
+          )}
+          <div className="c-hint">เพจที่ไม่อยู่ในรายการ → แชร์เพจให้ system user ใน Business Settings ก่อน แล้วกด ↻ โหลดเพจใหม่ · เปลี่ยนเพจแล้ว รูปปกเพจ · Live ที่นัดไว้ · ปลายทางแชท เปลี่ยนตาม</div>
+        </>)}
 
         <div className="c-label">ชนิดโฆษณา</div>
         <div className="c-seg">
@@ -516,7 +550,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
 
         {isLive && (<>
           <div className="c-label c-row-h">
-            <span>Live ที่นัดไว้บนเพจ <small className="c-hint">(ดึงจากเพจ{cur?.page_name ? ` ${cur.page_name}` : ""} อัตโนมัติ)</small></span>
+            <span>Live ที่นัดไว้บนเพจ <small className="c-hint">(ดึงจากเพจ{pageName ? ` ${pageName}` : ""} อัตโนมัติ)</small></span>
             <button type="button" className="btn" onClick={loadLives} disabled={livesBusy || !cur?.configured}>{livesBusy ? "กำลังโหลด…" : "↻ โหลดใหม่"}</button>
           </div>
           {livesErr && <div className="msg bad">โหลดรายการ Live ไม่ได้: {livesErr}</div>}
@@ -757,9 +791,10 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
                 <li key={s.key} className={s.ok ? "ok" : "bad"}>{s.ok ? "✔" : "✖"} {s.label} — {s.detail}</li>
               ))}
             </ul>
+            {result.page && <div className="c-hint">📄 เพจ: <b>{result.page.name}</b></div>}
             {result.success && result.live_next && (
               <>
-              {result.adset_id && <LiveOnAirButton agent={agent} adsetId={result.adset_id} liveName={result.live_next.live_name} />}
+              {result.adset_id && <LiveOnAirButton agent={agent} adsetId={result.adset_id} liveName={result.live_next.live_name} pageId={result.page?.id} />}
               <details className="c-next">
                 <summary>ทางสำรอง: ผูก Live เองใน Ads Manager</summary>
                 {result.live_next.adset_name && (
@@ -800,7 +835,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
         <h3>ตัวอย่างโฆษณา</h3>
         <p className="hint">หน้าตาโดยประมาณบนฟีด Facebook — เปลี่ยนตามที่กรอกทันที</p>
         <div className="fbp">
-          <div className="fbp-h"><div className="fbp-av" /><div><b>{cur?.page_name ?? "เพจของคุณ"}</b><small>ได้รับการสนับสนุน</small></div></div>
+          <div className="fbp-h">{page?.picture ? <img className="fbp-av" src={page.picture} alt="" /> : <div className="fbp-av" />}<div><b>{pageName ?? "เพจของคุณ"}</b><small>ได้รับการสนับสนุน</small></div></div>
           <p className="fbp-text">{(isDyn ? combo?.t : text) || <span className="fbp-ph">ข้อความโฆษณาจะแสดงตรงนี้</span>}</p>
           {isLive && previewImage
             // eslint-disable-next-line @next/next/no-img-element

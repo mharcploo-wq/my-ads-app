@@ -105,6 +105,11 @@ export interface AdsetInterestsResult {
   before?: number;           // ตอนบันทึก: จำนวนเดิม
 }
 
+/** เพจที่ Token ลงโฆษณาได้ (server.py ดึงจาก Meta สด ๆ) */
+export interface AdPage { id: string; name: string; followers?: number | null; business?: string | null; picture?: string | null; cover?: string | null }
+
+export interface PagesResult { success: boolean; error?: string | null; pages: AdPage[]; default_page_id: string }
+
 export interface AgentStatus {
   agent: AgentId;
   prefix: string;
@@ -118,6 +123,9 @@ export interface AgentStatus {
   campaigns_today: number | null;
   page_name: string | null;
   page_cover: string | null;
+  pages?: AdPage[];            // เพจที่เลือกยิงได้ (เพจประจำขึ้นก่อน)
+  pages_error?: string | null;
+  default_page_id?: string;    // เพจประจำ agent
   audience?: AudienceOptions;
   creative?: CreativeOptions;
   live?: LiveOptions;
@@ -158,10 +166,14 @@ export interface LiveAdsResult {
   ad_id?: string;
   name?: string;                  // ชื่อโฆษณาที่สร้าง
   image_source?: string;
+  page?: { id: string; name: string };   // เพจของโฆษณาในชุดนี้
+  page_locked?: boolean;          // true = อ่านจากโฆษณาเดิมในชุด (เปลี่ยนไม่ได้)
+  pages?: AdPage[];               // ชุดยังว่าง: เพจให้เลือก
 }
 
 export interface CreateSpec {
   kind: "MESSENGER" | "WEBSITE" | "LIVE";
+  page_id?: string;      // เพจที่จะยิง — ว่าง = เพจประจำ agent · server.py ตรวจสิทธิ์ซ้ำ
   live_id?: string;      // Live: กิจกรรม fb_live ที่นัดไว้ — server.py ตรวจว่าอยู่ในเพจและยังไม่เริ่ม
   live_hours?: number;   // Live: ความยาว (ชม.) — daily_budget_thb = งบรวมทั้ง Live
   name: string;
@@ -195,6 +207,7 @@ export interface CreateResult {
   dashboard_updated?: boolean;
   ads_manager_url?: string;
   live_next?: LiveNext;
+  page?: { id: string; name: string };   // เพจที่ยิงจริง
 }
 
 /** รัน server.py แล้วอ่านผล JSON บรรทัดสุดท้าย */

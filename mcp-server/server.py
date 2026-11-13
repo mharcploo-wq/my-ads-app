@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextvars
 import json
 import os
 import re
@@ -71,6 +72,10 @@ parser.add_argument("--reach-json", metavar="PATH", default=None,
                     help="(หน้าแอป) ขนาดคนในไทยของความสนใจทั้งชุดจากไฟล์ JSON แล้วพิมพ์ผลเป็น JSON")
 parser.add_argument("--lives", action="store_true",
                     help="(หน้าแอป) รายการ Live ที่นัดไว้ล่วงหน้าบนเพจ (ยังไม่เริ่ม) แล้วพิมพ์ผลเป็น JSON")
+parser.add_argument("--pages", action="store_true",
+                    help="(หน้าแอป) เพจที่ Token ของ agent นี้ลงโฆษณาได้ แล้วพิมพ์ผลเป็น JSON")
+parser.add_argument("--page-id", default=None,
+                    help="(หน้าแอป · ใช้กับ --lives) เพจที่จะอ่าน — ว่าง = เพจประจำ agent")
 parser.add_argument("--live-ad-json", metavar="PATH", default=None,
                     help="(หน้าแอป) เติมโฆษณาให้ชุด Live ที่สร้างไปแล้ว (รูปชวนดู / คลิป Live ที่ออกอากาศ) แล้วพิมพ์ผลเป็น JSON")
 parser.add_argument("--adset-json", metavar="PATH", default=None,
@@ -92,7 +97,14 @@ for _k, _v in (dotenv_values(ENV_FILE) if ENV_FILE.exists() else {}).items():
 
 META_ACCESS_TOKEN = os.getenv("META_ACCESS_TOKEN", "").strip()
 META_AD_ACCOUNT_ID = os.getenv("META_AD_ACCOUNT_ID", "").strip()   # ต้องขึ้นต้นด้วย act_
-META_PAGE_ID = os.getenv("META_PAGE_ID", "").strip()
+META_PAGE_ID = os.getenv("META_PAGE_ID", "").strip()       # เพจประจำ agent (ค่าเริ่มต้น)
+# เพจที่ใช้ยิงในคำขอนี้ — หน้าแอปเลือกเพจอื่นได้ (ผ่าน _use_page ที่ตรวจสิทธิ์ก่อน) · เครื่องมือ MCP ใช้เพจประจำเสมอ
+_ACTIVE_PAGE: contextvars.ContextVar[str] = contextvars.ContextVar("active_page", default=META_PAGE_ID)
+NO_PAGE = "ยังไม่ได้เลือกเพจ — ตั้งเพจประจำ agent ในหน้าเชื่อมต่อ API"
+
+
+def _page() -> str:
+    return _ACTIVE_PAGE.get()
 META_PIXEL_ID = os.getenv("META_PIXEL_ID", "").strip()             # ใช้เฉพาะ OUTCOME_SALES / OUTCOME_LEADS
 # เลขผู้ลงโฆษณาที่ยืนยันตัวตนแล้ว (Meta บังคับสำหรับโฆษณาที่ยิงในไทย) — ดูได้จาก Ad Set เดิมใน Ads Manager
 META_VERIFIED_IDENTITY_ID = os.getenv("META_VERIFIED_IDENTITY_ID", "").strip()
@@ -794,8 +806,8 @@ def _create_adset(campaign_id: str, name: str, daily_budget_thb: int, destinatio
         if camp.get("objective") != "OUTCOME_ENGAGEMENT":
             return {"success": False,
                     "error": "โฆษณายิงข้อความต้องอยู่ใต้แคมเปญ OUTCOME_ENGAGEMENT — สร้างแคมเปญใหม่ด้วย objective นี้"}
-        if not META_PAGE_ID:
-            return {"success": False, "error": "ยังไม่ได้ใส่ META_PAGE_ID ใน .env (ต้องรู้ว่าจะให้ทักแชทเพจไหน)"}
+        if not _page():
+            return {"success": False, "error": NO_PAGE}
         opt = {"optimization_goal": "CONVERSATIONS", "destination_type": "MESSENGER"}
 
     payload: dict[str, Any] = {
@@ -823,7 +835,7 @@ def _create_adset(campaign_id: str, name: str, daily_budget_thb: int, destinatio
                     "error": f"แคมเปญ {camp.get('objective')} ต้องมี META_PIXEL_ID ใน .env เพื่อวัด conversion"}
         payload["promoted_object"] = {"pixel_id": META_PIXEL_ID, "custom_event_type": opt["event"]}
     if destination == "MESSENGER":
-        payload["promoted_object"] = {"page_id": META_PAGE_ID}
+        payload["promoted_object"] = {"page_id": _page()}
     if dynamic:
         if destination not in DYNAMIC_KINDS:
             return {"success": False, "error": creative_options()["dynamic_off_reason"]}
@@ -915,8 +927,8 @@ def _create_dynamic_ad(adset_id: str, name: str, bodies: list[str], titles: list
     if not perm["allowed"]:
         log_action("create_ad", False, {"blocked": perm["reason"]})
         return {"success": False, "blocked_by": "check_permission", **perm}
-    if not META_PAGE_ID:
-        return {"success": False, "error": "ยังไม่ได้ใส่ META_PAGE_ID ใน .env"}
+    if not _page():
+        return {"success": False, "error": NO_PAGE}
     ok, adset = _own_object(adset_id, "name,is_dynamic_creative,destination_type")
     if not ok:
         return {"success": False, "error": adset}
@@ -942,7 +954,7 @@ def _create_dynamic_ad(adset_id: str, name: str, bodies: list[str], titles: list
     ad_name = with_prefix(name)
     ok, cr = _graph_post(f"{META_AD_ACCOUNT_ID}/adcreatives", {
         "name": f"{ad_name}-Creative",
-        "object_story_spec": {"page_id": META_PAGE_ID},
+        "object_story_spec": {"page_id": _page()},
         "asset_feed_spec": feed,
     })
     if not ok:
@@ -975,8 +987,8 @@ def _create_ad(adset_id: str, name: str, page_post_text: str, link_url: str,
     if not perm["allowed"]:
         log_action("create_ad", False, {"blocked": perm["reason"]})
         return {"success": False, "blocked_by": "check_permission", **perm}
-    if not META_PAGE_ID:
-        return {"success": False, "error": "ยังไม่ได้ใส่ META_PAGE_ID ใน .env"}
+    if not _page():
+        return {"success": False, "error": NO_PAGE}
 
     ok, adset = _own_object(adset_id, "name,campaign_id,destination_type")
     if not ok:
@@ -998,7 +1010,7 @@ def _create_ad(adset_id: str, name: str, page_post_text: str, link_url: str,
     ok, cr = _graph_post(f"{META_AD_ACCOUNT_ID}/adcreatives", {
         "name": f"{ad_name}-Creative",
         "object_story_spec": {
-            "page_id": META_PAGE_ID,
+            "page_id": _page(),
             "link_data": {
                 "message": page_post_text,
                 "link": link_url,
@@ -1038,11 +1050,50 @@ KINDS = {
 }
 
 
+def ad_pages() -> tuple[list[dict[str, Any]], str | None]:
+    """เพจที่ Token ของ agent นี้ลงโฆษณาได้ (มีสิทธิ์ ADVERTISE) — ดึงจาก Meta สด ๆ
+    แชร์เพจเพิ่มให้ system user ใน Business Settings แล้วจะขึ้นเองทันที"""
+    if not META_ACCESS_TOKEN:
+        return [], "ยังไม่ได้ใส่ Token"
+    ok, rows, err = _graph_get_all("me/accounts", {
+        "fields": "id,name,tasks,fan_count,business{name},picture{url},cover{source}", "limit": 100}, max_pages=3)
+    if not ok:
+        return [], f"อ่านรายการเพจจาก Meta ไม่ได้: {_meta_error(err)}"
+    pages = [{"id": str(p["id"]), "name": p.get("name") or str(p["id"]),
+              "followers": p.get("fan_count"), "business": (p.get("business") or {}).get("name"),
+              "picture": ((p.get("picture") or {}).get("data") or {}).get("url"),
+              "cover": (p.get("cover") or {}).get("source")}
+             for p in rows if "ADVERTISE" in (p.get("tasks") or [])]
+    pages.sort(key=lambda x: (x["id"] != META_PAGE_ID, x["name"]))   # เพจประจำขึ้นก่อน
+    return pages, None
+
+
+def _use_page(page_id: Any) -> tuple[dict[str, Any] | None, str | None]:
+    """เลือกเพจที่จะยิงในคำขอนี้ → (ข้อมูลเพจ, None) หรือ (None, ข้อความ error)
+    ว่าง = เพจประจำ agent · ระบุมา = ต้องอยู่ในรายการเพจที่ Token ลงโฆษณาได้ (หน้าเว็บส่งอะไรมาก็ตรวจซ้ำที่นี่)"""
+    pid = str(page_id or "").strip()
+    if not pid:
+        if not META_PAGE_ID:
+            return None, NO_PAGE
+        _ACTIVE_PAGE.set(META_PAGE_ID)
+        return {"id": META_PAGE_ID, "name": _page_cover()[0] or META_PAGE_ID}, None
+    if not pid.isdigit():
+        return None, "เลขเพจไม่ถูกต้อง"
+    pages, err = ad_pages()
+    if err:
+        return None, err
+    page = next((p for p in pages if p["id"] == pid), None)
+    if not page:
+        return None, f"Token ของ {AGENT} ไม่มีสิทธิ์ลงโฆษณาในเพจ {pid} — เลือกเพจจากรายการ"
+    _ACTIVE_PAGE.set(pid)
+    return {"id": pid, "name": page["name"]}, None
+
+
 def _page_cover() -> tuple[str | None, str | None]:
     """ชื่อเพจ + ลิงก์รูปปกเพจ (ใช้เป็นรูปโฆษณาเมื่อผู้ใช้ไม่ใส่รูป)"""
-    if not META_PAGE_ID:
+    if not _page():
         return None, None
-    ok, body = _graph_get(META_PAGE_ID, {"fields": "name,cover"})
+    ok, body = _graph_get(_page(), {"fields": "name,cover"})
     if not ok:
         return None, None
     return body.get("name"), (body.get("cover") or {}).get("source")
@@ -1075,7 +1126,9 @@ def app_status() -> dict[str, Any]:
     # ครบโควตาวันนี้ = ตั้งค่าครบแล้ว แค่สร้างเพิ่มวันนี้ไม่ได้ (ยังดึงชื่อ/รูปปกเพจมาโชว์ตัวอย่างได้)
     configured = all(c["ok"] for c in chk["checks"] if c["key"] != "daily_limit")
     page_name, cover = _page_cover() if configured else (None, None)
+    pages, pages_err = ad_pages() if META_ACCESS_TOKEN else ([], None)
     return {
+        "pages": pages, "pages_error": pages_err, "default_page_id": META_PAGE_ID,
         "agent": AGENT, "prefix": AGENT_PREFIX, "ready": chk["allowed"], "reason": chk["reason"],
         "configured": configured, "quota_full": configured and not chk["allowed"],
         "checks": chk["checks"], "max_daily_budget_thb": MAX_DAILY_BUDGET_THB,
@@ -1096,9 +1149,9 @@ def live_options() -> dict[str, Any]:
 def live_events() -> dict[str, Any]:
     """Live ที่นัดไว้ล่วงหน้าบนเพจ (ยังไม่เริ่ม) เรียงจากใกล้สุด
     Facebook เก็บ Live นัดหมายเป็น "กิจกรรมออนไลน์แบบ fb_live" — ตัววิดีโอ Live ยังไม่มีจนกว่าจะเริ่มถ่าย"""
-    if not META_PAGE_ID:
-        return {"success": False, "error": "ยังไม่ได้ใส่ META_PAGE_ID ใน .env", "lives": []}
-    ok, rows, err = _graph_get_all(f"{META_PAGE_ID}/events", {
+    if not _page():
+        return {"success": False, "error": NO_PAGE, "lives": []}
+    ok, rows, err = _graph_get_all(f"{_page()}/events", {
         "fields": "id,name,start_time,is_online,online_event_format,is_canceled",
         "time_filter": "upcoming", "limit": 50}, max_pages=3)
     if not ok:
@@ -1152,7 +1205,8 @@ def create_full(spec: dict[str, Any]) -> dict[str, Any]:
     spec: kind (MESSENGER/WEBSITE), name, daily_budget_thb, text, link_url?, image_path?, image_url?,
           start_time?, end_time? (เวลาไทย เช่น 2026-11-11T08:00), age_min?, age_max?, languages?,
           interests? [{id,name}] (จากปุ่ม ✨ ในหน้าแอป)
-          ชิ้นงานแบบไดนามิก: dynamic=true, image_paths[], video_paths[], texts[], titles[]"""
+          ชิ้นงานแบบไดนามิก: dynamic=true, image_paths[], video_paths[], texts[], titles[]
+          page_id? = เพจที่จะยิง (ว่าง = เพจประจำ agent · ต้องอยู่ในรายการ ad_pages)"""
     steps: list[dict[str, Any]] = []
 
     def step(key: str, label: str, res: dict[str, Any], detail: str = "") -> bool:
@@ -1164,7 +1218,13 @@ def create_full(spec: dict[str, Any]) -> dict[str, Any]:
     def done(**extra: Any) -> dict[str, Any]:
         # ขั้น "เสริม" ไม่ทำให้ทั้งชุดล้ม: อ่านความสนใจกลับ · โฆษณารูปชวนดู Live (ชุดยังอยู่ เติมโฆษณาทีหลังได้)
         return {"success": all(s["ok"] for s in steps if s["key"] not in SOFT_STEPS), "agent": AGENT,
-                "steps": steps, **extra}
+                "steps": steps, **({"page": page} if page else {}), **extra}
+
+    # เพจที่จะยิง — ตรวจก่อนทุกอย่าง (Live ที่นัดไว้ / รูปปก / ปลายทางแชท ขึ้นกับเพจนี้)
+    page, page_err = _use_page(spec.get("page_id"))
+    if page_err:
+        steps.append({"key": "form", "label": "เพจ", "ok": False, "detail": page_err})
+        return done()
 
     kind = str(spec.get("kind", "")).upper()
     name = str(spec.get("name", "")).strip()
@@ -1803,7 +1863,7 @@ def _find_adset(spec: dict[str, Any]) -> tuple[bool, str]:
 def _on_air_live() -> tuple[dict[str, Any] | None, str | None]:
     """Live ที่กำลังออกอากาศบนเพจ → ({id, title, video_id, story_id, started}, None) · ไม่มี → (None, None)
     story_id = โพสต์ของ Live บนเพจ (ใช้เป็น object_story_id ของโฆษณา)"""
-    ok, body = _graph_get(f"{META_PAGE_ID}/live_videos", {
+    ok, body = _graph_get(f"{_page()}/live_videos", {
         "broadcast_status": json.dumps(["LIVE"]), "fields": "id,title,status,creation_time,video{id}", "limit": 5})
     if not ok:
         return None, f"อ่าน Live ของเพจไม่ได้: {_meta_error(body)}"
@@ -1814,7 +1874,7 @@ def _on_air_live() -> tuple[dict[str, Any] | None, str | None]:
     video_id = str(lv["video"]["id"])
     ok, v = _graph_get(video_id, {"fields": "post_id"})
     post = str(v.get("post_id") or "") if ok else ""
-    story_id = post if "_" in post else f"{META_PAGE_ID}_{post or video_id}"
+    story_id = post if "_" in post else f"{_page()}_{post or video_id}"
     started = ""
     if lv.get("creation_time"):
         try:
@@ -1847,18 +1907,27 @@ def _live_video_ad(adset_id: str, ad_name: str, story_id: str) -> dict[str, Any]
     return {"success": True, "ad_id": body["id"], "creative_id": cr["id"], "name": ad_name, "status": REQUIRED_STATUS}
 
 
+def _creative_page(cr: dict[str, Any]) -> str:
+    """เลขเพจของ Creative: object_story_spec.page_id หรือส่วนหน้าของ object_story_id ("{page}_{post}")"""
+    pid = str((cr.get("object_story_spec") or {}).get("page_id") or "")
+    if pid:
+        return pid
+    story = str(cr.get("object_story_id") or cr.get("effective_object_story_id") or "")
+    return story.split("_")[0] if "_" in story else ""
+
+
 def live_ads(spec: dict[str, Any]) -> dict[str, Any]:
     """(ปุ่ม "＋ โฆษณา" / "🔴 สร้างโฆษณาจาก Live ที่กำลังออกอากาศ") เติมโฆษณาให้ชุด Live ที่สร้างไปแล้ว
     spec: adset_id หรือ campaign_id · mode:
       info   = ข้อมูลชุด + จำนวนโฆษณา + Live ที่นัดไว้ + Live ที่กำลังออกอากาศ
       teaser = โฆษณารูปชวนดู Live (live_id, text?, image_path?) · ปุ่ม ดูเพิ่มเติม → หน้ากิจกรรม Live
       live   = โฆษณาคลิป Live จาก Live ที่กำลังออกอากาศบนเพจ
+    เพจ: ชุดที่มีโฆษณาแล้ว = เพจเดิมของชุด (อ่านจากโฆษณาตัวแรก · เปลี่ยนไม่ได้) · ชุดว่าง = page_id ที่เลือกในกล่อง
+         (ว่าง = เพจประจำ agent) — ทุกโหมดคืน page + page_locked + pages (รายการให้เลือกเมื่อไม่ล็อก)
     กฎ: เฉพาะชุดของ agent นี้ · โฆษณาที่สร้าง = PAUSED เสมอ · ไม่แตะสถานะ/งบของชุด"""
     mode = str(spec.get("mode") or "info")
     if mode not in ("info", "teaser", "live"):
         return {"success": False, "error": "ไม่รู้ว่าจะทำอะไร"}
-    if not META_PAGE_ID:
-        return {"success": False, "error": "ยังไม่ได้ใส่ META_PAGE_ID ใน .env"}
     ok, adset_id = _find_adset(spec)
     if not ok:
         return {"success": False, "error": adset_id}
@@ -1866,10 +1935,26 @@ def live_ads(spec: dict[str, Any]) -> dict[str, Any]:
     if not ok:
         return {"success": False, "error": aset}
     camp = aset.get("campaign") or {}
-    ok, ads = _graph_get(f"{adset_id}/ads", {"fields": "id", "limit": 50})
+    ok, ads = _graph_get(f"{adset_id}/ads", {
+        "fields": "id,creative{object_story_spec,object_story_id,effective_object_story_id}", "limit": 50})
+    if not ok:
+        return {"success": False, "error": f"อ่านโฆษณาในชุดไม่ได้: {_meta_error(ads)}"}
+    rows = ads.get("data", [])
     base = {"adset_id": adset_id, "adset_name": aset.get("name"), "campaign_id": camp.get("id"),
-            "campaign_name": camp.get("name"), "ads": len(ads.get("data", [])) if ok else None,
+            "campaign_name": camp.get("name"), "ads": len(rows),
             "start_time": aset.get("start_time"), "end_time": aset.get("end_time")}
+    # เพจของชุด — โฆษณาใหม่ต้องอยู่เพจเดียวกับโฆษณาเดิม
+    locked = next((_creative_page(x.get("creative") or {}) for x in rows if _creative_page(x.get("creative") or {})), "")
+    if locked:
+        _ACTIVE_PAGE.set(locked)
+        ok, pg = _graph_get(locked, {"fields": "name"})
+        page: dict[str, Any] = {"id": locked, "name": pg.get("name") if ok else locked}
+        base.update(page=page, page_locked=True)
+    else:
+        page, err = _use_page(spec.get("page_id"))
+        if err:
+            return {"success": False, **base, "page_locked": False, "pages": ad_pages()[0], "error": err}
+        base.update(page=page, page_locked=False, **({"pages": ad_pages()[0]} if mode == "info" else {}))
     base_name = str(aset.get("name") or "").removeprefix(AGENT_PREFIX).removesuffix(" - Live")
 
     if mode == "info":
@@ -2015,11 +2100,15 @@ def run_http(server, host: str, port: int) -> None:
 
 if __name__ == "__main__":
     if (ARGS.status or ARGS.create_json or ARGS.suggest_json or ARGS.search_json or ARGS.adset_json
-            or ARGS.reach_json or ARGS.lives or ARGS.live_ad_json):
+            or ARGS.reach_json or ARGS.lives or ARGS.live_ad_json or ARGS.pages):
         if ARGS.status:
             out = app_status()
+        elif ARGS.pages:
+            pages, err = ad_pages()
+            out = {"success": not err, "error": err, "pages": pages, "default_page_id": META_PAGE_ID}
         elif ARGS.lives:
-            out = live_events()
+            _, page_err = _use_page(ARGS.page_id)
+            out = {"success": False, "error": page_err, "lives": []} if page_err else live_events()
         elif ARGS.reach_json:
             out = interests_reach(json.loads(Path(ARGS.reach_json).read_text(encoding="utf-8")))
         elif ARGS.live_ad_json:

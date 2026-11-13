@@ -314,6 +314,21 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .c-onair { margin-top: 10px; border: 1px solid #5a2224; background: #1f1112; border-radius: 10px; padding: 10px 12px; font-size: 13px; }
 .c-onair > b { display: block; }
 .c-onair > small { display: block; margin: 2px 0 2px; line-height: 1.6; }
+/* เลือกเพจที่จะยิง (ฟอร์มสร้างโฆษณา / กล่อง ＋ โฆษณา) */
+.c-pages { display: flex; flex-direction: column; gap: 6px; }
+.c-page { display: flex; align-items: center; gap: 10px; text-align: left; border: 1px solid var(--border); background: var(--surface-2); border-radius: 10px; padding: 7px 11px; cursor: pointer; color: inherit; font: inherit; }
+.c-page.on { border-color: var(--accent); background: #16243a; }
+.c-page:disabled { cursor: default; }
+.c-page[aria-disabled] { cursor: default; margin-bottom: 12px; }
+.c-pages + .c-hint { display: block; margin: 6px 0 12px; }
+.c-radio { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--text-muted); flex: none; }
+.c-page.on .c-radio { border-color: var(--accent); background: radial-gradient(var(--accent) 45%, transparent 50%); }
+.c-page-av { width: 32px; height: 32px; border-radius: 50%; flex: none; object-fit: cover; background: #1f3b63; display: grid; place-items: center; font-size: 12px; font-weight: 700; }
+.c-page-t { display: flex; flex-direction: column; min-width: 0; }
+.c-page-t b { font-size: 13.5px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.c-page-t small { color: var(--text-muted); font-size: 12px; }
+.c-tag.ok { background: #0f2416; color: var(--good, #3fb950); border-color: #1f4d2a; }
+img.fbp-av { object-fit: cover; }
 .c-livebtn { background: #e5484d; border-color: #e5484d; color: #fff; }
 .c-livebtn:disabled { opacity: .6; }
 .c-wait { margin-top: 8px; border: 1px solid #5a4512; background: #2a210c; border-radius: 8px; padding: 7px 10px; font-size: 12.5px; color: var(--warning); }

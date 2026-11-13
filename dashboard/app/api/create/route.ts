@@ -12,7 +12,7 @@ const VIDEO_TYPES: Record<string, string> = { "video/mp4": ".mp4", "video/quickt
 const MAX_IMAGE = 30 * 1024 * 1024;
 
 /** สร้างโฆษณาครบชุด (PAUSED) จากฟอร์ม — multipart: agent, kind, name, daily_budget_thb, text, link_url, image_url, image,
- *  start_time, end_time, age_min, age_max, languages (ส่งซ้ำได้หลายค่า), interests (JSON [{id,name}])
+ *  page_id (เพจที่จะยิง), start_time, end_time, age_min, age_max, languages (ส่งซ้ำได้หลายค่า), interests (JSON [{id,name}])
  *  ชิ้นงานแบบไดนามิก: dynamic=1, images, videos, texts, titles (ส่งซ้ำได้หลายค่า) — ตรวจจำนวน/ขนาดจริงที่ server.py */
 export async function POST(req: Request) {
   if (!isLocalRequest(req)) return NextResponse.json({ ok: false, error: "ใช้ได้จากเครื่องนี้เท่านั้น" }, { status: 403 });
@@ -37,6 +37,9 @@ export async function POST(req: Request) {
     start_time: String(form.get("start_time") ?? "").trim(),
     end_time: String(form.get("end_time") ?? "").trim(),
   };
+  // เพจที่จะยิง — ส่งแค่เลข (server.py ตรวจว่า Token ลงโฆษณาในเพจนี้ได้) · ว่าง = เพจประจำ agent
+  const pageId = String(form.get("page_id") ?? "");
+  if (/^\d+$/.test(pageId)) spec.page_id = pageId;
   if (kind === "LIVE") {
     // Live: รูปชวนดู Live ได้ (ไฟล์/ลิงก์/ปกเพจ) · ไม่มีลิงก์/ไดนามิก (ปุ่มพาไปหน้ากิจกรรม Live)
     // เวลามาจาก Live ที่นัดไว้ (server.py อ่านจากเพจเอง ไม่เชื่อเวลาจากหน้าเว็บ)
