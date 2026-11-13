@@ -138,6 +138,28 @@ export interface LiveNext {
   adset_name: string;   // ชื่อชุดที่ต้องเปิดใน Ads Manager (ให้ผู้ใช้เทียบ)
 }
 
+/** เติมโฆษณาให้ชุด Live ที่สร้างไปแล้ว (ปุ่ม "＋ โฆษณา" / "🔴 สร้างโฆษณาจาก Live ที่กำลังออกอากาศ") */
+export type LiveAdMode = "info" | "teaser" | "live";
+export interface LiveAdsResult {
+  success: boolean;
+  error?: string;
+  adset_id?: string;
+  adset_name?: string;
+  campaign_id?: string;
+  campaign_name?: string;
+  ads?: number | null;            // จำนวนโฆษณาในชุด (หลังสร้าง = รวมตัวใหม่แล้ว)
+  start_time?: string;
+  end_time?: string;
+  lives?: LiveEvent[];            // info: Live ที่นัดไว้ (ให้เลือกปลายทางของโฆษณารูป)
+  on_air?: { title: string; started: string } | null;   // info: Live ที่กำลังออกอากาศ
+  not_live?: boolean;             // live: ยังไม่มี Live ออกอากาศ (ไม่มีอะไรถูกสร้าง)
+  live_title?: string;
+  live_started?: string;
+  ad_id?: string;
+  name?: string;                  // ชื่อโฆษณาที่สร้าง
+  image_source?: string;
+}
+
 export interface CreateSpec {
   kind: "MESSENGER" | "WEBSITE" | "LIVE";
   live_id?: string;      // Live: กิจกรรม fb_live ที่นัดไว้ — server.py ตรวจว่าอยู่ในเพจและยังไม่เริ่ม

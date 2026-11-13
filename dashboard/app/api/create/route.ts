@@ -38,10 +38,11 @@ export async function POST(req: Request) {
     end_time: String(form.get("end_time") ?? "").trim(),
   };
   if (kind === "LIVE") {
-    // Live: ไม่มีรูป/ลิงก์/ไดนามิก · เวลามาจาก Live ที่นัดไว้ (server.py อ่านจากเพจเอง ไม่เชื่อเวลาจากหน้าเว็บ)
+    // Live: รูปชวนดู Live ได้ (ไฟล์/ลิงก์/ปกเพจ) · ไม่มีลิงก์/ไดนามิก (ปุ่มพาไปหน้ากิจกรรม Live)
+    // เวลามาจาก Live ที่นัดไว้ (server.py อ่านจากเพจเอง ไม่เชื่อเวลาจากหน้าเว็บ)
     spec.live_id = /^\d+$/.test(String(form.get("live_id") ?? "")) ? String(form.get("live_id")) : "";
     spec.live_hours = Number(form.get("live_hours") ?? 0);
-    spec.link_url = ""; spec.image_url = ""; spec.start_time = ""; spec.end_time = "";
+    spec.link_url = ""; spec.start_time = ""; spec.end_time = "";
   }
   const ageMin = String(form.get("age_min") ?? "").trim();
   if (ageMin) spec.age_min = Number(ageMin);

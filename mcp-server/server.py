@@ -71,6 +71,8 @@ parser.add_argument("--reach-json", metavar="PATH", default=None,
                     help="(หน้าแอป) ขนาดคนในไทยของความสนใจทั้งชุดจากไฟล์ JSON แล้วพิมพ์ผลเป็น JSON")
 parser.add_argument("--lives", action="store_true",
                     help="(หน้าแอป) รายการ Live ที่นัดไว้ล่วงหน้าบนเพจ (ยังไม่เริ่ม) แล้วพิมพ์ผลเป็น JSON")
+parser.add_argument("--live-ad-json", metavar="PATH", default=None,
+                    help="(หน้าแอป) เติมโฆษณาให้ชุด Live ที่สร้างไปแล้ว (รูปชวนดู / คลิป Live ที่ออกอากาศ) แล้วพิมพ์ผลเป็น JSON")
 parser.add_argument("--adset-json", metavar="PATH", default=None,
                     help="(หน้าแอป) อ่าน/บันทึกความสนใจของ Ad Set ที่สร้างไปแล้ว (เฉพาะที่หยุดอยู่) แล้วพิมพ์ผลเป็น JSON")
 ARGS, _ = parser.parse_known_args()
@@ -1046,6 +1048,26 @@ def _page_cover() -> tuple[str | None, str | None]:
     return body.get("name"), (body.get("cover") or {}).get("source")
 
 
+def _prepare_image(image_path: Any, image_url: str) -> tuple[bool, str, str]:
+    """อัปโหลดรูปโฆษณาเข้า Meta → (ok, image_hash หรือข้อความ error, ที่มาของรูป)
+    ลำดับ: ไฟล์จากเครื่อง → ลิงก์รูป → รูปปกเพจ"""
+    if image_path:
+        try:
+            content = Path(image_path).read_bytes()
+        except OSError as e:
+            return False, f"เปิดไฟล์รูปไม่ได้: {e}", "ไฟล์จากเครื่อง"
+        ok, img = _upload_image_bytes(content)
+        return ok, img, "ไฟล์จากเครื่อง"
+    src = "ลิงก์รูป"
+    if not image_url:
+        _, image_url = _page_cover()
+        src = "รูปปกเพจ"
+    if not image_url:
+        return False, "ไม่มีรูป และหารูปปกเพจไม่เจอ — ใส่รูปเอง", src
+    ok, img = _upload_image(image_url)
+    return ok, img, src
+
+
 def app_status() -> dict[str, Any]:
     """สถานะของ agent นี้สำหรับหน้าแอป: พร้อมไหม / วันนี้เหลือสร้างได้กี่แคมเปญ / ชื่อเพจ"""
     chk = _run_checks(None, count_campaigns=True)
@@ -1140,7 +1162,9 @@ def create_full(spec: dict[str, Any]) -> dict[str, Any]:
         return ok
 
     def done(**extra: Any) -> dict[str, Any]:
-        return {"success": all(s["ok"] for s in steps if s["key"] != "verify"), "agent": AGENT, "steps": steps, **extra}
+        # ขั้น "เสริม" ไม่ทำให้ทั้งชุดล้ม: อ่านความสนใจกลับ · โฆษณารูปชวนดู Live (ชุดยังอยู่ เติมโฆษณาทีหลังได้)
+        return {"success": all(s["ok"] for s in steps if s["key"] not in SOFT_STEPS), "agent": AGENT,
+                "steps": steps, **extra}
 
     kind = str(spec.get("kind", "")).upper()
     name = str(spec.get("name", "")).strip()
@@ -1199,26 +1223,7 @@ def create_full(spec: dict[str, Any]) -> dict[str, Any]:
                                     step, done)
 
     # 2) เตรียมรูปก่อนสร้างอะไรใน Meta — รูปพังจะได้ไม่เหลือแคมเปญค้าง
-    image_path = spec.get("image_path")
-    image_url = str(spec.get("image_url") or "").strip()
-    if image_path:
-        try:
-            content = Path(image_path).read_bytes()
-        except OSError as e:
-            step("image", "รูปโฆษณา", {"success": False, "error": f"เปิดไฟล์รูปไม่ได้: {e}"})
-            return done()
-        ok, img = _upload_image_bytes(content)
-        src = "ไฟล์จากเครื่อง"
-    else:
-        if not image_url:
-            _, image_url = _page_cover()
-            src = "รูปปกเพจ"
-        else:
-            src = "ลิงก์รูป"
-        if not image_url:
-            step("image", "รูปโฆษณา", {"success": False, "error": "ไม่มีรูป และหารูปปกเพจไม่เจอ — ใส่รูปเอง"})
-            return done()
-        ok, img = _upload_image(image_url)
+    ok, img, src = _prepare_image(spec.get("image_path"), str(spec.get("image_url") or "").strip())
     if not step("image", "รูปโฆษณา", {"success": ok, "error": img}, f"อัปโหลดแล้ว ({src})"):
         return done()
     image_hash = img
@@ -1247,13 +1252,32 @@ def create_full(spec: dict[str, Any]) -> dict[str, Any]:
                                 f"{META_AD_ACCOUNT_ID.removeprefix('act_')}&selected_campaign_ids={camp['campaign_id']}")
 
 
+SOFT_STEPS = {"verify", "teaser"}
+
+
+def _live_event_url(live_id: str) -> str:
+    return f"https://www.facebook.com/events/{live_id}"
+
+
+def _live_default_text(live: dict[str, Any]) -> str:
+    start = datetime.fromisoformat(live["start_time"]).strftime("%d/%m %H:%M")
+    return f"🔴 Live สด \"{live['name']}\" {start} น. — กดติดตามไว้ ไม่พลาด!"
+
+
+def _live_teaser_ad(adset_id: str, ad_name: str, live: dict[str, Any], text: str, image_hash: str) -> dict[str, Any]:
+    """โฆษณารูปชวนดู Live (PAUSED): รูป + ข้อความ + ปุ่ม "ดูเพิ่มเติม" → หน้ากิจกรรม Live
+    (API ผูกตัว Live ที่นัดไว้ไม่ได้ — ลอง 13/11/69: นัด Live ผ่าน API → (#3) แอปไม่มีสิทธิ์ Live Video API)"""
+    return _create_ad(adset_id, ad_name, text or _live_default_text(live), _live_event_url(live["id"]),
+                      lambda: (True, image_hash))
+
+
 def _create_full_live(spec: dict[str, Any], name: str, budget: int,
                       step: Callable[..., bool], done: Callable[..., dict[str, Any]]) -> dict[str, Any]:
     """create_full ชนิด Live สด · การรับรู้: แคมเปญ OUTCOME_AWARENESS → Ad Set REACH งบรวม ช่วงเวลาเดียวกับ Live
-    ไม่สร้างโฆษณา — API ของ Meta ยังผูก Live ที่นัดไว้ล่วงหน้าไม่ได้ (ลอง 13/11/69: โพสต์กิจกรรม → "ไม่สามารถโปรโมทโน้ตได้")
-    ผู้ใช้ผูก Live เองใน Ads Manager ตามขั้นตอนใน live_next
-    spec: live_id, live_hours, daily_budget_thb (= งบรวมทั้ง Live), text? (เกี่ยวกับ Live), age_min?, age_max?,
-          languages?, interests?"""
+    → โฆษณารูปชวนดู Live (ล้มได้โดยไม่ล้มทั้งชุด) · ตอน Live ออกอากาศ ผู้ใช้กดปุ่มเพิ่มโฆษณาคลิป Live (live_ads mode=live)
+    API ผูก Live ที่นัดไว้ล่วงหน้าไม่ได้ (13/11/69: โพสต์กิจกรรม → "ไม่สามารถโปรโมทโน้ตได้" · นัด Live เอง → (#3))
+    spec: live_id, live_hours, daily_budget_thb (= งบรวมทั้ง Live), text? (เกี่ยวกับ Live), image_path?, image_url?,
+          age_min?, age_max?, languages?, interests?"""
     live_id = str(spec.get("live_id") or "").strip()
     text = str(spec.get("text") or "").strip()
     try:
@@ -1295,6 +1319,8 @@ def _create_full_live(spec: dict[str, Any], name: str, budget: int,
     perm = check_permission(budget)
     if not step("check", "เช็คสิทธิ์", perm, "ผ่านทุกเงื่อนไข"):
         return done()
+    # รูปเตรียมก่อนสร้างแคมเปญ — แต่รูปพังไม่หยุดทั้งชุด (ผู้ใช้เลือก 3A: เก็บชุดไว้ แล้วเติมโฆษณาทีหลังได้)
+    img_ok, img, img_src = _prepare_image(spec.get("image_path"), str(spec.get("image_url") or "").strip())
     camp = create_campaign(name, "OUTCOME_AWARENESS", budget)
     if not step("campaign", "แคมเปญ", camp, f"{camp.get('name', '')} · การรับรู้"):
         return done()
@@ -1308,11 +1334,18 @@ def _create_full_live(spec: dict[str, Any], name: str, budget: int,
         return done(campaign_id=camp["campaign_id"])
     if (chk := _verify_interests(adset["adset_id"], aud["interests"])):
         step(chk["key"], chk["label"], {"success": chk["ok"], "error": chk["detail"]}, chk["detail"])
+    retry = "ชุดยังอยู่ — กด \"＋ โฆษณา\" ในตารางแคมเปญเพื่อสร้างใหม่"
+    ad = (_live_teaser_ad(adset["adset_id"], f"{name} - รูปชวนดู Live", live, text, img) if img_ok
+          else {"success": False, "error": img})
+    if not ad.get("success"):
+        ad = {**ad, "error": f"{ad.get('error') or 'ไม่สำเร็จ'} · {retry}"}
+    step("teaser", "โฆษณารูปชวนดู Live", ad, f"หยุดไว้ · {img_src} · ปุ่ม ดูเพิ่มเติม → หน้ากิจกรรม Live")
 
     act = META_AD_ACCOUNT_ID.removeprefix("act_")
     dash = send_to_dashboard("last_7d")
     return done(
         campaign_id=camp["campaign_id"], adset_id=adset["adset_id"], campaign_name=camp["name"],
+        **({"ad_id": ad["ad_id"]} if ad.get("success") else {}),
         dashboard_updated=bool(dash.get("delivered")),
         ads_manager_url=f"https://adsmanager.facebook.com/adsmanager/manage/campaigns?act={act}"
                         f"&selected_campaign_ids={camp['campaign_id']}",
@@ -1745,25 +1778,139 @@ def _ad_copy(adset_id: str) -> dict[str, Any]:
             "link_url": "" if link.startswith(MESSENGER_LINK) else link}
 
 
+def _find_adset(spec: dict[str, Any]) -> tuple[bool, str]:
+    """spec.adset_id หรือ spec.campaign_id (แคมเปญที่มี Ad Set ชุดเดียว) → (ok, adset_id หรือข้อความ error)"""
+    adset_id = str(spec.get("adset_id") or "").strip()
+    campaign_id = str(spec.get("campaign_id") or "").strip()
+    if not (adset_id or campaign_id).isdigit():
+        return False, "ไม่รู้ว่าจะแก้ Ad Set ไหน"
+    if adset_id:
+        return True, adset_id
+    ok, camp = _own_object(campaign_id, "id,name,effective_status")
+    if not ok:
+        return False, camp
+    if camp.get("effective_status") in ("ARCHIVED", "DELETED"):   # ตารางในแอปอาจยังโชว์สถานะเก่า
+        return False, f"แคมเปญ {camp.get('name')} ถูก{'เก็บถาวร' if camp['effective_status'] == 'ARCHIVED' else 'ลบ'}ใน Ads Manager แล้ว — แก้ไม่ได้"
+    ok, body = _graph_get(f"{campaign_id}/adsets", {"fields": "id", "limit": 5})
+    ids = [str(x["id"]) for x in (body.get("data", []) if ok else [])]
+    if not ok or not ids:
+        return False, "หา Ad Set ของแคมเปญนี้ไม่เจอ" + (f": {_meta_error(body)}" if not ok else "")
+    if len(ids) > 1:
+        return False, f"แคมเปญนี้มี Ad Set {len(ids)} ชุด — แก้ใน Ads Manager แทน"
+    return True, ids[0]
+
+
+def _on_air_live() -> tuple[dict[str, Any] | None, str | None]:
+    """Live ที่กำลังออกอากาศบนเพจ → ({id, title, video_id, story_id, started}, None) · ไม่มี → (None, None)
+    story_id = โพสต์ของ Live บนเพจ (ใช้เป็น object_story_id ของโฆษณา)"""
+    ok, body = _graph_get(f"{META_PAGE_ID}/live_videos", {
+        "broadcast_status": json.dumps(["LIVE"]), "fields": "id,title,status,creation_time,video{id}", "limit": 5})
+    if not ok:
+        return None, f"อ่าน Live ของเพจไม่ได้: {_meta_error(body)}"
+    rows = [x for x in body.get("data", []) if x.get("status") == "LIVE" and (x.get("video") or {}).get("id")]
+    if not rows:
+        return None, None
+    lv = rows[0]
+    video_id = str(lv["video"]["id"])
+    ok, v = _graph_get(video_id, {"fields": "post_id"})
+    post = str(v.get("post_id") or "") if ok else ""
+    story_id = post if "_" in post else f"{META_PAGE_ID}_{post or video_id}"
+    started = ""
+    if lv.get("creation_time"):
+        try:
+            started = datetime.strptime(lv["creation_time"], "%Y-%m-%dT%H:%M:%S%z").astimezone(TH_TZ).strftime("%H:%M")
+        except ValueError:
+            pass
+    return {"id": str(lv["id"]), "title": lv.get("title") or "Live", "video_id": video_id,
+            "story_id": story_id, "started": started}, None
+
+
+def _live_video_ad(adset_id: str, ad_name: str, story_id: str) -> dict[str, Any]:
+    """โฆษณาคลิป Live (PAUSED) จากโพสต์ของ Live ที่กำลังออกอากาศ — ใช้โพสต์เดิมของเพจ (object_story_id)"""
+    perm = _run_checks(None, count_campaigns=False)
+    if not perm["allowed"]:
+        log_action("create_ad", False, {"blocked": perm["reason"]})
+        return {"success": False, "blocked_by": "check_permission", **perm}
+    ad_name = with_prefix(ad_name)
+    ok, cr = _graph_post(f"{META_AD_ACCOUNT_ID}/adcreatives", {"name": f"{ad_name}-Creative",
+                                                              "object_story_id": story_id})
+    if not ok:
+        log_action("create_ad", False, {"name": ad_name, "step": "creative", "live": True, "error": _meta_error(cr)})
+        return {"success": False, "error": f"Meta ไม่รับโพสต์ Live เป็นโฆษณา: {_meta_error(cr)}"}
+    ok, body = _graph_post(f"{META_AD_ACCOUNT_ID}/ads", {
+        "name": ad_name, "adset_id": adset_id, "creative": {"creative_id": cr["id"]}, "status": REQUIRED_STATUS})
+    log_action("create_ad", ok, {"name": ad_name, "adset_id": adset_id, "creative_id": cr["id"], "live": True,
+                                 "story_id": story_id, "ad_id": body.get("id") if ok else None,
+                                 "error": None if ok else _meta_error(body)})
+    if not ok:
+        return {"success": False, "error": _meta_error(body), "creative_id": cr["id"]}
+    return {"success": True, "ad_id": body["id"], "creative_id": cr["id"], "name": ad_name, "status": REQUIRED_STATUS}
+
+
+def live_ads(spec: dict[str, Any]) -> dict[str, Any]:
+    """(ปุ่ม "＋ โฆษณา" / "🔴 สร้างโฆษณาจาก Live ที่กำลังออกอากาศ") เติมโฆษณาให้ชุด Live ที่สร้างไปแล้ว
+    spec: adset_id หรือ campaign_id · mode:
+      info   = ข้อมูลชุด + จำนวนโฆษณา + Live ที่นัดไว้ + Live ที่กำลังออกอากาศ
+      teaser = โฆษณารูปชวนดู Live (live_id, text?, image_path?) · ปุ่ม ดูเพิ่มเติม → หน้ากิจกรรม Live
+      live   = โฆษณาคลิป Live จาก Live ที่กำลังออกอากาศบนเพจ
+    กฎ: เฉพาะชุดของ agent นี้ · โฆษณาที่สร้าง = PAUSED เสมอ · ไม่แตะสถานะ/งบของชุด"""
+    mode = str(spec.get("mode") or "info")
+    if mode not in ("info", "teaser", "live"):
+        return {"success": False, "error": "ไม่รู้ว่าจะทำอะไร"}
+    if not META_PAGE_ID:
+        return {"success": False, "error": "ยังไม่ได้ใส่ META_PAGE_ID ใน .env"}
+    ok, adset_id = _find_adset(spec)
+    if not ok:
+        return {"success": False, "error": adset_id}
+    ok, aset = _own_object(adset_id, "id,name,status,start_time,end_time,campaign{id,name,status,objective}")
+    if not ok:
+        return {"success": False, "error": aset}
+    camp = aset.get("campaign") or {}
+    ok, ads = _graph_get(f"{adset_id}/ads", {"fields": "id", "limit": 50})
+    base = {"adset_id": adset_id, "adset_name": aset.get("name"), "campaign_id": camp.get("id"),
+            "campaign_name": camp.get("name"), "ads": len(ads.get("data", [])) if ok else None,
+            "start_time": aset.get("start_time"), "end_time": aset.get("end_time")}
+    base_name = str(aset.get("name") or "").removeprefix(AGENT_PREFIX).removesuffix(" - Live")
+
+    if mode == "info":
+        found = live_events()
+        air, air_err = _on_air_live()
+        return {"success": True, **base, "lives": found.get("lives", []),
+                "on_air": {k: air[k] for k in ("title", "started")} if air else None,
+                "error_lives": None if found["success"] else found["error"], "error_on_air": air_err}
+
+    if mode == "live":
+        air, err = _on_air_live()
+        if err:
+            return {"success": False, **base, "error": err}
+        if not air:
+            return {"success": False, **base, "not_live": True,
+                    "error": "ยังไม่เจอ Live ที่กำลังออกอากาศบนเพจ — เริ่ม Live แล้วกดอีกครั้ง (ไม่มีอะไรถูกสร้าง)"}
+        ad = _live_video_ad(adset_id, f"{base_name} - คลิป Live", air["story_id"])
+        return {**ad, **base, "live_title": air["title"], "live_started": air["started"],
+                **({"ads": (base["ads"] or 0) + 1} if ad.get("success") else {})}
+
+    # teaser
+    live_id = str(spec.get("live_id") or "").strip()
+    found = live_events()
+    live = next((x for x in found.get("lives", []) if x["id"] == live_id), None)
+    if not live:
+        return {"success": False, **base, "error": found.get("error") or "เลือก Live ที่นัดไว้ (ที่ยังไม่เริ่ม)"}
+    ok, img, src = _prepare_image(spec.get("image_path"), "")
+    if not ok:
+        return {"success": False, **base, "error": img}
+    ad = _live_teaser_ad(adset_id, f"{base_name} - รูปชวนดู Live", live,
+                         str(spec.get("text") or "").strip(), img)
+    return {**ad, **base, "image_source": src, **({"ads": (base["ads"] or 0) + 1} if ad.get("success") else {})}
+
+
 def adset_interests(spec: dict[str, Any]) -> dict[str, Any]:
     """(ปุ่ม "＋ เพิ่มความสนใจให้ Ad Set นี้") อ่าน/บันทึกความสนใจของ Ad Set ที่สร้างไปแล้ว
     spec: adset_id หรือ campaign_id · save=true + interests [{id,name}] = บันทึก (แทนที่ชุดเดิมทั้งหมด)
     กฎ: แก้ได้เฉพาะงานของ agent นี้ · ทั้งแคมเปญและ Ad Set ต้องหยุดอยู่ (PAUSED) · ไม่แตะสถานะ/งบ/ส่วนอื่น"""
-    adset_id = str(spec.get("adset_id") or "").strip()
-    campaign_id = str(spec.get("campaign_id") or "").strip()
-    if not (adset_id or campaign_id).isdigit():
-        return {"success": False, "error": "ไม่รู้ว่าจะแก้ Ad Set ไหน"}
-    if not adset_id:
-        ok, camp = _own_object(campaign_id, "id,name")
-        if not ok:
-            return {"success": False, "error": camp}
-        ok, body = _graph_get(f"{campaign_id}/adsets", {"fields": "id", "limit": 5})
-        ids = [str(x["id"]) for x in (body.get("data", []) if ok else [])]
-        if not ok or not ids:
-            return {"success": False, "error": "หา Ad Set ของแคมเปญนี้ไม่เจอ" + (f": {_meta_error(body)}" if not ok else "")}
-        if len(ids) > 1:
-            return {"success": False, "error": f"แคมเปญนี้มี Ad Set {len(ids)} ชุด — แก้ใน Ads Manager แทน"}
-        adset_id = ids[0]
+    ok, adset_id = _find_adset(spec)
+    if not ok:
+        return {"success": False, "error": adset_id}
     ok, aset = _own_object(adset_id, "id,name,status,campaign{id,name,status},targeting")
     if not ok:
         return {"success": False, "error": aset}
@@ -1868,13 +2015,15 @@ def run_http(server, host: str, port: int) -> None:
 
 if __name__ == "__main__":
     if (ARGS.status or ARGS.create_json or ARGS.suggest_json or ARGS.search_json or ARGS.adset_json
-            or ARGS.reach_json or ARGS.lives):
+            or ARGS.reach_json or ARGS.lives or ARGS.live_ad_json):
         if ARGS.status:
             out = app_status()
         elif ARGS.lives:
             out = live_events()
         elif ARGS.reach_json:
             out = interests_reach(json.loads(Path(ARGS.reach_json).read_text(encoding="utf-8")))
+        elif ARGS.live_ad_json:
+            out = live_ads(json.loads(Path(ARGS.live_ad_json).read_text(encoding="utf-8")))
         elif ARGS.adset_json:
             out = adset_interests(json.loads(Path(ARGS.adset_json).read_text(encoding="utf-8")))
         elif ARGS.suggest_json:

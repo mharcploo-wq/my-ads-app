@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AdsetInterests from "@/components/AdsetInterests";
+import { LiveOnAirButton } from "@/components/LiveAds";
 import InterestPicker, { Interest } from "@/components/InterestPicker";
 import { clearDraft, FileGroup, FormDraft, loadDraft, loadFiles, saveDraft, saveFiles } from "@/lib/draft";
 import type { LiveEvent, LiveNext, LiveOptions } from "@/lib/creator";
@@ -39,7 +40,7 @@ const AGENTS: { id: AgentId; label: string; color: string; prefix: string }[] = 
 const KINDS: { id: Kind; icon: string; label: string; hint: string; cta: string }[] = [
   { id: "MESSENGER", icon: "💬", label: "ยิงข้อความ", hint: "คนกดปุ่ม \"ส่งข้อความ\" ทักแชทเพจ", cta: "ส่งข้อความ" },
   { id: "WEBSITE", icon: "🔗", label: "พาเข้าเว็บไซต์", hint: "คนกดปุ่ม \"ดูเพิ่มเติม\" ไปหน้าเว็บ", cta: "ดูเพิ่มเติม" },
-  { id: "LIVE", icon: "🔴", label: "Live สด", hint: "การรับรู้ · คนเห็น Live มากที่สุด", cta: "ดูวิดีโอ" },
+  { id: "LIVE", icon: "🔴", label: "Live สด", hint: "การรับรู้ · คนเห็น Live มากที่สุด", cta: "ดูเพิ่มเติม" },
 ];
 
 /** วันเวลาของ Live แบบไทย เช่น "จ. 16 พ.ย. 2569 · 06:00 น." */
@@ -412,8 +413,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
     if (ageHi != null) fd.set("age_max", String(ageHi));
     if (interests.length) fd.set("interests", JSON.stringify(interests.map(({ id, name }) => ({ id, name }))));
     pickedLangs.forEach((k) => fd.append("languages", k));
-    if (isLive) { /* ไม่มีรูป — โฆษณาใช้ตัว Live เอง */ }
-    else if (isDyn) {
+    if (isDyn && !isLive) {
       fd.set("dynamic", "1");
       fd.delete("text");
       dynImages.forEach((f) => fd.append("images", f));
@@ -558,7 +558,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
           <small className="c-hint">คิดให้ {liveOpt.thb_per_hour.toLocaleString()} บาท/ชม. แก้ตัวเลขเองได้ · ใช้ &quot;งบรวม&quot; เพราะงบรายวัน Meta บังคับให้เปิดอย่างน้อย 24 ชม.</small>
         )}
 
-        {isLive ? (<div className="field"><label htmlFor="c-text">เกี่ยวกับ Live นี้ <small className="c-hint">(ไม่บังคับ — ให้ AI ใช้คิดกลุ่มเป้าหมาย และไว้คัดลอกเป็นข้อความโฆษณาใน Ads Manager)</small></label>
+        {isLive ? (<div className="field"><label htmlFor="c-text">ข้อความชวนดู Live <small className="c-hint">(ไม่บังคับ — เป็นข้อความของโฆษณารูป และให้ AI ใช้คิดกลุ่มเป้าหมาย · ว่าง = แอปเขียนชื่อ+เวลา Live ให้)</small></label>
           <textarea id="c-text" className="input c-text" value={text} maxLength={2000} placeholder="เช่น Live แนะนำระบบ ERP + AI สำหรับโรงงาน ถาม-ตอบสด" onChange={(e) => setText(e.target.value)} /></div>)
         : !isDyn && (<div className="field"><label htmlFor="c-text">ข้อความโฆษณา</label>
           <textarea id="c-text" className="input c-text" value={text} maxLength={2000} placeholder="เช่น ทักแชทสอบถามสินค้าได้เลยครับ" onChange={(e) => setText(e.target.value)} /></div>)}
@@ -626,8 +626,8 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
             </div>
           ))}
           {titles.length < crOpt.max_titles && <button type="button" className="btn c-more" onClick={() => setTitles([...titles, ""])}>＋ เพิ่มพาดหัว</button>}
-        </>) : isLive ? null : (<>
-        <div className="c-label">รูปโฆษณา</div>
+        </>) : (<>
+        <div className="c-label">{isLive ? "รูปโฆษณาชวนดู Live" : "รูปโฆษณา"}</div>
         <div className={`c-drop ${dragOver ? "over" : ""}`}
           onDragOver={(e) => { e.preventDefault(); setDragOver(true); }} onDragLeave={() => setDragOver(false)}
           onDrop={(e) => { e.preventDefault(); setDragOver(false); pickFile(e.dataTransfer.files?.[0]); }}>
@@ -641,6 +641,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
         {!file && (
           <input className="input" style={{ marginTop: 8, width: "100%" }} value={imageUrl} placeholder="หรือวางลิงก์รูป (ไม่ใส่ = ใช้รูปปกเพจ)" onChange={(e) => setImageUrl(e.target.value)} />
         )}
+        {isLive && <small className="c-hint">แอปสร้างโฆษณารูปนี้ให้ทันที (หยุดไว้) · คนกด &quot;ดูเพิ่มเติม&quot; → หน้ากิจกรรม Live · ตอน Live ออกอากาศ กดปุ่ม 🔴 ในการ์ดผลลัพธ์เพื่อเพิ่มโฆษณาคลิป Live</small>}
         </>)}
 
         <div className="c-label">กลุ่มเป้าหมาย</div>
@@ -755,13 +756,12 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
               {result.steps.map((s) => (
                 <li key={s.key} className={s.ok ? "ok" : "bad"}>{s.ok ? "✔" : "✖"} {s.label} — {s.detail}</li>
               ))}
-              {result.success && result.live_next && (
-                <li className="c-pend">◐ โฆษณา — ต้องผูก Live ใน Ads Manager (API ของ Meta ยังผูก Live ที่นัดไว้ล่วงหน้าไม่ได้)</li>
-              )}
             </ul>
             {result.success && result.live_next && (
-              <div className="c-next">
-                <b>ทำต่อใน Ads Manager</b>
+              <>
+              {result.adset_id && <LiveOnAirButton agent={agent} adsetId={result.adset_id} liveName={result.live_next.live_name} />}
+              <details className="c-next">
+                <summary>ทางสำรอง: ผูก Live เองใน Ads Manager</summary>
                 {result.live_next.adset_name && (
                   <div className="c-target">
                     🎯 ชุดที่ต้องเปิด: <b>{result.live_next.adset_name}</b>
@@ -777,7 +777,8 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
                   )}
                 </div>
                 <small className="c-hint">⏰ ตั้งโฆษณาให้เสร็จก่อน Live &quot;{result.live_next.live_name}&quot; ({fmtLive(result.live_next.start_time)}) อย่างน้อย {result.live_next.lead_hours} ชม. และเริ่ม Live จากรายการที่นัดไว้ใน Live Producer โฆษณาถึงจะวิ่ง</small>
-              </div>
+              </details>
+              </>
             )}
             {result.success && (
               <div className="c-actions">
@@ -801,7 +802,10 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
         <div className="fbp">
           <div className="fbp-h"><div className="fbp-av" /><div><b>{cur?.page_name ?? "เพจของคุณ"}</b><small>ได้รับการสนับสนุน</small></div></div>
           <p className="fbp-text">{(isDyn ? combo?.t : text) || <span className="fbp-ph">ข้อความโฆษณาจะแสดงตรงนี้</span>}</p>
-          {isLive
+          {isLive && previewImage
+            // eslint-disable-next-line @next/next/no-img-element
+            ? <img className="fbp-img" src={previewImage} alt="รูปโฆษณาชวนดู Live" />
+            : isLive
             ? <div className="fbp-img fbp-live"><span className="fbp-live-b">🔴 ถ่ายทอดสด</span><b>{live?.name ?? "Live ที่นัดไว้"}</b>
                 {live && <small>{fmtLive(live.start_time)}</small>}</div>
             : isDyn
@@ -816,8 +820,8 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
             ? <img className="fbp-img" src={previewImage} alt="รูปโฆษณา" />
             : <div className="fbp-img fbp-noimg">รูปโฆษณา</div>}
           <div className="fbp-cta">
-            <div><small>{kind === "MESSENGER" ? "MESSENGER" : isLive ? "FACEBOOK LIVE" : (link.replace(/^https?:\/\//, "").split("/")[0] || "เว็บไซต์ของคุณ").toUpperCase()}</small>
-              <b>{(isDyn && combo?.h) || name || "ชื่อแคมเปญ"}</b></div>
+            <div><small>{kind === "MESSENGER" ? "MESSENGER" : isLive ? "FACEBOOK · กิจกรรม LIVE" : (link.replace(/^https?:\/\//, "").split("/")[0] || "เว็บไซต์ของคุณ").toUpperCase()}</small>
+              <b>{(isLive && live?.name) || (isDyn && combo?.h) || name || "ชื่อแคมเปญ"}</b></div>
             <span>{kindInfo.cta}</span>
           </div>
         </div>
@@ -828,7 +832,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
             <button type="button" className="btn" aria-label="ชุดถัดไป" onClick={() => setPvIdx((pvIdx + 1) % combos.length)}>›</button>
           </div>
         )}
-        <p className="c-hint" style={{ textAlign: "center" }}>{isLive ? `ชิ้นงาน: ตัว Live (เลือกใน Ads Manager)` : `${isDyn ? "ชิ้นงาน" : "รูปที่ใช้"}: ${imageSource}`}</p>
+        <p className="c-hint" style={{ textAlign: "center" }}>{isLive ? `โฆษณารูปชวนดู Live · รูปที่ใช้: ${imageSource} · คลิป Live เพิ่มได้ตอนออกอากาศ` : `${isDyn ? "ชิ้นงาน" : "รูปที่ใช้"}: ${imageSource}`}</p>
 
         <div className="c-checks">
           <b>เช็คก่อนสร้าง</b>

@@ -1,6 +1,7 @@
 "use client";
 import { useMemo, useState } from "react";
 import AdsetInterests from "@/components/AdsetInterests";
+import LiveAds from "@/components/LiveAds";
 import { CampaignStat, fmt } from "@/lib/calc";
 import { AGENTS } from "@/lib/types";
 
@@ -35,6 +36,7 @@ const OBJ: Record<string, string> = {
 /** editable = ข้อมูลจริง (ข้อมูลตัวอย่างไม่มี Ad Set จริงให้แก้) */
 export default function CampaignTable({ rows, editable = false }: { rows: CampaignStat[]; editable?: boolean }) {
   const [edit, setEdit] = useState<{ agent: AgentId; campaignId: string } | null>(null);
+  const [addAd, setAddAd] = useState<{ agent: AgentId; campaignId: string } | null>(null);   // เติมโฆษณาให้ชุด Live
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("all");
   const [sort, setSort] = useState<{ k: SortKey; desc: boolean }>({ k: "spend", desc: true });
@@ -96,6 +98,10 @@ export default function CampaignTable({ rows, editable = false }: { rows: Campai
                       <button className="btn camp-act" title="แก้ความสนใจของ Ad Set ในแคมเปญนี้ (เฉพาะที่หยุดอยู่)"
                         onClick={() => setEdit({ agent: AGENTS[r.prefix].key as AgentId, campaignId: r.id })}>＋ ความสนใจ</button>
                     )}
+                    {editable && r.status.includes("PAUSED") && r.objective === "OUTCOME_AWARENESS" && (
+                      <button className="btn camp-act" title="สร้างโฆษณารูปชวนดู Live หรือโฆษณาคลิป Live ให้ชุดในแคมเปญนี้ (หยุดไว้)"
+                        onClick={() => setAddAd({ agent: AGENTS[r.prefix].key as AgentId, campaignId: r.id })}>＋ โฆษณา</button>
+                    )}
                   </td>
                   <td className="l"><span className="status" style={{ ["--c" as string]: st.c }}>{st.th}</span></td>
                   <td>{fmt.baht(r.spend)}</td>
@@ -114,6 +120,7 @@ export default function CampaignTable({ rows, editable = false }: { rows: Campai
         </table>
       </div>
       {edit && <AdsetInterests agent={edit.agent} campaignId={edit.campaignId} onClose={() => setEdit(null)} />}
+      {addAd && <LiveAds agent={addAd.agent} campaignId={addAd.campaignId} onClose={() => setAddAd(null)} />}
     </div>
   );
 }
