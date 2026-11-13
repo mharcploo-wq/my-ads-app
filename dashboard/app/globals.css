@@ -242,6 +242,8 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .c-confirm { margin-top: 12px; border: 1px solid var(--warning); background: #2a2412; border-radius: 10px; padding: 10px 12px; font-size: 13.5px; line-height: 1.6; color: var(--text-secondary); }
 .c-confirm b { color: var(--warning); display: block; margin-bottom: 2px; }
 .c-confirm .c-actions { margin-top: 8px; }
+.c-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.c-head .btn { padding: 4px 12px; font-size: 13px; }
 .c-itag { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--accent); border-radius: 999px; padding: 1px 4px 1px 10px; font-size: 12.5px; line-height: 1.7; }
 .c-itag small { color: var(--text-muted); }
 .c-itag button { background: none; border: 0; color: var(--text-muted); cursor: pointer; padding: 0 4px; font-size: 12px; }

@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AdsetInterests from "@/components/AdsetInterests";
 import InterestPicker, { Interest } from "@/components/InterestPicker";
+import { clearDraft, FileGroup, FormDraft, loadDraft, loadFiles, saveDraft, saveFiles } from "@/lib/draft";
 
 type AgentId = "claude" | "manus" | "chatgpt";
 type Kind = "MESSENGER" | "WEBSITE";
@@ -68,16 +69,25 @@ function VideoThumb({ url, file, onRemove }: { url: string; file: File; onRemove
   );
 }
 
+/** ค่าเริ่มต้นของฟอร์ม (ตอนเปิดครั้งแรก และหลังกดรีเซ็ต) */
+const blankForm = (): Omit<FormDraft, "agent" | "savedAt"> => ({
+  kind: "MESSENGER", name: "", budget: "300", text: "", link: "", imageUrl: "",
+  startMode: "now", startDate: thDate(1), startTime: "08:00", hasEnd: false, endDate: thDate(8), endTime: "23:59",
+  ageMin: null, ageMax: null, langs: null, interests: [], dynamic: false, texts: [""], titles: [],
+});
+
 export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
+  // ร่างที่กรอกค้างไว้ (สลับแท็บ/รีเฟรช/ปิดเบราว์เซอร์แล้วกลับมาได้) — ล้างเมื่อกดรีเซ็ตเท่านั้น
+  const [d0] = useState(() => ({ ...blankForm(), ...(loadDraft() ?? {}) }));
   const [status, setStatus] = useState<AgentStatus[] | null>(null);
   const [statusErr, setStatusErr] = useState<string | null>(null);
-  const [agent, setAgent] = useState<AgentId>("claude");
-  const [kind, setKind] = useState<Kind>("MESSENGER");
-  const [name, setName] = useState("");
-  const [budget, setBudget] = useState("300");
-  const [text, setText] = useState("");
-  const [link, setLink] = useState("");
-  const [imageUrl, setImageUrl] = useState("");
+  const [agent, setAgent] = useState<AgentId>(AGENTS.some((a) => a.id === d0.agent) ? d0.agent as AgentId : "claude");
+  const [kind, setKind] = useState<Kind>(KINDS.some((k) => k.id === d0.kind) ? d0.kind as Kind : "MESSENGER");
+  const [name, setName] = useState(d0.name);
+  const [budget, setBudget] = useState(d0.budget);
+  const [text, setText] = useState(d0.text);
+  const [link, setLink] = useState(d0.link);
+  const [imageUrl, setImageUrl] = useState(d0.imageUrl);
   const [file, setFile] = useState<File | null>(null);
   const [filePreview, setFilePreview] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -85,28 +95,33 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
   const [result, setResult] = useState<CreateResult | null>(null);
   const [submitErr, setSubmitErr] = useState<string | null>(null);
   // กำหนดเวลาเผยแพร่ (เวลาไทย)
-  const [startMode, setStartMode] = useState<"now" | "set">("now");
-  const [startDate, setStartDate] = useState(() => thDate(1));
-  const [startTime, setStartTime] = useState("08:00");
-  const [hasEnd, setHasEnd] = useState(false);
-  const [endDate, setEndDate] = useState(() => thDate(8));
-  const [endTime, setEndTime] = useState("23:59");
+  const [startMode, setStartMode] = useState<"now" | "set">(d0.startMode === "set" ? "set" : "now");
+  const [startDate, setStartDate] = useState(d0.startDate);
+  const [startTime, setStartTime] = useState(d0.startTime);
+  const [hasEnd, setHasEnd] = useState(!!d0.hasEnd);
+  const [endDate, setEndDate] = useState(d0.endDate);
+  const [endTime, setEndTime] = useState(d0.endTime);
   // กลุ่มเป้าหมาย — null = ยังไม่แตะ ใช้ค่าเริ่มต้นจาก server.py
-  const [ageMin, setAgeMin] = useState<number | null>(null);
-  const [langs, setLangs] = useState<string[] | null>(null);
-  const [ageMax, setAgeMax] = useState<number | null>(null);
-  const [interests, setInterests] = useState<Interest[]>([]);
+  const [ageMin, setAgeMin] = useState<number | null>(d0.ageMin);
+  const [langs, setLangs] = useState<string[] | null>(d0.langs);
+  const [ageMax, setAgeMax] = useState<number | null>(d0.ageMax);
+  const [interests, setInterests] = useState<Interest[]>(d0.interests);
   const [pickerKey, setPickerKey] = useState(0);         // เปลี่ยนค่า = ล้างข้อความ/ช่องค้นในกล่องความสนใจ
   const [editAdset, setEditAdset] = useState(false);     // กล่องเพิ่มความสนใจให้ Ad Set ที่เพิ่งสร้าง
   const [confirmEmpty, setConfirmEmpty] = useState(false); // กดสร้างตอนยังไม่มีความสนใจ → ถามก่อน
   const kwInput = useRef<HTMLInputElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   // ชิ้นงานโฆษณาแบบไดนามิก (ค่าเริ่มต้น = ปิด)
-  const [dynamic, setDynamic] = useState(false);
+  const [dynamic, setDynamic] = useState(!!d0.dynamic);
   const [dynImages, setDynImages] = useState<File[]>([]);
   const [dynVideos, setDynVideos] = useState<File[]>([]);
-  const [texts, setTexts] = useState<string[]>([""]);
-  const [titles, setTitles] = useState<string[]>([]);
+  const [texts, setTexts] = useState<string[]>(d0.texts.length ? d0.texts : [""]);
+  const [titles, setTitles] = useState<string[]>(d0.titles);
+  const [savedAt, setSavedAt] = useState<number | null>(d0.savedAt ?? null);   // บันทึกร่างล่าสุด
+  const [filesReady, setFilesReady] = useState(false);   // โหลดรูป/คลิปที่เก็บไว้เสร็จแล้ว (ก่อนนั้นห้ามเขียนทับ)
+  const [lostFiles, setLostFiles] = useState<string[]>([]);   // ไฟล์ที่เก็บไม่ลง (ต้องใส่ใหม่ถ้ารีเฟรช)
+  const [askReset, setAskReset] = useState(false);
+  const stored = useRef<Record<FileGroup, File[]>>({ single: [], images: [], videos: [] });   // ชุดที่เก็บอยู่ตอนนี้
   const [pvIdx, setPvIdx] = useState(0);
   const [dynMsg, setDynMsg] = useState<string | null>(null);
   const imgInput = useRef<HTMLInputElement>(null);
@@ -133,6 +148,47 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => { loadStatus(); }, [loadStatus]);
+
+  // รูป/คลิปที่เก็บไว้ในร่าง — โหลดครั้งเดียวตอนเปิดฟอร์ม
+  useEffect(() => {
+    let alive = true;
+    loadFiles().then((f) => {
+      if (!alive) return;
+      stored.current = f;
+      if (f.single[0]) setFile(f.single[0]);
+      if (f.images.length) setDynImages(f.images);
+      if (f.videos.length) setDynVideos(f.videos);
+      setFilesReady(true);
+    });
+    return () => { alive = false; };
+  }, []);
+
+  // บันทึกข้อความทุกช่องลงร่าง (รอให้หยุดพิมพ์ก่อนสักครู่) · ฟอร์มยังว่างเหมือนเพิ่งเปิด = ไม่ต้องบันทึก
+  useEffect(() => {
+    const t = setTimeout(() => {
+      const form = { kind, name, budget, text, link, imageUrl, startMode, startDate, startTime, hasEnd, endDate,
+        endTime, ageMin, ageMax, langs, interests, dynamic, texts, titles };
+      if (JSON.stringify(form) === JSON.stringify(blankForm()) && !loadDraft()) return;
+      const at = Date.now();
+      if (saveDraft({ ...form, agent, savedAt: at })) setSavedAt(at);
+    }, 400);
+    return () => clearTimeout(t);
+  }, [agent, kind, name, budget, text, link, imageUrl, startMode, startDate, startTime, hasEnd, endDate, endTime,
+    ageMin, ageMax, langs, interests, dynamic, texts, titles]);
+
+  // บันทึกรูป/คลิปเมื่อรายการเปลี่ยน (ข้ามชุดที่เพิ่งโหลดมา ไม่ต้องเขียนซ้ำ)
+  useEffect(() => {
+    if (!filesReady) return;
+    const now: Record<FileGroup, File[]> = { single: file ? [file] : [], images: dynImages, videos: dynVideos };
+    const groups = (Object.keys(now) as FileGroup[]).filter((g) =>
+      now[g].length !== stored.current[g].length || now[g].some((f, i) => f !== stored.current[g][i]));
+    if (!groups.length) return;
+    stored.current = now;
+    Promise.all(groups.map((g) => saveFiles(g, now[g]))).then((lost) => {
+      setLostFiles((prev) => [...prev.filter((n) => !groups.some((g) => now[g].some((f) => f.name === n))), ...lost.flat()]);
+      setSavedAt(Date.now());
+    });
+  }, [filesReady, file, dynImages, dynVideos]);
 
   useEffect(() => {
     if (!file) { setFilePreview(null); return; }
@@ -292,17 +348,55 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
     }
   }
 
-  function reset() {
-    setResult(null); setName(""); setText(""); setLink(""); setImageUrl(""); setFile(null);
-    setDynImages([]); setDynVideos([]); setTexts([""]); setTitles([]); setPvIdx(0);
-    setInterests([]); setPickerKey((k) => k + 1); setConfirmEmpty(false); setEditAdset(false);
+  /** ปุ่มรีเซ็ต (หลังยืนยัน): ล้างทุกช่อง รูป/คลิป และร่างที่เก็บไว้ — คงผู้สร้างที่เลือกไว้ */
+  async function reset() {
+    const b = blankForm();
+    setAskReset(false); setResult(null); setSubmitErr(null); setConfirmEmpty(false); setEditAdset(false);
+    setKind(b.kind as Kind); setName(b.name); setBudget(b.budget); setText(b.text); setLink(b.link); setImageUrl(b.imageUrl);
+    setStartMode(b.startMode); setStartDate(b.startDate); setStartTime(b.startTime);
+    setHasEnd(b.hasEnd); setEndDate(b.endDate); setEndTime(b.endTime);
+    setAgeMin(b.ageMin); setAgeMax(b.ageMax); setLangs(b.langs); setInterests([]); setPickerKey((k) => k + 1);
+    setDynamic(b.dynamic); setTexts(b.texts); setTitles(b.titles); setPvIdx(0); setDynMsg(null);
+    stored.current = { single: [], images: [], videos: [] };
+    setFile(null); setDynImages([]); setDynVideos([]); setLostFiles([]);
+    await clearDraft();
+    setSavedAt(null);
   }
+  // สิ่งที่จะหายถ้ากดรีเซ็ต — บอกในกล่องยืนยัน
+  const resetWhat = [
+    dynImages.length + (file ? 1 : 0) ? `รูป ${dynImages.length + (file ? 1 : 0)} รูป` : "",
+    dynVideos.length ? `คลิป ${dynVideos.length} คลิป` : "",
+    interests.length ? `ความสนใจ ${interests.length} รายการ` : "",
+  ].filter(Boolean);
+  const savedLabel = savedAt
+    ? new Date(savedAt).toLocaleString("th-TH", { timeZone: "Asia/Bangkok", hour: "2-digit", minute: "2-digit", day: "numeric", month: "short" })
+    : null;
 
   return (
     <div className="create-grid">
       <div className="card">
-        <h3>สร้างโฆษณาใหม่</h3>
+        <div className="c-head">
+          <h3>สร้างโฆษณาใหม่</h3>
+          <button type="button" className="btn" onClick={() => setAskReset(true)} disabled={busy}>↺ รีเซ็ต</button>
+        </div>
         <p className="hint">กรอกครบแล้วกดปุ่มเดียว — ระบบสร้างแคมเปญ กลุ่มเป้าหมาย และโฆษณาให้ครบชุด (หยุดไว้ก่อนเสมอ)</p>
+        <p className="c-hint">
+          {savedLabel ? `💾 เก็บร่างไว้ในเครื่องนี้แล้ว (${savedLabel})` : "💾 กรอกแล้วเก็บร่างไว้ในเครื่องนี้ให้เอง"}
+          {" "}— สลับหน้าหรือปิดเบราว์เซอร์แล้วกลับมาก็ยังอยู่ จนกว่าจะกดรีเซ็ต
+        </p>
+        {lostFiles.length > 0 && (
+          <div className="c-warn">เก็บไฟล์นี้ไว้ไม่ได้ (พื้นที่เบราว์เซอร์ไม่พอ) — ถ้ารีเฟรชหรือปิดหน้าต้องใส่ใหม่: {lostFiles.join(", ")}</div>
+        )}
+        {askReset && (
+          <div className="c-confirm" role="alertdialog" aria-label="ยืนยันรีเซ็ตฟอร์ม">
+            <b>ล้างทุกช่อง{resetWhat.length ? ` รวม${resetWhat.join("และ")}` : ""}?</b>
+            <div>ร่างที่เก็บไว้ในเครื่องนี้จะถูกลบด้วย กู้คืนไม่ได้ · ผู้สร้างที่เลือกไว้ ({AGENTS.find((a) => a.id === agent)?.label}) คงเดิม</div>
+            <div className="c-actions">
+              <button className="btn" onClick={() => setAskReset(false)}>ยกเลิก</button>
+              <button className="btn primary" onClick={reset}>ล้างเลย</button>
+            </div>
+          </div>
+        )}
 
         <div className="c-label">สร้างในนาม</div>
         {statusErr && <div className="msg bad">เช็คสถานะไม่ได้: {statusErr} <button className="btn" onClick={loadStatus}>ลองใหม่</button></div>}
@@ -529,7 +623,8 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
               <div className="c-actions">
                 {result.ads_manager_url && <a className="btn" href={result.ads_manager_url} target="_blank" rel="noreferrer">เปิดใน Ads Manager ↗</a>}
                 {result.adset_id && <button className="btn" onClick={() => setEditAdset(true)}>＋ เพิ่มความสนใจให้ Ad Set นี้</button>}
-                <button className="btn" onClick={reset}>สร้างอีกชุด</button>
+                <button className="btn" onClick={() => { setResult(null); setEditAdset(false); }}
+                  title="ข้อมูลในฟอร์มยังอยู่ครบ — แก้ชื่อหรืองบแล้วกดสร้างใหม่ได้เลย">สร้างอีกชุด</button>
                 {result.dashboard_updated && <span className="c-hint">อัปเดตหน้าภาพรวมแล้ว</span>}
               </div>
             )}
