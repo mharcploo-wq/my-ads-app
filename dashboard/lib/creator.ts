@@ -70,6 +70,23 @@ export interface SuggestResult {
   interests?: Interest[];
 }
 
+/** ความสนใจของ Ad Set ที่สร้างไปแล้ว (ปุ่ม "＋ เพิ่มความสนใจให้ Ad Set นี้") */
+export interface AdsetInterestsResult {
+  success: boolean;
+  error?: string;
+  adset_id?: string;
+  adset_name?: string;
+  campaign_id?: string;
+  campaign_name?: string;
+  paused?: boolean;          // แก้ได้เฉพาะตอนแคมเปญและ Ad Set หยุดอยู่
+  max_interests?: number;
+  interests?: (Interest & { gone?: boolean })[];
+  texts?: string[];          // ข้อความโฆษณาเดิม (ให้ ✨ คิด)
+  titles?: string[];
+  link_url?: string;
+  before?: number;           // ตอนบันทึก: จำนวนเดิม
+}
+
 export interface AgentStatus {
   agent: AgentId;
   prefix: string;

@@ -1,7 +1,10 @@
 "use client";
 import { useMemo, useState } from "react";
+import AdsetInterests from "@/components/AdsetInterests";
 import { CampaignStat, fmt } from "@/lib/calc";
 import { AGENTS } from "@/lib/types";
+
+type AgentId = "claude" | "manus" | "chatgpt";
 
 type SortKey = "name" | "status" | "spend" | "impressions" | "link_clicks" | "ctr" | "results" | "cpr";
 const COLS: { key: SortKey; label: string; left?: boolean }[] = [
@@ -29,7 +32,9 @@ const OBJ: Record<string, string> = {
   OUTCOME_AWARENESS: "การรับรู้", OUTCOME_ENGAGEMENT: "การมีส่วนร่วม",
 };
 
-export default function CampaignTable({ rows }: { rows: CampaignStat[] }) {
+/** editable = ข้อมูลจริง (ข้อมูลตัวอย่างไม่มี Ad Set จริงให้แก้) */
+export default function CampaignTable({ rows, editable = false }: { rows: CampaignStat[]; editable?: boolean }) {
+  const [edit, setEdit] = useState<{ agent: AgentId; campaignId: string } | null>(null);
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("all");
   const [sort, setSort] = useState<{ k: SortKey; desc: boolean }>({ k: "spend", desc: true });
@@ -87,6 +92,10 @@ export default function CampaignTable({ rows }: { rows: CampaignStat[] }) {
                     <div style={{ color: "var(--text-muted)", fontSize: 11.5, marginLeft: 18 }}>
                       {AGENTS[r.prefix].label}{r.objective ? ` · ${OBJ[r.objective] ?? r.objective}` : ""}
                     </div>
+                    {editable && r.status.includes("PAUSED") && (
+                      <button className="btn camp-act" title="แก้ความสนใจของ Ad Set ในแคมเปญนี้ (เฉพาะที่หยุดอยู่)"
+                        onClick={() => setEdit({ agent: AGENTS[r.prefix].key as AgentId, campaignId: r.id })}>＋ ความสนใจ</button>
+                    )}
                   </td>
                   <td className="l"><span className="status" style={{ ["--c" as string]: st.c }}>{st.th}</span></td>
                   <td>{fmt.baht(r.spend)}</td>
@@ -104,6 +113,7 @@ export default function CampaignTable({ rows }: { rows: CampaignStat[] }) {
           </tbody>
         </table>
       </div>
+      {edit && <AdsetInterests agent={edit.agent} campaignId={edit.campaignId} onClose={() => setEdit(null)} />}
     </div>
   );
 }

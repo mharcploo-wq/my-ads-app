@@ -67,6 +67,8 @@ parser.add_argument("--suggest-json", metavar="PATH", default=None,
                     help="(หน้าแอป) ให้ AI คิดความสนใจจากข้อความในไฟล์ JSON แล้วพิมพ์ผลเป็น JSON")
 parser.add_argument("--search-json", metavar="PATH", default=None,
                     help="(หน้าแอป) ค้นความสนใจจากคำค้นในไฟล์ JSON (ไม่ใช้ AI) แล้วพิมพ์ผลเป็น JSON")
+parser.add_argument("--adset-json", metavar="PATH", default=None,
+                    help="(หน้าแอป) อ่าน/บันทึกความสนใจของ Ad Set ที่สร้างไปแล้ว (เฉพาะที่หยุดอยู่) แล้วพิมพ์ผลเป็น JSON")
 ARGS, _ = parser.parse_known_args()
 
 AGENT = (ARGS.agent or os.getenv("AGENT") or "claude").lower()
@@ -589,7 +591,7 @@ def _resolve_interests(interests: Any) -> tuple[list[dict[str, str]], str | None
         valid, _ = _interest_validity([x["id"] for x in known])
         gone = [x["name"] for x in known if valid.get(x["id"]) is False]
         if gone:
-            return [], "ความสนใจที่ Meta เลิกใช้แล้ว: " + ", ".join(gone) + " — ลบออกแล้วกดสร้างใหม่"
+            return [], "ความสนใจที่ Meta เลิกใช้แล้ว: " + ", ".join(gone) + " — ลบออกแล้วลองใหม่"
     if not words:
         return known, None
     found, missed = _search_interests(words, known)
@@ -1435,6 +1437,91 @@ def search_interests_app(spec: dict[str, Any]) -> dict[str, Any]:
     return {"success": True, "interests": found, "missed": missed, "skipped": skipped}
 
 
+def _ad_copy(adset_id: str) -> dict[str, Any]:
+    """ข้อความของโฆษณาใน Ad Set (ให้ปุ่ม ✨ คิดความสนใจจากของเดิม) → {texts, titles, link_url}"""
+    ok, body = _graph_get(f"{adset_id}/ads", {"fields": "creative{body,title,object_story_spec,asset_feed_spec}",
+                                               "limit": 10})
+    texts: list[str] = []
+    titles: list[str] = []
+    link = ""
+    for ad in (body.get("data", []) if ok else []):
+        cr = ad.get("creative") or {}
+        feed = cr.get("asset_feed_spec") or {}
+        ld = (cr.get("object_story_spec") or {}).get("link_data") or {}
+        texts += [cr.get("body", ""), ld.get("message", "")] + [b.get("text", "") for b in feed.get("bodies", [])]
+        titles += [cr.get("title", ""), ld.get("name", "")] + [t.get("text", "") for t in feed.get("titles", [])]
+        link = link or ld.get("link", "") or next((u.get("website_url", "") for u in feed.get("link_urls", [])), "")
+    clean = lambda v: list(dict.fromkeys(x.strip() for x in v if x and x.strip()))  # noqa: E731
+    return {"texts": clean(texts)[:5], "titles": clean(titles)[:5],
+            "link_url": "" if link.startswith(MESSENGER_LINK) else link}
+
+
+def adset_interests(spec: dict[str, Any]) -> dict[str, Any]:
+    """(ปุ่ม "＋ เพิ่มความสนใจให้ Ad Set นี้") อ่าน/บันทึกความสนใจของ Ad Set ที่สร้างไปแล้ว
+    spec: adset_id หรือ campaign_id · save=true + interests [{id,name}] = บันทึก (แทนที่ชุดเดิมทั้งหมด)
+    กฎ: แก้ได้เฉพาะงานของ agent นี้ · ทั้งแคมเปญและ Ad Set ต้องหยุดอยู่ (PAUSED) · ไม่แตะสถานะ/งบ/ส่วนอื่น"""
+    adset_id = str(spec.get("adset_id") or "").strip()
+    campaign_id = str(spec.get("campaign_id") or "").strip()
+    if not (adset_id or campaign_id).isdigit():
+        return {"success": False, "error": "ไม่รู้ว่าจะแก้ Ad Set ไหน"}
+    if not adset_id:
+        ok, camp = _own_object(campaign_id, "id,name")
+        if not ok:
+            return {"success": False, "error": camp}
+        ok, body = _graph_get(f"{campaign_id}/adsets", {"fields": "id", "limit": 5})
+        ids = [str(x["id"]) for x in (body.get("data", []) if ok else [])]
+        if not ok or not ids:
+            return {"success": False, "error": "หา Ad Set ของแคมเปญนี้ไม่เจอ" + (f": {_meta_error(body)}" if not ok else "")}
+        if len(ids) > 1:
+            return {"success": False, "error": f"แคมเปญนี้มี Ad Set {len(ids)} ชุด — แก้ใน Ads Manager แทน"}
+        adset_id = ids[0]
+    ok, aset = _own_object(adset_id, "id,name,status,campaign{id,name,status},targeting")
+    if not ok:
+        return {"success": False, "error": aset}
+    targeting = dict(aset.get("targeting") or {})
+    camp = aset.get("campaign") or {}
+    paused = aset.get("status") == REQUIRED_STATUS and camp.get("status") == REQUIRED_STATUS
+    groups = list(targeting.get("flexible_spec") or [])
+    now = [{"id": str(x["id"]), "name": x.get("name", "")} for g in groups for x in (g.get("interests") or [])]
+    base = {"adset_id": adset_id, "adset_name": aset.get("name"), "campaign_id": camp.get("id"),
+            "campaign_name": camp.get("name"), "paused": paused, "max_interests": MAX_INTERESTS}
+
+    if not spec.get("save"):
+        if now:   # ชื่อภาษาไทย + ตัวที่ Meta เลิกใช้แล้ว (ต้องลบก่อนบันทึก)
+            valid, th = _interest_validity([x["id"] for x in now])
+            now = [{**x, "name": th.get(x["id"]) or x["name"], "gone": valid.get(x["id"]) is False} for x in now]
+        return {"success": True, **base, "interests": now, **_ad_copy(adset_id)}
+
+    if not paused:
+        return {"success": False, **base,
+                "error": "แก้ได้เฉพาะตอนที่แคมเปญและ Ad Set หยุดอยู่ — กดหยุดใน Ads Manager ก่อน แล้วค่อยแก้"}
+    picked, err = _resolve_interests(spec.get("interests") or [])
+    if err:
+        return {"success": False, **base, "error": err}
+    # แทนที่ความสนใจในกลุ่มแรก · ส่วนอื่นของกลุ่มเป้าหมาย (อายุ ภาษา ข้อยกเว้นของบัญชี) ส่งกลับไปเหมือนเดิม
+    first = {k: v for k, v in (groups[0] if groups else {}).items() if k != "interests"}
+    if picked:
+        first["interests"] = picked
+    groups = ([first] if first else []) + [{k: v for k, v in g.items() if k != "interests"} for g in groups[1:]]
+    groups = [g for g in groups if g]
+    if groups:
+        targeting["flexible_spec"] = groups
+    else:
+        targeting.pop("flexible_spec", None)
+    data: dict[str, Any] = {"targeting": targeting}
+    if spec.get("validate_only"):   # ทดสอบกับ Meta โดยไม่บันทึกจริง
+        data["execution_options"] = ["validate_only"]
+    ok, res = _graph_post(adset_id, data)
+    log_action("update_adset_interests", ok, {"adset_id": adset_id, "before": [x["name"] for x in now],
+                                              "after": [x["name"] for x in picked],
+                                              "validate_only": bool(spec.get("validate_only")),
+                                              **({} if ok else {"error": _meta_error(res)})})
+    if not ok:
+        return {"success": False, **base, "error": f"Meta ไม่รับ: {_meta_error(res)}"}
+    return {"success": True, **base, "interests": picked, "before": len(now),
+            "validated_only": bool(spec.get("validate_only"))}
+
+
 def build_server():
     from mcp.server.mcpserver import MCPServer
 
@@ -1490,9 +1577,11 @@ def run_http(server, host: str, port: int) -> None:
 
 
 if __name__ == "__main__":
-    if ARGS.status or ARGS.create_json or ARGS.suggest_json or ARGS.search_json:
+    if ARGS.status or ARGS.create_json or ARGS.suggest_json or ARGS.search_json or ARGS.adset_json:
         if ARGS.status:
             out = app_status()
+        elif ARGS.adset_json:
+            out = adset_interests(json.loads(Path(ARGS.adset_json).read_text(encoding="utf-8")))
         elif ARGS.suggest_json:
             out = suggest_interests(json.loads(Path(ARGS.suggest_json).read_text(encoding="utf-8")))
         elif ARGS.search_json:

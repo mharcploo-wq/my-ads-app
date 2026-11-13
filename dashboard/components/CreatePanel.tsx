@@ -1,5 +1,7 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import AdsetInterests from "@/components/AdsetInterests";
+import InterestPicker, { Interest } from "@/components/InterestPicker";
 
 type AgentId = "claude" | "manus" | "chatgpt";
 type Kind = "MESSENGER" | "WEBSITE";
@@ -16,7 +18,6 @@ interface AudienceOptions {
   max_interests: number; brand_safety: { label: string; detail: string };
   ai: { provider: string; label: string; ready: boolean; missing: string | null };
 }
-interface Interest { id: string; name: string; size_lower?: number | null; size_upper?: number | null }
 interface AgentStatus {
   agent: AgentId; prefix: string; ready: boolean; configured?: boolean; quota_full?: boolean; reason: string; checks: CheckItem[];
   max_daily_budget_thb: number; max_campaigns_per_day: number; campaigns_today: number | null;
@@ -25,6 +26,7 @@ interface AgentStatus {
 }
 interface CreateResult {
   success: boolean; steps: CheckItem[]; campaign_name?: string; ads_manager_url?: string; dashboard_updated?: boolean;
+  adset_id?: string;
 }
 
 const AGENTS: { id: AgentId; label: string; color: string; prefix: string }[] = [
@@ -43,12 +45,6 @@ const thDate = (offsetDays: number) => new Date(Date.now() + 7 * 3600_000 + offs
 const fmtTh = (d: string, t: string) => { const [y, m, dd] = d.split("-"); return `${dd}/${m}/${y} ${t}`; };
 const MB = 1024 * 1024;
 const fmtMb = (bytes: number) => `${Math.max(1, Math.round(bytes / MB))}MB`;
-/** ขนาดกลุ่มคนจาก Meta เช่น 150,000,000–176,000,000 → "≈150–176 ล้าน" · 86,760–102,030 → "≈87–102 พัน" */
-const fmtSize = (lo?: number | null, hi?: number | null) => {
-  if (!lo || !hi) return "";
-  const [d, unit] = hi >= 1e6 ? [1e6, "ล้าน"] : [1e3, "พัน"];
-  return `≈${Math.max(1, Math.round(lo / d))}–${Math.max(1, Math.round(hi / d))} ${unit}`;
-};
 const fmtDur = (sec: number) => `${Math.floor(sec / 60)}:${String(Math.round(sec % 60)).padStart(2, "0")}`;
 const VIDEO_ACCEPT = "video/mp4,video/quicktime,video/x-m4v";
 const IMAGE_ACCEPT = "image/jpeg,image/png,image/webp,image/gif";
@@ -100,11 +96,8 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
   const [langs, setLangs] = useState<string[] | null>(null);
   const [ageMax, setAgeMax] = useState<number | null>(null);
   const [interests, setInterests] = useState<Interest[]>([]);
-  const [aiBusy, setAiBusy] = useState(false);
-  const [aiMsg, setAiMsg] = useState<{ ok: boolean; text: string } | null>(null);
-  const [aiDown, setAiDown] = useState(false);          // AI ของ agent นี้ล้มรอบล่าสุด → เสนอให้ยืม Claude
-  const [kw, setKw] = useState("");                      // ช่องพิมพ์คำค้นเอง
-  const [kwBusy, setKwBusy] = useState(false);
+  const [pickerKey, setPickerKey] = useState(0);         // เปลี่ยนค่า = ล้างข้อความ/ช่องค้นในกล่องความสนใจ
+  const [editAdset, setEditAdset] = useState(false);     // กล่องเพิ่มความสนใจให้ Ad Set ที่เพิ่งสร้าง
   const [confirmEmpty, setConfirmEmpty] = useState(false); // กดสร้างตอนยังไม่มีความสนใจ → ถามก่อน
   const kwInput = useRef<HTMLInputElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -160,11 +153,6 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
   const ageChoices = audOpt ? Array.from({ length: audOpt.max_age_min - audOpt.min_age + 1 }, (_, i) => audOpt.min_age + i) : [];
   const ageHi = ageMax ?? audOpt?.default_age_max ?? null;
   const ageMaxChoices = audOpt ? Array.from({ length: audOpt.no_max_age - audOpt.min_age_max + 1 }, (_, i) => audOpt.min_age_max + i) : [];
-  const ai = cur?.audience?.ai ?? null;   // AI ของ agent ที่เลือก (คีย์แยกต่อ agent)
-  // AI ของ agent นี้ใช้ไม่ได้ → ยืม Claude ของ agent อื่นที่พร้อม (เลือก agent Claude ก่อน) · ผลยังสร้างในชื่อ agent เดิม
-  const claudeReady = (status ?? []).filter((a) => a.agent !== agent && a.audience?.ai.ready && a.audience.ai.provider === "anthropic");
-  const fallback = (!ai?.ready || aiDown) ? (claudeReady.find((a) => a.agent === "claude") ?? claudeReady[0] ?? null) : null;
-  useEffect(() => { setAiDown(false); setAiMsg(null); }, [agent]);
   useEffect(() => { if (interests.length) setConfirmEmpty(false); }, [interests.length]);
   function toggleLang(key: string) {
     setLangs(pickedLangs.includes(key) ? pickedLangs.filter((k) => k !== key) : [...pickedLangs, key]);
@@ -267,57 +255,6 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
     setImageUrl("");
   }
 
-  /** ปุ่ม ✨ — via = ยืม AI ของ agent อื่น (ตอน AI ของตัวเองใช้ไม่ได้) */
-  async function suggestInterests(via?: AgentStatus) {
-    if (aiBusy || kwBusy || (!via && !ai?.ready)) return;
-    const copy = isDyn ? filledTexts : [text.trim()].filter(Boolean);
-    if (!copy.length) { setAiMsg({ ok: false, text: "ใส่ข้อความโฆษณาก่อน แล้วค่อยให้ AI คิดกลุ่มเป้าหมาย" }); return; }
-    setAiBusy(true); setAiMsg(null);
-    try {
-      const r = await fetch("/api/interests", {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ agent, ai_agent: via?.agent, texts: copy, titles: isDyn ? filledTitles : [], link_url: kind === "WEBSITE" ? link.trim() : "" }),
-      });
-      const j = await r.json();
-      if (!j.ok) throw new Error(j.error);
-      if (!j.result.success) throw new Error(j.result.error);
-      setInterests(j.result.interests);   // กดซ้ำ = แทนที่ชุดเดิมทั้งหมด
-      if (!via) setAiDown(false);
-      setAiMsg({ ok: true, text: `${j.result.ai}${via ? " (ยืมมาใช้แทน)" : ""} คิดจากข้อความ ได้ ${j.result.interests.length} รายการ` });
-    } catch (e) {
-      if (!via) setAiDown(true);
-      setAiMsg({ ok: false, text: (e as Error).message });
-    } finally {
-      setAiBusy(false);
-    }
-  }
-
-  /** ช่องพิมพ์คำค้นเอง — ค้นตรงในคลังของ Meta ไม่ใช้ AI · ต่อท้ายรายการเดิม */
-  async function searchInterests() {
-    if (aiBusy || kwBusy) return;
-    const words = kw.split(/[,，]/).map((w) => w.trim()).filter(Boolean);
-    if (!words.length) { setAiMsg({ ok: false, text: "พิมพ์คำค้นก่อน เช่น ERP, บัญชี (คั่นหลายคำด้วย ,)" }); return; }
-    setKwBusy(true); setAiMsg(null);
-    try {
-      const r = await fetch("/api/interests", {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ agent, mode: "search", words, have: interests.map((x) => x.id) }),
-      });
-      const j = await r.json();
-      if (!j.ok) throw new Error(j.error);
-      if (!j.result.success) throw new Error(j.result.error);
-      const got: Interest[] = j.result.interests;
-      setInterests((cur) => [...cur, ...got.filter((x) => !cur.some((c) => c.id === x.id))]);
-      setKw("");
-      const miss = [...(j.result.missed ?? []), ...(j.result.skipped ?? [])];
-      setAiMsg({ ok: true, text: `ค้นใน Meta ได้ ${got.length} รายการ${miss.length ? ` · ไม่ได้เพิ่ม: ${miss.join(", ")}` : ""}` });
-    } catch (e) {
-      setAiMsg({ ok: false, text: (e as Error).message });
-    } finally {
-      setKwBusy(false);
-    }
-  }
-
   async function submit(allowEmpty = false) {
     if (problems.length || busy) return;
     if (!interests.length && !allowEmpty) { setConfirmEmpty(true); return; }
@@ -358,7 +295,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
   function reset() {
     setResult(null); setName(""); setText(""); setLink(""); setImageUrl(""); setFile(null);
     setDynImages([]); setDynVideos([]); setTexts([""]); setTitles([]); setPvIdx(0);
-    setInterests([]); setAiMsg(null); setKw(""); setConfirmEmpty(false);
+    setInterests([]); setPickerKey((k) => k + 1); setConfirmEmpty(false); setEditAdset(false);
   }
 
   return (
@@ -515,45 +452,11 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
             </div>
             <div className="c-aud-row c-aud-langs">
               <span>🎯 ความสนใจ</span>
-              <div className="c-int">
-                <div className="c-aud-row c-int-bar">
-                  <button type="button" className="btn c-ai" onClick={() => suggestInterests()} disabled={!ai?.ready || aiBusy || kwBusy}>
-                    {aiBusy ? "AI กำลังคิด…" : "✨ ให้ AI คิดกลุ่มเป้าหมาย"}
-                  </button>
-                  {ai?.ready && !aiBusy && <span className="c-hint">{ai.label} คิดจากข้อความหลัก{isDyn ? " + พาดหัว" : ""}{kind === "WEBSITE" ? " + ลิงก์" : ""}</span>}
-                  <span className="c-cnt">{interests.length} / {audOpt.max_interests}</span>
-                </div>
-                {interests.length > 0 && (
-                  <div className="c-chips">
-                    {interests.map((it) => (
-                      <span key={it.id} className="c-itag">
-                        {it.name} {fmtSize(it.size_lower, it.size_upper) && <small>{fmtSize(it.size_lower, it.size_upper)}</small>}
-                        <button type="button" aria-label={`ลบความสนใจ ${it.name}`} onClick={() => setInterests(interests.filter((x) => x.id !== it.id))}>✕</button>
-                      </span>
-                    ))}
-                  </div>
-                )}
-                {ai && !ai.ready && <div className="c-warn">{ai.missing}</div>}
-                {aiMsg && <div className={aiMsg.ok ? "c-hint" : "c-warn"}>{aiMsg.ok ? "✓ " : "✕ "}{aiMsg.text}</div>}
-                {fallback && !aiBusy && (
-                  <div className="c-aud-row c-int-bar">
-                    <button type="button" className="btn" onClick={() => suggestInterests(fallback)} disabled={kwBusy}>
-                      ✨ ใช้ {fallback.audience!.ai.label} หาแทนรอบนี้
-                    </button>
-                    <span className="c-hint">ยืม AI ของ {fallback.prefix} · โฆษณายังสร้างในชื่อ {cur?.prefix ?? agent} เหมือนเดิม</span>
-                  </div>
-                )}
-                <div className="c-aud-row c-int-bar">
-                  <input ref={kwInput} className="input c-kw" value={kw} maxLength={200} aria-label="พิมพ์คำค้นความสนใจเอง"
-                    placeholder="หรือพิมพ์คำค้นเอง เช่น ERP, บัญชี, กาแฟ" onChange={(e) => setKw(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); searchInterests(); } }} />
-                  <button type="button" className="btn" onClick={searchInterests} disabled={kwBusy || aiBusy || !kw.trim()}>
-                    {kwBusy ? "กำลังค้น…" : "ค้นใน Meta"}
-                  </button>
-                </div>
-                <div className="c-hint">ค้นตรงในคลังของ Meta ไม่ใช้ AI · คั่นหลายคำด้วย , · เพิ่มต่อท้ายรายการเดิม</div>
-                {interests.length > 0 && <div className="c-hint">ค่าแนะนำ · Meta อาจขยายไปคนนอกกลุ่มนี้ถ้าได้ผลดีกว่า · ลบได้ก่อนกดสร้าง</div>}
-              </div>
+              <InterestPicker key={pickerKey} agent={agent} agents={status} interests={interests} setInterests={setInterests}
+                max={audOpt.max_interests} kwRef={kwInput}
+                copyHint={`ข้อความหลัก${isDyn ? " + พาดหัว" : ""}${kind === "WEBSITE" ? " + ลิงก์" : ""}`}
+                copy={() => ({ texts: isDyn ? filledTexts : [text.trim()].filter(Boolean), titles: isDyn ? filledTitles : [],
+                  link_url: kind === "WEBSITE" ? link.trim() : "" })} />
             </div>
             <div className="c-aud-row">
               <span className="c-aud-k">🛡 คลังเนื้อหา</span><b className="c-ok">{audOpt.brand_safety.label}</b>
@@ -624,11 +527,15 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
             {result.success && (
               <div className="c-actions">
                 {result.ads_manager_url && <a className="btn" href={result.ads_manager_url} target="_blank" rel="noreferrer">เปิดใน Ads Manager ↗</a>}
+                {result.adset_id && <button className="btn" onClick={() => setEditAdset(true)}>＋ เพิ่มความสนใจให้ Ad Set นี้</button>}
                 <button className="btn" onClick={reset}>สร้างอีกชุด</button>
                 {result.dashboard_updated && <span className="c-hint">อัปเดตหน้าภาพรวมแล้ว</span>}
               </div>
             )}
           </div>
+        )}
+        {editAdset && result?.adset_id && (
+          <AdsetInterests agent={agent} adsetId={result.adset_id} agents={status} onClose={() => setEditAdset(false)} />
         )}
       </div>
 

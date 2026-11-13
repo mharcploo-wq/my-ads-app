@@ -164,7 +164,7 @@ export default function Page() {
             <AgentCompare stats={view.agentStats} />
 
             <div className="section-title"><h2>แคมเปญทั้งหมด</h2><span className="sub">ผลรวมในช่วง {days} วันล่าสุด</span></div>
-            <CampaignTable rows={view.camps} />
+            <CampaignTable rows={view.camps} editable={!!connected} />
           </>
         )}
 
