@@ -15,6 +15,7 @@ export interface FormDraft {
   interests: { id: string; name: string; size_lower?: number | null; size_upper?: number | null;
     th_lower?: number | null; th_upper?: number | null }[];
   dynamic: boolean; texts: string[]; titles: string[];
+  liveId: string; liveHours: number | null;   // ชนิด Live สด: Live ที่เลือก + ความยาว (null = ค่าเริ่มต้นของ server.py)
   savedAt: number;
 }
 

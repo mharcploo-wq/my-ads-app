@@ -120,10 +120,27 @@ export interface AgentStatus {
   page_cover: string | null;
   audience?: AudienceOptions;
   creative?: CreativeOptions;
+  live?: LiveOptions;
+}
+
+/** ค่าของชนิด Live สด (server.py เป็นคนกำหนด) */
+export interface LiveOptions {
+  min_hours: number; max_hours: number; default_hours: number; thb_per_hour: number; lead_hours: number;
+}
+
+/** Live ที่นัดไว้ล่วงหน้าบนเพจ (กิจกรรมออนไลน์แบบ fb_live ที่ยังไม่เริ่ม) */
+export interface LiveEvent { id: string; name: string; start_time: string }
+export interface LivesResult { success: boolean; error?: string; lives: LiveEvent[]; page_name?: string | null }
+
+/** สร้าง Live เสร็จ → สิ่งที่ผู้ใช้ต้องทำต่อใน Ads Manager (API ผูก Live นัดหมายไม่ได้) */
+export interface LiveNext {
+  live_name: string; start_time: string; text: string; adset_url: string; steps: string[]; lead_hours: number;
 }
 
 export interface CreateSpec {
-  kind: "MESSENGER" | "WEBSITE";
+  kind: "MESSENGER" | "WEBSITE" | "LIVE";
+  live_id?: string;      // Live: กิจกรรม fb_live ที่นัดไว้ — server.py ตรวจว่าอยู่ในเพจและยังไม่เริ่ม
+  live_hours?: number;   // Live: ความยาว (ชม.) — daily_budget_thb = งบรวมทั้ง Live
   name: string;
   daily_budget_thb: number;
   text: string;
@@ -154,6 +171,7 @@ export interface CreateResult {
   campaign_name?: string;
   dashboard_updated?: boolean;
   ads_manager_url?: string;
+  live_next?: LiveNext;
 }
 
 /** รัน server.py แล้วอ่านผล JSON บรรทัดสุดท้าย */

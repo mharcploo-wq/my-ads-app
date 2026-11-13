@@ -293,3 +293,26 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .c-more { font-size: 12.5px; padding: 5px 12px; }
 .c-pvnav { display: flex; justify-content: center; align-items: center; gap: 10px; font-size: 12.5px; color: var(--text-muted); margin-bottom: 4px; }
 .c-pvnav .btn { padding: 2px 10px; }
+
+/* ชนิด Live สด · การรับรู้ */
+.c-opt.c-opt-live.on { border-color: #e5484d; box-shadow: 0 0 0 1px #e5484d inset; background: #2a1415; }
+.c-row.c-row-live { grid-template-columns: 2fr 0.8fr 1.2fr; }
+.c-lives { display: flex; flex-direction: column; gap: 6px; }
+.c-live { display: flex; align-items: center; gap: 10px; text-align: left; border: 1px solid var(--border); background: var(--surface-2); border-radius: 10px; padding: 8px 11px; cursor: pointer; color: inherit; font: inherit; }
+.c-live.on { border-color: #e5484d; background: #2a1415; }
+.c-live-dot { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--text-muted); flex: none; }
+.c-live.on .c-live-dot { border-color: #e5484d; background: radial-gradient(#e5484d 45%, transparent 50%); }
+.c-live-t { display: flex; flex-direction: column; min-width: 0; }
+.c-live-t b { font-size: 13.5px; }
+.c-live-t small { color: var(--text-muted); font-size: 12px; }
+.c-live-pill { margin-left: auto; font-size: 11px; border-radius: 999px; padding: 0 8px; line-height: 1.8; border: 1px solid #e5484d; color: #ff8a8d; white-space: nowrap; }
+.c-live-pill.soon { border-color: var(--warning); color: var(--warning); }
+.c-bad { color: #ff8a8a; }
+.c-result li.c-pend { color: var(--warning); }
+.c-next { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 10px; font-size: 13px; }
+.c-next ol { margin: 6px 0 8px; padding-left: 20px; line-height: 1.75; }
+.fbp-live { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; background: #000; color: #fff; text-align: center; padding: 10px; }
+.fbp-live b { font-size: 16px; }
+.fbp-live small { color: #bbb; font-size: 12px; }
+.fbp-live-b { background: #e5484d; color: #fff; font-size: 11.5px; font-weight: 700; border-radius: 4px; padding: 1px 7px; }
+.c-row-live + .c-hint { display: block; margin-top: 6px; }

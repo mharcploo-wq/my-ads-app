@@ -69,6 +69,8 @@ parser.add_argument("--search-json", metavar="PATH", default=None,
                     help="(หน้าแอป) ค้นความสนใจจากคำค้นในไฟล์ JSON (ไม่ใช้ AI) แล้วพิมพ์ผลเป็น JSON")
 parser.add_argument("--reach-json", metavar="PATH", default=None,
                     help="(หน้าแอป) ขนาดคนในไทยของความสนใจทั้งชุดจากไฟล์ JSON แล้วพิมพ์ผลเป็น JSON")
+parser.add_argument("--lives", action="store_true",
+                    help="(หน้าแอป) รายการ Live ที่นัดไว้ล่วงหน้าบนเพจ (ยังไม่เริ่ม) แล้วพิมพ์ผลเป็น JSON")
 parser.add_argument("--adset-json", metavar="PATH", default=None,
                     help="(หน้าแอป) อ่าน/บันทึกความสนใจของ Ad Set ที่สร้างไปแล้ว (เฉพาะที่หยุดอยู่) แล้วพิมพ์ผลเป็น JSON")
 ARGS, _ = parser.parse_known_args()
@@ -408,6 +410,10 @@ def _own_object(object_id: str, fields: str) -> tuple[bool, dict[str, Any] | str
 
 MESSENGER_LINK = "https://fb.com/messenger_doc/"
 MIN_RUN_HOURS = 24                    # Meta: Ad Set งบต่อวันต้องวิ่งอย่างน้อย 24 ชม. ถ้ากำหนดวันสิ้นสุด
+# โฆษณา Live สด (การรับรู้) — ชุดโฆษณาวิ่งเฉพาะช่วง Live จึงใช้ "งบรวม" แทนงบรายวัน
+LIVE_MIN_HOURS, LIVE_MAX_HOURS, LIVE_DEFAULT_HOURS = 1, 8, 2
+LIVE_THB_PER_HOUR = 250               # ทีมตั้งไว้: Live 2 ชม. = 500 บาท → คิดตามสัดส่วนต่อชั่วโมง
+LIVE_LEAD_HOURS = 3                   # Meta แนะนำให้ตั้งโฆษณา Live นัดหมายเสร็จก่อนเริ่ม Live อย่างน้อย 3 ชม.
 MIN_AGE = 20                          # Meta บังคับอายุขั้นต่ำ 20 ปีสำหรับผู้ชมในไทย
 MAX_AGE_MIN = 25                      # Meta: ใช้ Advantage+ Audience ตั้งอายุขั้นต่ำได้ไม่เกิน 25
 NO_MAX_AGE = 65                       # อายุสูงสุด 65 = ไม่จำกัด (ไม่ส่ง age_range)
@@ -703,9 +709,11 @@ def _parse_th_time(value: str) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=TH_TZ)
 
 
-def _schedule(start_time: str = "", end_time: str = "") -> tuple[dict[str, str], str | None]:
+def _schedule(start_time: str = "", end_time: str = "",
+              min_hours: int = MIN_RUN_HOURS) -> tuple[dict[str, str], str | None]:
     """ตรวจและแปลงวันเวลาเผยแพร่ → (payload สำหรับ Meta, ข้อผิดพลาด)
-    เว้นว่าง = เริ่มทันทีเมื่อกดเปิด / ไม่มีวันสิ้นสุด"""
+    เว้นว่าง = เริ่มทันทีเมื่อกดเปิด / ไม่มีวันสิ้นสุด
+    min_hours: ช่วงสั้นสุด — งบรายวัน Meta บังคับ 24 ชม. · งบรวม (Live) สั้นกว่านั้นได้"""
     out: dict[str, str] = {}
     now = datetime.now(TH_TZ)
     start = None
@@ -721,8 +729,9 @@ def _schedule(start_time: str = "", end_time: str = "") -> tuple[dict[str, str],
         out["start_time"] = start.isoformat(timespec="seconds")
     if end:
         base = start or now
-        if end < base + timedelta(hours=MIN_RUN_HOURS):
-            return {}, "วันสิ้นสุดต้องหลังวันเริ่มอย่างน้อย 1 วัน (24 ชั่วโมง)"
+        if end < base + timedelta(hours=min_hours):
+            return {}, ("วันสิ้นสุดต้องหลังวันเริ่มอย่างน้อย 1 วัน (24 ชั่วโมง)" if min_hours >= 24
+                        else f"เวลาสิ้นสุดต้องหลังเวลาเริ่มอย่างน้อย {min_hours} ชั่วโมง")
         out["end_time"] = end.isoformat(timespec="seconds")
     return out, None   # ลิงก์มาตรฐานของ Meta สำหรับโฆษณาส่งข้อความ
 
@@ -750,13 +759,18 @@ def create_adset(campaign_id: str, name: str, daily_budget_thb: int, destination
 
 def _create_adset(campaign_id: str, name: str, daily_budget_thb: int, destination: str = "WEBSITE",
                   start_time: str = "", end_time: str = "", age_min: Any = MIN_AGE, languages: Any = None,
-                  dynamic: bool = False, age_max: Any = DEFAULT_AGE_MAX, interests: Any = None) -> dict[str, Any]:
+                  dynamic: bool = False, age_max: Any = DEFAULT_AGE_MAX, interests: Any = None,
+                  lifetime: bool = False) -> dict[str, Any]:
     """ตัวจริงของ create_adset · dynamic=True = ชิ้นงานโฆษณาแบบไดนามิก (ใช้จากหน้าแอปเท่านั้น
-    เพราะ Ad Set แบบนี้ต้องคู่กับโฆษณาแบบ asset_feed_spec ซึ่งเครื่องมือ create_ad ไม่ได้สร้าง)"""
+    เพราะ Ad Set แบบนี้ต้องคู่กับโฆษณาแบบ asset_feed_spec ซึ่งเครื่องมือ create_ad ไม่ได้สร้าง)
+    lifetime=True = daily_budget_thb เป็น "งบรวมทั้งช่วง" (ใช้กับ Live สั้น ๆ — งบรายวันต้องเปิด 24 ชม.ขึ้นไป)
+                    ต้องมีทั้งเวลาเริ่มและสิ้นสุด"""
     destination = (destination or "WEBSITE").upper().strip()
-    sched, sched_err = _schedule(start_time, end_time)
+    sched, sched_err = _schedule(start_time, end_time, LIVE_MIN_HOURS if lifetime else MIN_RUN_HOURS)
     if sched_err:
         return {"success": False, "error": sched_err}
+    if lifetime and not ("start_time" in sched and "end_time" in sched):
+        return {"success": False, "error": "งบรวมต้องกำหนดทั้งเวลาเริ่มและเวลาสิ้นสุด"}
     picked, int_err = _resolve_interests(interests)
     if int_err:
         return {"success": False, "error": int_err}
@@ -785,7 +799,7 @@ def _create_adset(campaign_id: str, name: str, daily_budget_thb: int, destinatio
     payload: dict[str, Any] = {
         "name": with_prefix(name),
         "campaign_id": campaign_id,
-        "daily_budget": int(daily_budget_thb) * 100,   # THB เก็บเป็นสตางค์
+        ("lifetime_budget" if lifetime else "daily_budget"): int(daily_budget_thb) * 100,   # THB เก็บเป็นสตางค์
         "billing_event": "IMPRESSIONS",
         "optimization_goal": opt["optimization_goal"],
         "bid_strategy": "LOWEST_COST_WITHOUT_CAP",
@@ -815,7 +829,7 @@ def _create_adset(campaign_id: str, name: str, daily_budget_thb: int, destinatio
 
     ok, body = _graph_post(f"{META_AD_ACCOUNT_ID}/adsets", payload)
     log_action("create_adset", ok, {"name": payload["name"], "campaign_id": campaign_id,
-                                    "daily_budget_thb": daily_budget_thb, **sched, "dynamic": dynamic,
+                                    "daily_budget_thb": daily_budget_thb, "lifetime": lifetime, **sched, "dynamic": dynamic,
                                     "adset_id": body.get("id") if ok else None,
                                     "error": None if ok else _meta_error(body)})
     if not ok:
@@ -1047,7 +1061,41 @@ def app_status() -> dict[str, Any]:
         "campaigns_today": used, "page_name": page_name, "page_cover": cover,
         "audience": audience_options(),
         "creative": creative_options(),
+        "live": live_options(),
     }
+
+
+def live_options() -> dict[str, Any]:
+    """ค่าที่หน้าแอปใช้กับชนิด Live สด — ให้ server เป็นคนกำหนด หน้าเว็บไม่ตั้งตัวเลขเอง"""
+    return {"min_hours": LIVE_MIN_HOURS, "max_hours": LIVE_MAX_HOURS, "default_hours": LIVE_DEFAULT_HOURS,
+            "thb_per_hour": LIVE_THB_PER_HOUR, "lead_hours": LIVE_LEAD_HOURS}
+
+
+def live_events() -> dict[str, Any]:
+    """Live ที่นัดไว้ล่วงหน้าบนเพจ (ยังไม่เริ่ม) เรียงจากใกล้สุด
+    Facebook เก็บ Live นัดหมายเป็น "กิจกรรมออนไลน์แบบ fb_live" — ตัววิดีโอ Live ยังไม่มีจนกว่าจะเริ่มถ่าย"""
+    if not META_PAGE_ID:
+        return {"success": False, "error": "ยังไม่ได้ใส่ META_PAGE_ID ใน .env", "lives": []}
+    ok, rows, err = _graph_get_all(f"{META_PAGE_ID}/events", {
+        "fields": "id,name,start_time,is_online,online_event_format,is_canceled",
+        "time_filter": "upcoming", "limit": 50}, max_pages=3)
+    if not ok:
+        return {"success": False, "error": f"อ่านรายการ Live ของเพจไม่ได้: {_meta_error(err)}", "lives": []}
+    now = datetime.now(TH_TZ)
+    lives = []
+    for e in rows:
+        if e.get("is_canceled") or e.get("online_event_format") != "fb_live":
+            continue
+        try:
+            start = datetime.strptime(e["start_time"], "%Y-%m-%dT%H:%M:%S%z").astimezone(TH_TZ)
+        except (KeyError, ValueError):
+            continue
+        if start <= now:
+            continue
+        lives.append({"id": e["id"], "name": e.get("name") or "Live", "start_time": start.isoformat(timespec="seconds")})
+    lives.sort(key=lambda x: x["start_time"])
+    page_name, _ = _page_cover()
+    return {"success": True, "lives": lives, "page_name": page_name}
 
 
 def _schedule_label(sched: dict[str, str]) -> str:
@@ -1088,6 +1136,8 @@ def create_full(spec: dict[str, Any]) -> dict[str, Any]:
         budget = int(spec.get("daily_budget_thb", 0))
     except (TypeError, ValueError):
         budget = 0
+    if kind == "LIVE":
+        return _create_full_live(spec, name, budget, step, done)
     problems = []
     if kind not in KINDS:
         problems.append("เลือกชนิดโฆษณา")
@@ -1173,6 +1223,87 @@ def create_full(spec: dict[str, Any]) -> dict[str, Any]:
                 campaign_name=camp["name"], dashboard_updated=bool(dash.get("delivered")),
                 ads_manager_url=f"https://adsmanager.facebook.com/adsmanager/manage/campaigns?act="
                                 f"{META_AD_ACCOUNT_ID.removeprefix('act_')}&selected_campaign_ids={camp['campaign_id']}")
+
+
+def _create_full_live(spec: dict[str, Any], name: str, budget: int,
+                      step: Callable[..., bool], done: Callable[..., dict[str, Any]]) -> dict[str, Any]:
+    """create_full ชนิด Live สด · การรับรู้: แคมเปญ OUTCOME_AWARENESS → Ad Set REACH งบรวม ช่วงเวลาเดียวกับ Live
+    ไม่สร้างโฆษณา — API ของ Meta ยังผูก Live ที่นัดไว้ล่วงหน้าไม่ได้ (ลอง 13/11/69: โพสต์กิจกรรม → "ไม่สามารถโปรโมทโน้ตได้")
+    ผู้ใช้ผูก Live เองใน Ads Manager ตามขั้นตอนใน live_next
+    spec: live_id, live_hours, daily_budget_thb (= งบรวมทั้ง Live), text? (เกี่ยวกับ Live), age_min?, age_max?,
+          languages?, interests?"""
+    live_id = str(spec.get("live_id") or "").strip()
+    text = str(spec.get("text") or "").strip()
+    try:
+        hours = int(spec.get("live_hours") or LIVE_DEFAULT_HOURS)
+    except (TypeError, ValueError):
+        hours = 0
+    problems = []
+    if not name:
+        problems.append("ใส่ชื่อแคมเปญ")
+    if budget <= 0:
+        problems.append("ใส่งบรวมเป็นตัวเลขมากกว่า 0")
+    if not LIVE_MIN_HOURS <= hours <= LIVE_MAX_HOURS:
+        problems.append(f"ความยาว Live ต้องอยู่ระหว่าง {LIVE_MIN_HOURS}–{LIVE_MAX_HOURS} ชั่วโมง")
+    live = None
+    if not live_id:
+        problems.append("เลือก Live ที่นัดไว้")
+    else:
+        found = live_events()
+        if not found["success"]:
+            problems.append(found["error"])
+        else:
+            live = next((x for x in found["lives"] if x["id"] == live_id), None)
+            if not live:
+                problems.append("ไม่พบ Live นี้ในเพจ หรือเริ่มไปแล้ว — กดโหลดรายการ Live ใหม่")
+    age_min, languages, age_max = spec.get("age_min"), spec.get("languages"), spec.get("age_max")
+    interests, int_err = _resolve_interests(spec.get("interests"))
+    if int_err:
+        problems.append(int_err)
+    aud, aud_err = _audience(age_min, languages, age_max, interests)
+    if aud_err:
+        problems.append(aud_err)
+    if problems or not live:
+        steps_detail = " · ".join(problems) or "ข้อมูลไม่ครบ"
+        step("form", "ข้อมูลในฟอร์ม", {"success": False, "error": steps_detail})
+        return done()
+
+    start = datetime.fromisoformat(live["start_time"])
+    end = start + timedelta(hours=hours)
+    perm = check_permission(budget)
+    if not step("check", "เช็คสิทธิ์", perm, "ผ่านทุกเงื่อนไข"):
+        return done()
+    camp = create_campaign(name, "OUTCOME_AWARENESS", budget)
+    if not step("campaign", "แคมเปญ", camp, f"{camp.get('name', '')} · การรับรู้"):
+        return done()
+    adset = _create_adset(camp["campaign_id"], f"{name} - Live", budget, "WEBSITE",
+                          start.isoformat(timespec="seconds"), end.isoformat(timespec="seconds"),
+                          age_min, languages, age_max=aud["age_max"], interests=aud["interests"], lifetime=True)
+    fmt = lambda d: d.strftime("%d/%m/%Y %H:%M")  # noqa: E731
+    if not step("adset", "ชุดโฆษณา", adset,
+                f"งบรวม {budget:,} บาท · {fmt(start)}–{end.strftime('%H:%M')} ({hours} ชม.) · เข้าถึงคนมากที่สุด · "
+                f"{aud['_label']}"):
+        return done(campaign_id=camp["campaign_id"])
+
+    act = META_AD_ACCOUNT_ID.removeprefix("act_")
+    dash = send_to_dashboard("last_7d")
+    return done(
+        campaign_id=camp["campaign_id"], adset_id=adset["adset_id"], campaign_name=camp["name"],
+        dashboard_updated=bool(dash.get("delivered")),
+        ads_manager_url=f"https://adsmanager.facebook.com/adsmanager/manage/campaigns?act={act}"
+                        f"&selected_campaign_ids={camp['campaign_id']}",
+        live_next={
+            "live_name": live["name"], "start_time": live["start_time"], "text": text,
+            "adset_url": f"https://adsmanager.facebook.com/adsmanager/manage/adsets/edit?act={act}"
+                         f"&selected_campaign_ids={camp['campaign_id']}&selected_adset_ids={adset['adset_id']}",
+            "steps": [
+                "กดปุ่มด้านล่าง → เปิดชุดโฆษณานี้ใน Ads Manager",
+                "เปิดสวิตช์ \"โฆษณาวิดีโอถ่ายทอดสด\" → เลือก \"วิดีโอถ่ายทอดสดที่กำลังจะมาถึง\"",
+                f"สร้างโฆษณาในชุดนี้ → ชิ้นงาน \"ใช้รายการที่มีอยู่แล้ว\" → เลือก \"{live['name']}\"",
+                "วางข้อความโฆษณา (ปุ่มคัดลอก) → กดเผยแพร่ · ยังหยุดอยู่จนคุณกดเปิด",
+            ],
+            "lead_hours": LIVE_LEAD_HOURS,
+        })
 
 
 def _dynamic_problems(kind: str, texts: list[str], titles: list[str],
@@ -1709,9 +1840,12 @@ def run_http(server, host: str, port: int) -> None:
 
 
 if __name__ == "__main__":
-    if ARGS.status or ARGS.create_json or ARGS.suggest_json or ARGS.search_json or ARGS.adset_json or ARGS.reach_json:
+    if (ARGS.status or ARGS.create_json or ARGS.suggest_json or ARGS.search_json or ARGS.adset_json
+            or ARGS.reach_json or ARGS.lives):
         if ARGS.status:
             out = app_status()
+        elif ARGS.lives:
+            out = live_events()
         elif ARGS.reach_json:
             out = interests_reach(json.loads(Path(ARGS.reach_json).read_text(encoding="utf-8")))
         elif ARGS.adset_json:

@@ -25,7 +25,7 @@ export async function POST(req: Request) {
   const agent = String(form.get("agent") ?? "");
   if (!isAgentId(agent)) return NextResponse.json({ ok: false, error: "เลือกผู้สร้างไม่ถูกต้อง" }, { status: 400 });
   const kind = String(form.get("kind") ?? "");
-  if (kind !== "MESSENGER" && kind !== "WEBSITE") return NextResponse.json({ ok: false, error: "เลือกชนิดโฆษณา" }, { status: 400 });
+  if (kind !== "MESSENGER" && kind !== "WEBSITE" && kind !== "LIVE") return NextResponse.json({ ok: false, error: "เลือกชนิดโฆษณา" }, { status: 400 });
 
   const spec: CreateSpec = {
     kind,
@@ -37,6 +37,12 @@ export async function POST(req: Request) {
     start_time: String(form.get("start_time") ?? "").trim(),
     end_time: String(form.get("end_time") ?? "").trim(),
   };
+  if (kind === "LIVE") {
+    // Live: ไม่มีรูป/ลิงก์/ไดนามิก · เวลามาจาก Live ที่นัดไว้ (server.py อ่านจากเพจเอง ไม่เชื่อเวลาจากหน้าเว็บ)
+    spec.live_id = /^\d+$/.test(String(form.get("live_id") ?? "")) ? String(form.get("live_id")) : "";
+    spec.live_hours = Number(form.get("live_hours") ?? 0);
+    spec.link_url = ""; spec.image_url = ""; spec.start_time = ""; spec.end_time = "";
+  }
   const ageMin = String(form.get("age_min") ?? "").trim();
   if (ageMin) spec.age_min = Number(ageMin);
   const languages = form.getAll("languages").map((v) => String(v).trim()).filter(Boolean);
@@ -52,7 +58,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: "ข้อมูลความสนใจไม่ถูกต้อง" }, { status: 400 });
     }
   }
-  const dynamic = form.get("dynamic") === "1";
+  const dynamic = form.get("dynamic") === "1" && kind !== "LIVE";
   if (dynamic) {
     spec.dynamic = true;
     spec.texts = form.getAll("texts").map((v) => String(v).trim()).filter(Boolean);

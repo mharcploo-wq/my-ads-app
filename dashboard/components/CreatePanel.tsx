@@ -3,9 +3,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AdsetInterests from "@/components/AdsetInterests";
 import InterestPicker, { Interest } from "@/components/InterestPicker";
 import { clearDraft, FileGroup, FormDraft, loadDraft, loadFiles, saveDraft, saveFiles } from "@/lib/draft";
+import type { LiveEvent, LiveNext, LiveOptions } from "@/lib/creator";
 
 type AgentId = "claude" | "manus" | "chatgpt";
-type Kind = "MESSENGER" | "WEBSITE";
+type Kind = "MESSENGER" | "WEBSITE" | "LIVE";
 
 interface CheckItem { key: string; label: string; ok: boolean; detail: string }
 interface CreativeOptions {
@@ -23,11 +24,11 @@ interface AgentStatus {
   agent: AgentId; prefix: string; ready: boolean; configured?: boolean; quota_full?: boolean; reason: string; checks: CheckItem[];
   max_daily_budget_thb: number; max_campaigns_per_day: number; campaigns_today: number | null;
   page_name: string | null; page_cover: string | null; audience?: AudienceOptions;
-  creative?: CreativeOptions;
+  creative?: CreativeOptions; live?: LiveOptions;
 }
 interface CreateResult {
   success: boolean; steps: CheckItem[]; campaign_name?: string; ads_manager_url?: string; dashboard_updated?: boolean;
-  adset_id?: string;
+  adset_id?: string; live_next?: LiveNext;
 }
 
 const AGENTS: { id: AgentId; label: string; color: string; prefix: string }[] = [
@@ -38,7 +39,23 @@ const AGENTS: { id: AgentId; label: string; color: string; prefix: string }[] = 
 const KINDS: { id: Kind; icon: string; label: string; hint: string; cta: string }[] = [
   { id: "MESSENGER", icon: "💬", label: "ยิงข้อความ", hint: "คนกดปุ่ม \"ส่งข้อความ\" ทักแชทเพจ", cta: "ส่งข้อความ" },
   { id: "WEBSITE", icon: "🔗", label: "พาเข้าเว็บไซต์", hint: "คนกดปุ่ม \"ดูเพิ่มเติม\" ไปหน้าเว็บ", cta: "ดูเพิ่มเติม" },
+  { id: "LIVE", icon: "🔴", label: "Live สด", hint: "การรับรู้ · คนเห็น Live มากที่สุด", cta: "ดูวิดีโอ" },
 ];
+
+/** วันเวลาของ Live แบบไทย เช่น "จ. 16 พ.ย. 2569 · 06:00 น." */
+const fmtLive = (iso: string) => {
+  const d = new Date(iso);
+  const day = d.toLocaleDateString("th-TH", { timeZone: "Asia/Bangkok", weekday: "short", day: "numeric", month: "short", year: "numeric" });
+  return `${day} · ${fmtClock(d)} น.`;
+};
+const fmtClock = (d: Date) => d.toLocaleTimeString("th-TH", { timeZone: "Asia/Bangkok", hour: "2-digit", minute: "2-digit", hour12: false });
+/** เวลาที่เหลือก่อนเริ่ม Live เช่น "อีก 2 วัน 13 ชม." */
+const fmtLeft = (ms: number) => {
+  if (ms <= 0) return "เริ่มไปแล้ว";
+  const h = Math.floor(ms / 3600_000);
+  if (h < 1) return `อีก ${Math.max(1, Math.round(ms / 60_000))} นาที`;
+  return h >= 24 ? `อีก ${Math.floor(h / 24)} วัน${h % 24 ? ` ${h % 24} ชม.` : ""}` : `อีก ${h} ชม.`;
+};
 
 /** วันเวลาไทย: "YYYY-MM-DD" + "HH:MM" → เวลาจริง (ms) */
 const thMs = (d: string, t: string) => Date.parse(`${d}T${t || "00:00"}:00+07:00`);
@@ -74,6 +91,7 @@ const blankForm = (): Omit<FormDraft, "agent" | "savedAt"> => ({
   kind: "MESSENGER", name: "", budget: "300", text: "", link: "", imageUrl: "",
   startMode: "now", startDate: thDate(1), startTime: "08:00", hasEnd: false, endDate: thDate(8), endTime: "23:59",
   ageMin: null, ageMax: null, langs: null, interests: [], dynamic: false, texts: [""], titles: [],
+  liveId: "", liveHours: null,
 });
 
 export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
@@ -128,6 +146,14 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
   const vidInput = useRef<HTMLInputElement>(null);
   const imgUrls = useObjectUrls(dynImages);
   const vidUrls = useObjectUrls(dynVideos);
+  // ชนิด Live สด
+  const [liveId, setLiveId] = useState(d0.liveId ?? "");
+  const [liveHours, setLiveHours] = useState<number | null>(d0.liveHours ?? null);
+  const [lives, setLives] = useState<LiveEvent[] | null>(null);
+  const [livesErr, setLivesErr] = useState<string | null>(null);
+  const [livesBusy, setLivesBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [now, setNow] = useState(() => Date.now());   // นับเวลาที่เหลือก่อนเริ่ม Live
 
   const loadStatus = useCallback(async () => {
     setStatusErr(null);
@@ -167,14 +193,14 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
   useEffect(() => {
     const t = setTimeout(() => {
       const form = { kind, name, budget, text, link, imageUrl, startMode, startDate, startTime, hasEnd, endDate,
-        endTime, ageMin, ageMax, langs, interests, dynamic, texts, titles };
+        endTime, ageMin, ageMax, langs, interests, dynamic, texts, titles, liveId, liveHours };
       if (JSON.stringify(form) === JSON.stringify(blankForm()) && !loadDraft()) return;
       const at = Date.now();
       if (saveDraft({ ...form, agent, savedAt: at })) setSavedAt(at);
     }, 400);
     return () => clearTimeout(t);
   }, [agent, kind, name, budget, text, link, imageUrl, startMode, startDate, startTime, hasEnd, endDate, endTime,
-    ageMin, ageMax, langs, interests, dynamic, texts, titles]);
+    ageMin, ageMax, langs, interests, dynamic, texts, titles, liveId, liveHours]);
 
   // บันทึกรูป/คลิปเมื่อรายการเปลี่ยน (ข้ามชุดที่เพิ่งโหลดมา ไม่ต้องเขียนซ้ำ)
   useEffect(() => {
@@ -233,6 +259,57 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
     ? `ชิ้นงานไดนามิก ${dynImages.length} รูป · ${dynVideos.length} คลิป`
     : file ? "ไฟล์จากเครื่อง" : imageUrl.trim() ? "ลิงก์รูป" : "รูปปกเพจ (ค่าเริ่มต้น)";
 
+  // ---- Live สด · การรับรู้ ----
+  const isLive = kind === "LIVE";
+  const liveOpt = status?.find((a) => a.live)?.live ?? null;
+  const hours = liveHours ?? liveOpt?.default_hours ?? 2;
+  const hourChoices = liveOpt ? Array.from({ length: liveOpt.max_hours - liveOpt.min_hours + 1 }, (_, i) => liveOpt.min_hours + i) : [hours];
+  const liveBudgetFor = (h: number) => (liveOpt ? Math.min(maxBudget, h * liveOpt.thb_per_hour) : null);
+  const live = lives?.find((l) => l.id === liveId) ?? null;
+  const liveStart = live ? Date.parse(live.start_time) : null;
+  const liveSoon = liveStart !== null && !!liveOpt && liveStart - now < liveOpt.lead_hours * 3600_000;
+
+  const loadLives = useCallback(async () => {
+    setLivesBusy(true); setLivesErr(null);
+    try {
+      const r = await fetch(`/api/lives?agent=${agent}`, { cache: "no-store" });
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error);
+      if (!j.result.success) throw new Error(j.result.error);
+      setLives(j.result.lives as LiveEvent[]);
+      setNow(Date.now());
+    } catch (e) {
+      setLives(null); setLivesErr((e as Error).message);
+    } finally {
+      setLivesBusy(false);
+    }
+  }, [agent]);
+  const canLoadLives = isLive && !!cur?.configured;
+  useEffect(() => { if (canLoadLives) loadLives(); }, [canLoadLives, loadLives]);
+  // Live ที่เลือกไว้หายไป (เริ่มแล้ว/ยกเลิก) หรือยังไม่ได้เลือก → เลือกอันที่ใกล้สุดให้
+  useEffect(() => {
+    if (lives && !lives.some((l) => l.id === liveId)) setLiveId(lives[0]?.id ?? "");
+  }, [lives, liveId]);
+  useEffect(() => {
+    if (!isLive) return;
+    const t = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(t);
+  }, [isLive]);
+
+  function pickKind(k: Kind) {
+    // เปลี่ยนมาเป็น Live: งบเปลี่ยนเป็นงบรวมตามความยาว Live (แก้เองได้)
+    if (k === "LIVE" && kind !== "LIVE") { const b = liveBudgetFor(hours); if (b) setBudget(String(b)); }
+    setKind(k);
+  }
+  function pickHours(h: number) {
+    setLiveHours(h);
+    const b = liveBudgetFor(h);
+    if (b) setBudget(String(b));
+  }
+  async function copyLiveText(t: string) {
+    try { await navigator.clipboard.writeText(t); setCopied(true); setTimeout(() => setCopied(false), 2000); } catch { /* เบราว์เซอร์ไม่ให้คัดลอก */ }
+  }
+
   function toggleDynamic() {
     if (!dynAllowed) return;
     const on = !dynamic;
@@ -286,8 +363,14 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
     const p: string[] = [];
     if (!cur?.configured) p.push("ผู้สร้างที่เลือกยังไม่ได้ตั้งค่า");
     if (!name.trim()) p.push("ใส่ชื่อแคมเปญ");
-    if (!Number.isInteger(budgetNum) || budgetNum <= 0) p.push("ใส่งบต่อวันเป็นตัวเลขเต็ม");
-    else if (budgetNum > maxBudget) p.push(`งบเกินเพดาน ${maxBudget.toLocaleString()} บาท/วัน`);
+    if (!Number.isInteger(budgetNum) || budgetNum <= 0) p.push(isLive ? "ใส่งบรวมเป็นตัวเลขเต็ม" : "ใส่งบต่อวันเป็นตัวเลขเต็ม");
+    else if (budgetNum > maxBudget) p.push(`งบเกินเพดาน ${maxBudget.toLocaleString()} บาท`);
+    if (isLive) {
+      if (!live) p.push(lives?.length === 0 ? "เพจยังไม่มี Live ที่นัดไว้" : "เลือก Live ที่นัดไว้");
+      if (left === 0) p.push("วันนี้สร้างครบโควตาแล้ว");
+      if (audOpt && pickedLangs.length === 0) p.push("เลือกภาษาอย่างน้อย 1 ภาษา");
+      return p;   // Live ไม่มีรูป/ลิงก์/กำหนดเวลาเอง · ข้อความไม่บังคับ
+    }
     if (isDyn && crOpt) {
       if (!dynImages.length && !dynVideos.length) p.push("ใส่รูปหรือคลิปอย่างน้อย 1 ชิ้น");
       if (!filledTexts.length) p.push("ใส่ข้อความหลักอย่างน้อย 1 แบบ");
@@ -301,7 +384,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
     if (audOpt && pickedLangs.length === 0) p.push("เลือกภาษาอย่างน้อย 1 ภาษา");
     return p;
   }, [cur, name, budgetNum, maxBudget, text, kind, link, left, sched.error, audOpt, pickedLangs.length,
-    isDyn, crOpt, dynImages.length, dynVideos, filledTexts.length, videoBytes]);
+    isDyn, crOpt, dynImages.length, dynVideos, filledTexts.length, videoBytes, isLive, live, lives]);
 
   function pickFile(f: File | undefined | null) {
     if (!f) return;
@@ -320,13 +403,17 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
     fd.set("agent", agent); fd.set("kind", kind); fd.set("name", name.trim());
     fd.set("daily_budget_thb", String(budgetNum)); fd.set("text", text.trim());
     if (kind === "WEBSITE") fd.set("link_url", link.trim());
-    if (sched.start_time) fd.set("start_time", sched.start_time);
-    if (sched.end_time) fd.set("end_time", sched.end_time);
+    if (isLive) { fd.set("live_id", liveId); fd.set("live_hours", String(hours)); }
+    else {
+      if (sched.start_time) fd.set("start_time", sched.start_time);
+      if (sched.end_time) fd.set("end_time", sched.end_time);
+    }
     if (age != null) fd.set("age_min", String(age));
     if (ageHi != null) fd.set("age_max", String(ageHi));
     if (interests.length) fd.set("interests", JSON.stringify(interests.map(({ id, name }) => ({ id, name }))));
     pickedLangs.forEach((k) => fd.append("languages", k));
-    if (isDyn) {
+    if (isLive) { /* ไม่มีรูป — โฆษณาใช้ตัว Live เอง */ }
+    else if (isDyn) {
       fd.set("dynamic", "1");
       fd.delete("text");
       dynImages.forEach((f) => fd.append("images", f));
@@ -357,6 +444,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
     setHasEnd(b.hasEnd); setEndDate(b.endDate); setEndTime(b.endTime);
     setAgeMin(b.ageMin); setAgeMax(b.ageMax); setLangs(b.langs); setInterests([]); setPickerKey((k) => k + 1);
     setDynamic(b.dynamic); setTexts(b.texts); setTitles(b.titles); setPvIdx(0); setDynMsg(null);
+    setLiveId(b.liveId); setLiveHours(b.liveHours);
     stored.current = { single: [], images: [], videos: [] };
     setFile(null); setDynImages([]); setDynVideos([]); setLostFiles([]);
     await clearDraft();
@@ -420,21 +508,59 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
         <div className="c-label">ชนิดโฆษณา</div>
         <div className="c-seg">
           {KINDS.map((k) => (
-            <button key={k.id} type="button" className={`c-opt ${kind === k.id ? "on" : ""}`} onClick={() => setKind(k.id)}>
+            <button key={k.id} type="button" className={`c-opt ${k.id === "LIVE" ? "c-opt-live" : ""} ${kind === k.id ? "on" : ""}`} onClick={() => pickKind(k.id)}>
               <b>{k.icon} {k.label}</b><span>{k.hint}</span>
             </button>
           ))}
         </div>
 
-        <div className="c-row">
-          <div className="field"><label htmlFor="c-name">ชื่อแคมเปญ</label>
-            <input id="c-name" className="input" value={name} maxLength={80} placeholder="เช่น โปรลดราคา พ.ย." onChange={(e) => setName(e.target.value)} /></div>
-          <div className="field"><label htmlFor="c-budget">งบต่อวัน (บาท)</label>
-            <input id="c-budget" className="input" inputMode="numeric" value={budget} onChange={(e) => setBudget(e.target.value.replace(/[^\d]/g, ""))} />
-            <small className="c-hint">สูงสุด {maxBudget.toLocaleString()} บาท/วัน</small></div>
-        </div>
+        {isLive && (<>
+          <div className="c-label c-row-h">
+            <span>Live ที่นัดไว้บนเพจ <small className="c-hint">(ดึงจากเพจ{cur?.page_name ? ` ${cur.page_name}` : ""} อัตโนมัติ)</small></span>
+            <button type="button" className="btn" onClick={loadLives} disabled={livesBusy || !cur?.configured}>{livesBusy ? "กำลังโหลด…" : "↻ โหลดใหม่"}</button>
+          </div>
+          {livesErr && <div className="msg bad">โหลดรายการ Live ไม่ได้: {livesErr}</div>}
+          {!lives && !livesErr && <div className="c-hint">{cur?.configured ? "กำลังโหลดรายการ Live…" : "เลือกผู้สร้างที่ตั้งค่าแล้วก่อน"}</div>}
+          {lives?.length === 0 && (
+            <div className="c-hint"><span className="c-bad">✖ ยังไม่มี Live ที่นัดไว้ล่วงหน้าบนเพจ</span> — ตั้ง Live ล่วงหน้าที่เพจก่อน (Live Producer → ตั้งเวลา) แล้วกด ↻ โหลดใหม่</div>
+          )}
+          <div className="c-lives" role="radiogroup" aria-label="Live ที่นัดไว้">
+            {lives?.map((l) => {
+              const left = Date.parse(l.start_time) - now;
+              const soon = !!liveOpt && left < liveOpt.lead_hours * 3600_000;
+              return (
+                <button key={l.id} type="button" role="radio" aria-checked={l.id === liveId}
+                  className={`c-live ${l.id === liveId ? "on" : ""}`} onClick={() => setLiveId(l.id)}>
+                  <span className="c-live-dot" />
+                  <span className="c-live-t"><b>{l.name}</b><small>{fmtLive(l.start_time)} · {fmtLeft(left)}</small></span>
+                  <span className={`c-live-pill ${soon ? "soon" : ""}`}>{soon ? "⚠ ใกล้เริ่ม" : "นัดไว้"}</span>
+                </button>
+              );
+            })}
+          </div>
+          {liveSoon && liveOpt && <div className="c-warn">⚠ Live นี้เริ่มในไม่ถึง {liveOpt.lead_hours} ชม. — Meta แนะนำให้ตั้งโฆษณาเสร็จก่อนอย่างน้อย {liveOpt.lead_hours} ชม. อาจตรวจโฆษณาไม่ทัน</div>}
+        </>)}
 
-        {!isDyn && (<div className="field"><label htmlFor="c-text">ข้อความโฆษณา</label>
+        <div className={`c-row ${isLive ? "c-row-live" : ""}`}>
+          <div className="field"><label htmlFor="c-name">ชื่อแคมเปญ</label>
+            <input id="c-name" className="input" value={name} maxLength={80} placeholder={isLive ? "เช่น แคมเปญการรับรู้ใหม่-Live สด" : "เช่น โปรลดราคา พ.ย."} onChange={(e) => setName(e.target.value)} /></div>
+          {isLive && (
+            <div className="field c-hours"><label htmlFor="c-hours">Live ยาว (ชม.)</label>
+              <select id="c-hours" className="input" value={hours} onChange={(e) => pickHours(Number(e.target.value))}>
+                {hourChoices.map((h) => <option key={h} value={h}>{h}</option>)}
+              </select></div>
+          )}
+          <div className="field"><label htmlFor="c-budget">{isLive ? "งบรวมทั้ง Live (บาท)" : "งบต่อวัน (บาท)"}</label>
+            <input id="c-budget" className="input" inputMode="numeric" value={budget} onChange={(e) => setBudget(e.target.value.replace(/[^\d]/g, ""))} />
+            <small className="c-hint">สูงสุด {maxBudget.toLocaleString()} บาท{isLive ? "" : "/วัน"}</small></div>
+        </div>
+        {isLive && liveOpt && (
+          <small className="c-hint">คิดให้ {liveOpt.thb_per_hour.toLocaleString()} บาท/ชม. แก้ตัวเลขเองได้ · ใช้ &quot;งบรวม&quot; เพราะงบรายวัน Meta บังคับให้เปิดอย่างน้อย 24 ชม.</small>
+        )}
+
+        {isLive ? (<div className="field"><label htmlFor="c-text">เกี่ยวกับ Live นี้ <small className="c-hint">(ไม่บังคับ — ให้ AI ใช้คิดกลุ่มเป้าหมาย และไว้คัดลอกเป็นข้อความโฆษณาใน Ads Manager)</small></label>
+          <textarea id="c-text" className="input c-text" value={text} maxLength={2000} placeholder="เช่น Live แนะนำระบบ ERP + AI สำหรับโรงงาน ถาม-ตอบสด" onChange={(e) => setText(e.target.value)} /></div>)
+        : !isDyn && (<div className="field"><label htmlFor="c-text">ข้อความโฆษณา</label>
           <textarea id="c-text" className="input c-text" value={text} maxLength={2000} placeholder="เช่น ทักแชทสอบถามสินค้าได้เลยครับ" onChange={(e) => setText(e.target.value)} /></div>)}
 
         {kind === "WEBSITE" && (
@@ -442,7 +568,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
             <input id="c-link" className="input" value={link} placeholder="https://..." onChange={(e) => setLink(e.target.value)} /></div>
         )}
 
-        {crOpt && (
+        {crOpt && !isLive && (
           <div className={`c-dyn ${dynAllowed ? "" : "off"}`}>
             <div>
               <b>ชิ้นงานโฆษณาแบบไดนามิก</b>
@@ -500,7 +626,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
             </div>
           ))}
           {titles.length < crOpt.max_titles && <button type="button" className="btn c-more" onClick={() => setTitles([...titles, ""])}>＋ เพิ่มพาดหัว</button>}
-        </>) : (<>
+        </>) : isLive ? null : (<>
         <div className="c-label">รูปโฆษณา</div>
         <div className={`c-drop ${dragOver ? "over" : ""}`}
           onDragOver={(e) => { e.preventDefault(); setDragOver(true); }} onDragLeave={() => setDragOver(false)}
@@ -549,8 +675,9 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
               <InterestPicker key={pickerKey} agent={agent} agents={status} interests={interests} setInterests={setInterests}
                 max={audOpt.max_interests} kwRef={kwInput}
                 onAudience={(a) => { setAgeMin(a.age_min); setAgeMax(a.age_max); setLangs(a.languages); }}
-                copyHint={`ข้อความหลัก${isDyn ? " + พาดหัว" : ""}${kind === "WEBSITE" ? " + ลิงก์" : ""}`}
-                copy={() => ({ texts: isDyn ? filledTexts : [text.trim()].filter(Boolean), titles: isDyn ? filledTitles : [],
+                copyHint={isLive ? "ชื่อ Live + เกี่ยวกับ Live นี้" : `ข้อความหลัก${isDyn ? " + พาดหัว" : ""}${kind === "WEBSITE" ? " + ลิงก์" : ""}`}
+                copy={() => isLive ? { texts: [text.trim()].filter(Boolean), titles: [live?.name ?? ""].filter(Boolean), link_url: "" }
+                  : ({ texts: isDyn ? filledTexts : [text.trim()].filter(Boolean), titles: isDyn ? filledTitles : [],
                   link_url: kind === "WEBSITE" ? link.trim() : "" })} />
             </div>
             <div className="c-aud-row">
@@ -563,6 +690,13 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
         <small className="c-hint">อายุขั้นต่ำ {audOpt ? `${audOpt.min_age}–${audOpt.max_age_min}` : "…"} · อายุสูงสุด {audOpt ? `${audOpt.min_age_max}–${audOpt.no_max_age} (${audOpt.no_max_age}+ = ไม่จำกัด)` : "…"} · อายุสูงสุดและความสนใจเป็นค่าแนะนำของ Advantage+</small>
 
         <div className="c-label">กำหนดเวลาเผยแพร่ (เวลาไทย)</div>
+        {isLive ? (
+          <div className={`c-hint c-sched ${live ? "ok" : "bad"}`}>
+            {live && liveStart !== null
+              ? `✔ ${fmtLive(live.start_time).replace(" น.", "")} → ${fmtClock(new Date(liveStart + hours * 3600_000))} น. (${hours} ชม. ตรงกับ Live)${budgetNum > 0 ? ` · งบรวม ฿${budgetNum.toLocaleString()}` : ""}`
+              : "✖ เลือก Live ก่อน — เวลาเผยแพร่ตั้งตามเวลา Live ให้เอง"}
+          </div>
+        ) : (<>
         <div className="c-seg">
           <button type="button" className={`c-opt ${startMode === "now" ? "on" : ""}`} onClick={() => setStartMode("now")}>
             <b>▶ เริ่มทันที</b><span>วิ่งตอนที่กดเปิดใน Ads Manager</span>
@@ -589,12 +723,15 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
         <div className={`c-hint c-sched ${sched.error ? "bad" : "ok"}`}>
           {sched.error ? `✖ ${sched.error}` : `✔ ${sched.label}${sched.days && budgetNum > 0 ? ` (${sched.days} วัน) · งบรวมไม่เกินประมาณ ฿${(sched.days * budgetNum).toLocaleString()}` : ""}`}
         </div>
+        </>)}
 
-        <div className="c-safe">⏸ โฆษณาจะถูกสร้างแบบ <b>หยุดไว้</b> — ยังไม่เสียเงินจนกว่าคุณจะไปกดเปิดใน Ads Manager</div>
+        <div className="c-safe">{isLive
+          ? <>⏸ สร้างแบบ <b>หยุดไว้</b> · เป้าหมาย: เข้าถึงคนให้มากที่สุด · ความถี่ตามค่าเริ่มต้นของ Meta · ตำแหน่ง Advantage+ — แอปสร้างแคมเปญและชุดโฆษณา ส่วนการผูก Live ทำต่อใน Ads Manager ~1 นาที</>
+          : <>⏸ โฆษณาจะถูกสร้างแบบ <b>หยุดไว้</b> — ยังไม่เสียเงินจนกว่าคุณจะไปกดเปิดใน Ads Manager</>}</div>
 
         <div className="c-actions">
           <button className="btn primary c-submit" disabled={problems.length > 0 || busy} onClick={() => submit()}>
-            {busy ? (isDyn && dynVideos.length ? "กำลังอัปโหลดและรอ Meta ประมวลผลคลิป… (อาจนานหลายนาที)" : "กำลังสร้าง… (ประมาณ 20 วินาที)") : "สร้างโฆษณา"}
+            {busy ? (isDyn && dynVideos.length ? "กำลังอัปโหลดและรอ Meta ประมวลผลคลิป… (อาจนานหลายนาที)" : "กำลังสร้าง… (ประมาณ 20 วินาที)") : isLive ? "🔴 สร้างแคมเปญ Live" : "สร้างโฆษณา"}
           </button>
           {left != null && <span className="c-hint">วันนี้สร้างได้อีก {left} จาก {cur!.max_campaigns_per_day} แคมเปญ</span>}
         </div>
@@ -618,7 +755,23 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
               {result.steps.map((s) => (
                 <li key={s.key} className={s.ok ? "ok" : "bad"}>{s.ok ? "✔" : "✖"} {s.label} — {s.detail}</li>
               ))}
+              {result.success && result.live_next && (
+                <li className="c-pend">◐ โฆษณา — ต้องผูก Live ใน Ads Manager (API ของ Meta ยังผูก Live ที่นัดไว้ล่วงหน้าไม่ได้)</li>
+              )}
             </ul>
+            {result.success && result.live_next && (
+              <div className="c-next">
+                <b>ทำต่อใน Ads Manager</b>
+                <ol>{result.live_next.steps.map((s, i) => <li key={i}>{s}</li>)}</ol>
+                <div className="c-actions">
+                  <a className="btn primary" href={result.live_next.adset_url} target="_blank" rel="noreferrer">↗ เปิดชุดโฆษณาใน Ads Manager</a>
+                  {result.live_next.text && (
+                    <button className="btn" onClick={() => copyLiveText(result.live_next!.text)}>{copied ? "✔ คัดลอกแล้ว" : "📋 คัดลอกข้อความโฆษณา"}</button>
+                  )}
+                </div>
+                <small className="c-hint">⏰ ตั้งโฆษณาให้เสร็จก่อน Live &quot;{result.live_next.live_name}&quot; ({fmtLive(result.live_next.start_time)}) อย่างน้อย {result.live_next.lead_hours} ชม. และเริ่ม Live จากรายการที่นัดไว้ใน Live Producer โฆษณาถึงจะวิ่ง</small>
+              </div>
+            )}
             {result.success && (
               <div className="c-actions">
                 {result.ads_manager_url && <a className="btn" href={result.ads_manager_url} target="_blank" rel="noreferrer">เปิดใน Ads Manager ↗</a>}
@@ -641,7 +794,10 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
         <div className="fbp">
           <div className="fbp-h"><div className="fbp-av" /><div><b>{cur?.page_name ?? "เพจของคุณ"}</b><small>ได้รับการสนับสนุน</small></div></div>
           <p className="fbp-text">{(isDyn ? combo?.t : text) || <span className="fbp-ph">ข้อความโฆษณาจะแสดงตรงนี้</span>}</p>
-          {isDyn
+          {isLive
+            ? <div className="fbp-img fbp-live"><span className="fbp-live-b">🔴 ถ่ายทอดสด</span><b>{live?.name ?? "Live ที่นัดไว้"}</b>
+                {live && <small>{fmtLive(live.start_time)}</small>}</div>
+            : isDyn
             ? combo
               ? combo.m.type === "video"
                 ? <video className="fbp-img" src={combo.m.url} muted controls preload="metadata" />
@@ -653,7 +809,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
             ? <img className="fbp-img" src={previewImage} alt="รูปโฆษณา" />
             : <div className="fbp-img fbp-noimg">รูปโฆษณา</div>}
           <div className="fbp-cta">
-            <div><small>{kind === "MESSENGER" ? "MESSENGER" : (link.replace(/^https?:\/\//, "").split("/")[0] || "เว็บไซต์ของคุณ").toUpperCase()}</small>
+            <div><small>{kind === "MESSENGER" ? "MESSENGER" : isLive ? "FACEBOOK LIVE" : (link.replace(/^https?:\/\//, "").split("/")[0] || "เว็บไซต์ของคุณ").toUpperCase()}</small>
               <b>{(isDyn && combo?.h) || name || "ชื่อแคมเปญ"}</b></div>
             <span>{kindInfo.cta}</span>
           </div>
@@ -665,7 +821,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
             <button type="button" className="btn" aria-label="ชุดถัดไป" onClick={() => setPvIdx((pvIdx + 1) % combos.length)}>›</button>
           </div>
         )}
-        <p className="c-hint" style={{ textAlign: "center" }}>{isDyn ? "ชิ้นงาน" : "รูปที่ใช้"}: {imageSource}</p>
+        <p className="c-hint" style={{ textAlign: "center" }}>{isLive ? `ชิ้นงาน: ตัว Live (เลือกใน Ads Manager)` : `${isDyn ? "ชิ้นงาน" : "รูปที่ใช้"}: ${imageSource}`}</p>
 
         <div className="c-checks">
           <b>เช็คก่อนสร้าง</b>
@@ -675,7 +831,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
           ))}
           {status && (
             <div className={budgetNum > 0 && budgetNum <= maxBudget ? "ok" : "bad"}>
-              {budgetNum > 0 && budgetNum <= maxBudget ? "✔" : "✖"} งบต่อวัน — {budgetNum ? budgetNum.toLocaleString() : 0} / เพดาน {maxBudget.toLocaleString()} บาท
+              {budgetNum > 0 && budgetNum <= maxBudget ? "✔" : "✖"} {isLive ? "งบรวมทั้ง Live" : "งบต่อวัน"} — {budgetNum ? budgetNum.toLocaleString() : 0} / เพดาน {maxBudget.toLocaleString()} บาท
             </div>
           )}
         </div>
