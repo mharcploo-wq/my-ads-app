@@ -83,9 +83,13 @@ export interface DailyPoint { date: string; spend: number; impressions: number; 
 export interface AgeCell { age: string; gender: "female" | "male" | "unknown"; spend: number; link_clicks: number }
 export interface PlacementRow { key: string; label: string; spend: number; link_clicks: number; share: number; cpc: number | null; hot: boolean }
 
+/** พอร์ตโฟลิโอที่เลือกดูได้ — พอร์ตหลัก (META_READ_TOKEN) + พอร์ตเพิ่มเติมที่ตั้งไว้ในหน้าเชื่อมต่อ API (ไม่มี token) */
+export interface InsightsSource { id: string; name: string; account: string; main: boolean }
+
 export interface InsightsData {
   ok: true;
   account: { id: string; name: string; currency: string };
+  sources: InsightsSource[];
   range: RangeKey;
   who: WhoKey;
   period: { since: string; until: string; days: number } | null;   // null = ช่วงนี้ไม่มีการแสดงผล
@@ -105,7 +109,7 @@ export interface InsightsData {
   rules: { key: string; text: string }[];
 }
 
-export type InsightsResponse = InsightsData | { ok: false; error: string };
+export type InsightsResponse = InsightsData | { ok: false; error: string; sources?: InsightsSource[]; account?: string | null };
 
 /** ผลสรุปจาก Claude (ปุ่ม ✨) */
 export interface AiSummary {

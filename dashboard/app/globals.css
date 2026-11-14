@@ -366,6 +366,10 @@ img.fbp-av { object-fit: cover; }
 /* ---------- วิเคราะห์โฆษณา (in-) ---------- */
 .in-meta { color: var(--text-muted); font-size: 12.5px; }
 .in-meta b { color: var(--text-secondary); font-weight: 600; }
+.in-pf { vertical-align: middle; font-size: 13px; }
+.in-pf button { padding: 4px 10px; }
+.in-pf button:disabled { cursor: progress; }
+.in-pf-acc { color: var(--text-muted); font-weight: 400; }
 .in-err { border-color: #5a2323; background: #2a1515; color: #ffb3b3; display: block; }
 .in-err span { color: var(--text-secondary); }
 .in-kpis { grid-template-columns: repeat(7, minmax(0, 1fr)); }

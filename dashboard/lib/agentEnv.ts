@@ -1,7 +1,7 @@
 import "server-only";
 import { promises as fs } from "fs";
 import path from "path";
-import { AgentId, MAX_PORTFOLIO } from "@/lib/creator";
+import { AGENT_IDS, AgentId, MAX_PORTFOLIO } from "@/lib/creator";
 
 /** อ่าน/เขียนไฟล์ mcp-server/.env.{agent} จากหน้า "ตั้งค่า Agent" — โทเคนไม่ถูกส่งกลับไปที่เบราว์เซอร์ */
 
@@ -128,6 +128,22 @@ export async function readAgentEnv(a: AgentId): Promise<AgentEnvView> {
         values: Object.fromEntries(PORTFOLIO_KEYS.map((k) => [k, m.get(pfKey(n, k)) ?? ""])) as Record<PortfolioKey, string>,
       })),
   };
+}
+
+/** พอร์ตเพิ่มเติมของทุก agent ที่มีทั้ง token และบัญชีโฆษณา — ใช้ฝั่ง server เท่านั้น (หน้าวิเคราะห์โฆษณา อ่านอย่างเดียว)
+ *  บัญชีเดียวกันหลาย agent → เอา token ตัวแรกที่เจอ (เรียงตาม AGENT_IDS แล้วเลขพอร์ต) */
+export async function portfolioTokens(): Promise<{ account: string; token: string }[]> {
+  const out = new Map<string, string>();
+  for (const a of AGENT_IDS) {
+    const { text, exists } = await readText(a);
+    if (!exists) continue;
+    const m = parse(text);
+    for (const n of EXTRA_SLOTS) {
+      const token = (m.get(pfKey(n, "TOKEN")) ?? "").trim(), account = (m.get(pfKey(n, "AD_ACCOUNT_ID")) ?? "").trim();
+      if (TOKEN_PATTERN.test(token) && /^act_\d+$/.test(account) && !out.has(account)) out.set(account, token);
+    }
+  }
+  return [...out].map(([account, token]) => ({ account, token }));
 }
 
 /** ตรวจพอร์ตเพิ่มเติม — คีย์ error: pf{slot}.{TOKEN|AD_ACCOUNT_ID|…} · saved = พอร์ตที่มี token ในไฟล์แล้ว */

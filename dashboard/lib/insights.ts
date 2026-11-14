@@ -1,8 +1,9 @@
 import "server-only";
+import { portfolioTokens } from "./agentEnv";
 import { errMsg, get, getAll, Json, metaConfig } from "./meta";
 import { prefixOf } from "./types";
 import {
-  AgeCell, DailyPoint, InsightsData, Level, Metrics, Node, PlacementRow, RangeKey, RANGES, Rank, Rec, Result,
+  AgeCell, DailyPoint, InsightsData, InsightsSource, Level, Metrics, Node, PlacementRow, RangeKey, RANGES, Rank, Rec, Result,
   ResultTotal, Sev, WhoKey, WHOS,
 } from "./insightsTypes";
 
@@ -151,26 +152,60 @@ const NODE_FIELDS = {
   ad: `campaign_id,adset_id,ad_id,ad_name,${FIELDS},quality_ranking,engagement_rate_ranking,conversion_rate_ranking`,
 };
 
-export async function getInsights(range: RangeKey, who: WhoKey, fresh: boolean): Promise<InsightsData | { ok: false; error: string }> {
-  const key = `${range}|${who}`;
+/** แหล่งข้อมูลที่เลือกดูได้ = พอร์ตหลัก (META_READ_TOKEN ใน .env.local) + พอร์ตเพิ่มเติมของทุก agent (ตัดบัญชีซ้ำ)
+ *  token อยู่ฝั่ง server เท่านั้น — หน้าเว็บได้แค่ InsightsSource */
+interface Source { id: string; token: string; main: boolean }
+async function sources(): Promise<Source[]> {
+  const c = metaConfig();
+  const out: Source[] = c.ready ? [{ id: c.account, token: c.token, main: true }] : [];
+  for (const p of await portfolioTokens()) {
+    if (!out.some((s) => s.id === p.account)) out.push({ id: p.account, token: p.token, main: false });
+  }
+  return out;
+}
+
+/** ชื่อพอร์ต (ธุรกิจ) + ชื่อบัญชี สำหรับปุ่มเลือก — จำไว้ 1 ชั่วโมง (ไม่ยิง Meta ทุกครั้งที่เปิดหน้า) · อ่านไม่ได้ = ใช้เลขบัญชี */
+const NAME_TTL_MS = 60 * 60_000;
+const gn = globalThis as unknown as { __adsSourceNames?: Map<string, { at: number; name: string; account: string }> };
+const names = (gn.__adsSourceNames ??= new Map());
+async function labelled(list: Source[]): Promise<InsightsSource[]> {
+  const { base } = metaConfig();
+  await Promise.all(list.map(async (s) => {
+    const hit = names.get(s.id);
+    if (hit && Date.now() - hit.at < NAME_TTL_MS) return;
+    const r = await get(`${base}/${s.id}?${new URLSearchParams({ fields: "name,business{name}", access_token: s.token })}`);
+    if (r.ok) names.set(s.id, { at: Date.now(), account: String(r.body.name ?? s.id), name: String(r.body.business?.name ?? r.body.name ?? s.id) });
+  }));
+  return list.map((s) => ({ id: s.id, main: s.main, name: names.get(s.id)?.name ?? s.id, account: names.get(s.id)?.account ?? s.id }));
+}
+
+export type InsightsResult = InsightsData | { ok: false; error: string; sources: InsightsSource[]; account: string | null };
+
+/** account = บัญชีที่เลือก (act_…) · ว่างหรือไม่อยู่ในรายการ = พอร์ตหลัก */
+export async function getInsights(range: RangeKey, who: WhoKey, fresh: boolean, account = ""): Promise<InsightsResult> {
+  const list = await sources();
+  const src = list.find((s) => s.id === account) ?? list[0];
+  if (!src) return { ok: false, error: "ยังไม่ได้ตั้ง META_READ_TOKEN / META_AD_ACCOUNT_ID ใน dashboard/.env.local (ตั้งได้ที่แท็บ เชื่อมต่อ API)", sources: [], account: null };
+  const key = `${src.id}|${range}|${who}`;
   const hit = cache.get(key);
   const age = hit ? Date.now() - hit.at : Infinity;
-  if (hit && age < TTL_MS && !(fresh && age > MIN_REFRESH_MS)) return hit.data;
+  const withSources = async (d: InsightsData): Promise<InsightsData> => ({ ...d, sources: await labelled(list) });
+  if (hit && age < TTL_MS && !(fresh && age > MIN_REFRESH_MS)) return withSources(hit.data);
   try {
-    const data = await pull(range, who);
+    const data = await pull(range, who, src);
     cache.set(key, { at: Date.now(), data });
-    return data;
+    return withSources(data);
   } catch (e) {
     const why = friendly((e as Error).message);
     // ดึงใหม่ไม่ได้ (เช่น เรียกถี่เกินโควตา) → ยังแสดงชุดเดิมได้ พร้อมบอกเหตุผล
-    if (hit) return { ...hit.data, stale: why };
-    return { ok: false, error: why };
+    if (hit) return withSources({ ...hit.data, stale: why });
+    // ไม่มีชุดเดิม → ยังส่งรายการพอร์ตกลับไป ให้สลับไปพอร์ตอื่นได้
+    return { ok: false, error: why, sources: await labelled(list), account: src.id };
   }
 }
 
-async function pull(range: RangeKey, who: WhoKey): Promise<InsightsData> {
-  const c = metaConfig();
-  if (!c.ready) throw new Error("ยังไม่ได้ตั้ง META_READ_TOKEN / META_AD_ACCOUNT_ID ใน dashboard/.env.local (ตั้งได้ที่แท็บ เชื่อมต่อ API)");
+async function pull(range: RangeKey, who: WhoKey, src: Source): Promise<InsightsData> {
+  const c = { ...metaConfig(), account: src.id, token: src.token };
   const q = (o: Record<string, string>) => new URLSearchParams({ ...o, access_token: c.token }).toString();
   const must = async (url: string, what: string) => {
     const r = await getAll(url, 30);
@@ -180,8 +215,10 @@ async function pull(range: RangeKey, who: WhoKey): Promise<InsightsData> {
 
   // 1) บัญชี + รายการแคมเปญ (ชื่อ/สถานะ) ในคำขอเดียว — ใช้ทั้งตัวกรอง agent และป้าย "ปิดอยู่แล้ว"
   //    คำขอแบบนี้กินโควตา ads_management ก้อนเดียวกับการสร้างโฆษณา → ใช้ให้น้อยที่สุด (insights ใช้โควตาแยก)
-  const accRes = await get(`${c.base}/${c.account}?${q({ fields: "name,currency,campaigns.limit(500){id,name,effective_status}" })}`);
+  const accRes = await get(`${c.base}/${c.account}?${q({ fields: "name,currency,business{name},campaigns.limit(500){id,name,effective_status}" })}`);
   if (!accRes.ok) throw new Error(`อ่านบัญชีโฆษณาจาก Meta ไม่ได้: ${errMsg(accRes.body)}`);
+  // ได้ชื่อพอร์ตมาในคำขอเดียวกันแล้ว → จำไว้ให้ปุ่มเลือกพอร์ต (ไม่ต้องยิงซ้ำ)
+  names.set(c.account, { at: Date.now(), account: String(accRes.body.name ?? c.account), name: String(accRes.body.business?.name ?? accRes.body.name ?? c.account) });
   const campList = ((accRes.body.campaigns?.data ?? []) as Json[]);
   const status = new Map<string, string>();
   campList.forEach((x) => status.set(String(x.id), String(x.effective_status ?? "")));
@@ -198,6 +235,7 @@ async function pull(range: RangeKey, who: WhoKey): Promise<InsightsData> {
   const base = {
     ok: true as const,
     account: { id: c.account, name: String(accRes.body.name ?? c.account), currency: String(accRes.body.currency ?? "") },
+    sources: [] as InsightsSource[],   // เติมใน getInsights (ชื่อพอร์ตเปลี่ยนได้โดยไม่ต้องดึงตัวเลขใหม่)
     range, who, fetched_at: new Date().toISOString(), stale: null,
     counts: { campaigns: chosen.length, active: chosen.filter((x) => x.effective_status === "ACTIVE").length },
     rules: RULES_TEXT,

@@ -4,7 +4,7 @@ import InsightsTable, { useOpenRows } from "./InsightsTable";
 import InsightsTrend from "./InsightsTrend";
 import { fmt } from "@/lib/calc";
 import {
-  AiSummary, DailyPoint, DEFAULT_RANGE, InsightsData, InsightsResponse, Metrics, RANGES, RangeKey, SEV, Sev, WhoKey,
+  AiSummary, DailyPoint, DEFAULT_RANGE, InsightsData, InsightsResponse, InsightsSource, Metrics, RANGES, RangeKey, SEV, Sev, WhoKey,
 } from "@/lib/insightsTypes";
 import { AGENTS, PREFIXES } from "@/lib/types";
 
@@ -23,6 +23,9 @@ const METRIC: Record<MetricKey, { label: string; get: (d: DailyPoint) => number 
   ctr: { label: "CTR ลิงก์ (%)", get: (d) => (d.impressions ? (d.link_clicks / d.impressions) * 100 : null), fmt: (n) => `${n.toFixed(2)}%` },
   cpm: { label: "CPM (บาท)", get: (d) => (d.impressions ? (d.spend / d.impressions) * 1000 : null), fmt: (n) => b0(n) },
 };
+/** พอร์ตที่เลือกดูไว้ — จำในเบราว์เซอร์ (ว่าง = พอร์ตหลัก) */
+const ACCOUNT_KEY = "ads-insights-account";
+
 const SEV_ORDER: Sev[] = ["critical", "serious", "warning", "info"];
 const AGES = ["18-24", "25-34", "35-44", "45-54", "55-64", "65+"];
 const GENDERS = [["female", "หญิง"], ["male", "ชาย"], ["unknown", "ไม่ระบุ"]] as const;
@@ -44,6 +47,8 @@ function Delta({ now, prev, mode }: { now: number | null; prev: number | null; m
 export default function InsightsPanel() {
   const [range, setRange] = useState<RangeKey>(DEFAULT_RANGE);
   const [who, setWho] = useState<WhoKey>("all");
+  const [account, setAccountState] = useState<string | null>(null);   // null = ยังไม่ได้อ่านค่าที่จำไว้
+  const [sources, setSources] = useState<InsightsSource[]>([]);
   const [data, setData] = useState<InsightsData | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -52,11 +57,26 @@ export default function InsightsPanel() {
   const [ai, setAi] = useState<{ busy: boolean; res: AiSummary | null; err: string | null; key: string }>({ busy: false, res: null, err: null, key: "" });
   const rows = useOpenRows();
 
+  const setAccount = (id: string) => {
+    setAccountState(id);
+    try { if (id) localStorage.setItem(ACCOUNT_KEY, id); else localStorage.removeItem(ACCOUNT_KEY); } catch { /* โหมดส่วนตัว — ไม่จำก็ได้ */ }
+  };
+  useEffect(() => {
+    let saved = "";
+    try { saved = localStorage.getItem(ACCOUNT_KEY) ?? ""; } catch { /* ไม่มี localStorage */ }
+    setAccountState(saved);
+  }, []);
+
   const load = useCallback(async (fresh = false) => {
+    if (account === null) return;
     setBusy(true);
     try {
-      const r = await fetch(`/api/insights?range=${range}&who=${encodeURIComponent(who)}${fresh ? "&fresh=1" : ""}`, { cache: "no-store" });
+      const r = await fetch(`/api/insights?range=${range}&who=${encodeURIComponent(who)}${account ? `&account=${account}` : ""}${fresh ? "&fresh=1" : ""}`, { cache: "no-store" });
       const j = (await r.json()) as InsightsResponse;
+      if (j.sources) setSources(j.sources);
+      const got = j.ok ? j.account.id : j.account;
+      // พอร์ตที่จำไว้ถูกลบออกจากหน้าเชื่อมต่อ API แล้ว → server ใช้พอร์ตหลักแทน · ลืมค่าเดิม
+      if (account && got && got !== account) setAccount("");
       if (!j.ok) throw new Error(j.error);
       setData(j); setErr(null);
     } catch (e) {
@@ -64,15 +84,15 @@ export default function InsightsPanel() {
     } finally {
       setBusy(false);
     }
-  }, [range, who]);
+  }, [range, who, account]);
   useEffect(() => { load(); }, [load]);
-  useEffect(() => { rows.reset(); }, [range, who]);   // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { rows.reset(); }, [range, who, account]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const askAi = async () => {
-    const key = `${range}|${who}`;
+    const key = `${account}|${range}|${who}`;
     setAi({ busy: true, res: null, err: null, key });
     try {
-      const r = await fetch("/api/insights/summary", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ range, who }) });
+      const r = await fetch("/api/insights/summary", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ range, who, account }) });
       const j = await r.json();
       if (!j.ok) throw new Error(j.error);
       const res = j.result as AiSummary;
@@ -82,10 +102,13 @@ export default function InsightsPanel() {
     }
   };
 
-  const view = data && data.range === range && data.who === who ? data : null;
+  // พอร์ตที่ต้องการดู (ว่าง = พอร์ตหลัก) — ข้อมูลของพอร์ตอื่นที่ยังค้างอยู่ไม่ถูกแสดงระหว่างโหลด
+  const want = account || sources.find((s) => s.main)?.id;
+  const view = data && data.range === range && data.who === who && (!want || data.account.id === want) ? data : null;
+  const current = want ?? view?.account.id;
   const trend = useMemo(() => view ? { dates: view.daily.map((d) => d.date), values: view.daily.map(METRIC[metric].get) } : null, [view, metric]);
   const rangeLabel = RANGES.find((r) => r.key === range)?.label ?? range;
-  const aiHere = ai.key === `${range}|${who}`;
+  const aiHere = ai.key === `${account}|${range}|${who}`;
 
   return (
     <>
@@ -102,7 +125,17 @@ export default function InsightsPanel() {
         </div>
         <span className="spacer" />
         <span className="in-meta">
-          {view && <>บัญชี <b>{view.account.name}</b> · {view.account.currency}</>}
+          {sources.length > 1 ? (
+            <span className="seg in-pf" role="group" aria-label="พอร์ตโฟลิโอธุรกิจ">
+              {sources.map((s) => (
+                <button key={s.id} aria-pressed={current === s.id} disabled={busy} title={s.id}
+                  onClick={() => current !== s.id && setAccount(s.main ? "" : s.id)}>
+                  {s.name}{s.account !== s.name && <span className="in-pf-acc"> · {s.account}</span>}
+                </button>
+              ))}
+            </span>
+          ) : view && <>บัญชี <b>{view.account.name}</b></>}
+          {view && <> · {view.account.currency}</>}
           {view?.period && <> · {fmt.dateShort(view.period.since)} – {fmt.dateShort(view.period.until)}</>}
           {view?.prevPeriod && <> · เทียบ {fmt.dateShort(view.prevPeriod.since)} – {fmt.dateShort(view.prevPeriod.until)}</>}
           {view && <> · ดึงเมื่อ {new Date(view.fetched_at).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" })}</>}
