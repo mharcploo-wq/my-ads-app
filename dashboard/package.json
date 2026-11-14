@@ -1,6 +1,6 @@
 {
   "name": "ads-dashboard",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "scripts": {
     "dev": "next dev -p 3000 -H 127.0.0.1",
