@@ -17,14 +17,14 @@ export function metaConfig() {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Json = Record<string, any>;
+export type Json = Record<string, any>;
 
-function errMsg(body: Json): string {
+export function errMsg(body: Json): string {
   const e = body?.error;
   return e ? `${e.error_user_msg ?? e.message} (code ${e.code})` : JSON.stringify(body).slice(0, 200);
 }
 
-async function get(url: string): Promise<{ ok: boolean; body: Json }> {
+export async function get(url: string): Promise<{ ok: boolean; body: Json }> {
   try {
     const r = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(20000) });
     const body = (await r.json()) as Json;
@@ -34,7 +34,7 @@ async function get(url: string): Promise<{ ok: boolean; body: Json }> {
   }
 }
 
-async function getAll(url: string, maxPages = 20) {
+export async function getAll(url: string, maxPages = 20) {
   const first = await get(url);
   if (!first.ok) return { ok: false, rows: [] as Json[], error: errMsg(first.body) };
   const rows: Json[] = [...(first.body.data ?? [])];

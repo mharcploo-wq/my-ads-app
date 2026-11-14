@@ -85,6 +85,8 @@ parser.add_argument("--portfolio", type=int, default=1,
                     help="(หน้าแอป) พอร์ตโฟลิโอที่ใช้ในคำสั่งนี้ 1 = พอร์ตหลัก · 2–5 = META_PORTFOLIO_n_* ใน .env")
 parser.add_argument("--portfolios", action="store_true",
                     help="(หน้าแอป) รายการพอร์ตโฟลิโอของ agent นี้ + สถานะ แล้วพิมพ์ผลเป็น JSON")
+parser.add_argument("--insights-summary-json", metavar="PATH", default=None,
+                    help="(หน้าแอป) ปุ่ม ✨ หน้าวิเคราะห์โฆษณา: ตัวเลขสรุปจากไฟล์ → Claude สรุป+แนะนำ แล้วพิมพ์ผลเป็น JSON")
 parser.add_argument("--check-portfolio", action="store_true",
                     help="(หน้าแอป) ตรวจ token ของพอร์ต (token ใหม่ส่งทาง env PORTFOLIO_CHECK_TOKEN) แล้วพิมพ์ผลเป็น JSON")
 ARGS, _ = parser.parse_known_args()
@@ -1841,43 +1843,53 @@ def _audience_hint(raw: Any) -> dict[str, Any] | None:
             "reason": str(raw.get("reason") or "").strip()[:200]}
 
 
+def _claude_text(system: str, prompt: str, schema: dict[str, Any], refusal: str,
+                 max_tokens: int = 4000) -> tuple[str | None, str | None]:
+    """เรียก Claude ของ agent นี้ให้ตอบเป็น JSON ตาม schema → (ข้อความ JSON, ข้อผิดพลาดภาษาไทย)
+    ใช้ร่วมกัน: ปุ่ม ✨ คิดกลุ่มเป้าหมาย · ปุ่ม ✨ สรุปหน้าวิเคราะห์โฆษณา"""
+    import anthropic  # โหลดเฉพาะตอนใช้ปุ่ม ✨ — เครื่องมือ MCP อื่นไม่ต้องพึ่ง
+    client = anthropic.Anthropic(
+        api_key=ANTHROPIC_API_KEY, timeout=60.0, max_retries=2,
+        default_headers={"anthropic-workspace-id": ANTHROPIC_WORKSPACE_ID} if ANTHROPIC_WORKSPACE_ID else None)
+    try:
+        resp = client.messages.create(
+            model=AI_MODEL, max_tokens=max_tokens, system=system,
+            messages=[{"role": "user", "content": prompt}],
+            output_config={"effort": "low", "format": {"type": "json_schema", "schema": schema}},
+        )
+    except anthropic.AuthenticationError:
+        return None, "คีย์ Claude ไม่ถูกต้องหรือหมดอายุ — ตรวจ ANTHROPIC_API_KEY ที่แท็บ \"เชื่อมต่อ API\""
+    except anthropic.RateLimitError:
+        return None, "Claude ถูกใช้ถี่เกินไป — รอสักครู่แล้วกดใหม่"
+    except anthropic.APIStatusError as e:
+        why = _api_error_text(e.body)
+        # 400 "not scoped to a workspace" / 403-404 workspace ผิด — แยกบอกเพราะแก้ที่ช่อง Workspace ID
+        if "workspace" in why.lower():
+            if not ANTHROPIC_WORKSPACE_ID:
+                return None, CLAUDE_NEEDS_WORKSPACE
+            return None, (f"Workspace ID \"{ANTHROPIC_WORKSPACE_ID}\" ใช้กับคีย์นี้ไม่ได้ — ตรวจที่แท็บ \"เชื่อมต่อ API\" "
+                        f"(Claude: {why})")
+        if isinstance(e, anthropic.NotFoundError):
+            return None, f"ไม่พบรุ่น AI \"{AI_MODEL}\" — แก้ AI_MODEL ใน .env หรือเว้นว่างเพื่อใช้ค่าเริ่มต้น"
+        if isinstance(e, anthropic.PermissionDeniedError):
+            return None, f"คีย์ Claude นี้ไม่มีสิทธิ์เรียกใช้ — ตรวจสิทธิ์ของคีย์ (Claude: {why or 'ไม่ระบุ'})"
+        return None, f"Claude ปฏิเสธคำขอ (HTTP {e.status_code}): {why or 'ไม่ระบุสาเหตุ'}"
+    except anthropic.APIConnectionError:
+        return None, "เชื่อมต่อ Claude ไม่ได้ — ตรวจอินเทอร์เน็ต"
+    if resp.stop_reason == "refusal":
+        return None, refusal
+    return next((b.text for b in resp.content if b.type == "text"), ""), None
+
+
 def _ai_keywords(copy: str) -> tuple[list[str], dict[str, Any] | None, str | None]:
     """ถาม AI ของ agent นี้ → (คำค้นความสนใจ ~8 คำ, อายุ/ภาษาที่แนะนำ, ข้อผิดพลาด)
     copy = บรีฟของผู้ใช้ และ/หรือ ข้อความโฆษณา (ติดหัวข้อไว้แล้ว)"""
     prompt = f"{copy}\n\nReturn 8 keywords and the audience suggestion."
     if AI_PROVIDER == "anthropic":
-        import anthropic  # โหลดเฉพาะตอนใช้ปุ่ม ✨ — เครื่องมือ MCP อื่นไม่ต้องพึ่ง
-        client = anthropic.Anthropic(
-            api_key=ANTHROPIC_API_KEY, timeout=60.0, max_retries=2,
-            default_headers={"anthropic-workspace-id": ANTHROPIC_WORKSPACE_ID} if ANTHROPIC_WORKSPACE_ID else None)
-        try:
-            resp = client.messages.create(
-                model=AI_MODEL, max_tokens=4000, system=AI_SYSTEM,
-                messages=[{"role": "user", "content": prompt}],
-                output_config={"effort": "low", "format": {"type": "json_schema", "schema": AI_PLAN_SCHEMA}},
-            )
-        except anthropic.AuthenticationError:
-            return [], None, "คีย์ Claude ไม่ถูกต้องหรือหมดอายุ — ตรวจ ANTHROPIC_API_KEY ที่แท็บ \"เชื่อมต่อ API\""
-        except anthropic.RateLimitError:
-            return [], None, "Claude ถูกใช้ถี่เกินไป — รอสักครู่แล้วกดใหม่"
-        except anthropic.APIStatusError as e:
-            why = _api_error_text(e.body)
-            # 400 "not scoped to a workspace" / 403-404 workspace ผิด — แยกบอกเพราะแก้ที่ช่อง Workspace ID
-            if "workspace" in why.lower():
-                if not ANTHROPIC_WORKSPACE_ID:
-                    return [], None, CLAUDE_NEEDS_WORKSPACE
-                return [], None, (f"Workspace ID \"{ANTHROPIC_WORKSPACE_ID}\" ใช้กับคีย์นี้ไม่ได้ — ตรวจที่แท็บ \"เชื่อมต่อ API\" "
-                            f"(Claude: {why})")
-            if isinstance(e, anthropic.NotFoundError):
-                return [], None, f"ไม่พบรุ่น AI \"{AI_MODEL}\" — แก้ AI_MODEL ใน .env หรือเว้นว่างเพื่อใช้ค่าเริ่มต้น"
-            if isinstance(e, anthropic.PermissionDeniedError):
-                return [], None, f"คีย์ Claude นี้ไม่มีสิทธิ์เรียกใช้ — ตรวจสิทธิ์ของคีย์ (Claude: {why or 'ไม่ระบุ'})"
-            return [], None, f"Claude ปฏิเสธคำขอ (HTTP {e.status_code}): {why or 'ไม่ระบุสาเหตุ'}"
-        except anthropic.APIConnectionError:
-            return [], None, "เชื่อมต่อ Claude ไม่ได้ — ตรวจอินเทอร์เน็ต"
-        if resp.stop_reason == "refusal":
-            return [], None, "Claude ไม่คิดกลุ่มเป้าหมายให้ข้อความนี้ — ลองปรับข้อความโฆษณา"
-        text = next((b.text for b in resp.content if b.type == "text"), "")
+        text, err = _claude_text(AI_SYSTEM, prompt, AI_PLAN_SCHEMA,
+                                 "Claude ไม่คิดกลุ่มเป้าหมายให้ข้อความนี้ — ลองปรับข้อความโฆษณา")
+        if err:
+            return [], None, err
     else:
         try:
             r = requests.post("https://api.openai.com/v1/chat/completions", timeout=60,
@@ -1914,6 +1926,62 @@ def _ai_keywords(copy: str) -> tuple[list[str], dict[str, Any] | None, str | Non
     except (ValueError, AttributeError):
         return [], None, "AI ตอบกลับในรูปแบบที่อ่านไม่ได้ — กดใหม่อีกครั้ง"
     return list(dict.fromkeys(words))[:12], _audience_hint(plan.get("audience")), None
+
+
+INSIGHTS_SYSTEM = (
+    "You are a senior Meta (Facebook) ads analyst helping a Thai small-business owner read their ad results. "
+    "You get JSON numbers for one ad account and period (spend in the account currency, results per campaign "
+    "objective as Meta counts them, previous period, age/gender, placements, Meta's quality rankings, and the "
+    "findings of the app's fixed rules). Write in Thai, plain language, short. Only use numbers that are in the "
+    "data; never invent figures, benchmarks or causes you cannot see. Compare like with like (cost per lead vs cost "
+    "per lead, not leads vs landing-page views). Advice must follow Meta's advertising policies: no discriminatory "
+    "targeting, no sensitive-category targeting, no misleading or exaggerated claims, no tricks to bypass review. "
+    "Campaigns marked paused are finished - frame advice about them as lessons for the next run. The app does not "
+    "change anything on Meta; the owner applies changes in Ads Manager. "
+    "Return: headline (one sentence, the single most important takeaway), points (3-5 items, each a short bold-able "
+    "title and one or two sentence detail with the supporting numbers), try_first (one concrete next step)."
+)
+INSIGHTS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "headline": {"type": "string"},
+        "points": {"type": "array", "items": {
+            "type": "object",
+            "properties": {"title": {"type": "string"}, "detail": {"type": "string"}},
+            "required": ["title", "detail"],
+            "additionalProperties": False,
+        }},
+        "try_first": {"type": "string"},
+    },
+    "required": ["headline", "points", "try_first"],
+    "additionalProperties": False,
+}
+
+
+def insights_summary(data: dict[str, Any]) -> dict[str, Any]:
+    """(ปุ่ม ✨ หน้าวิเคราะห์โฆษณา) ตัวเลขสรุปของบัญชี → Claude สรุปภาพรวม + สิ่งที่ควรลองก่อน
+    อ่านอย่างเดียว ไม่แตะ Meta · ข้อมูลมาจาก dashboard (ไม่มี token ไม่มี ID)"""
+    info = ai_info()
+    if AI_PROVIDER != "anthropic":
+        return {"success": False, "error": "ปุ่มสรุปใช้ Claude ของ agent claude เท่านั้น"}
+    if not info["ready"]:
+        return {"success": False, "error": info["missing"]}
+    prompt = "Ad account numbers (JSON):\n" + json.dumps(data, ensure_ascii=False)
+    text, err = _claude_text(INSIGHTS_SYSTEM, prompt, INSIGHTS_SCHEMA,
+                             "Claude ไม่สรุปข้อมูลชุดนี้ให้ — ลองเลือกช่วงเวลาอื่น", max_tokens=3000)
+    if err:
+        log_action("insights_summary", False, {"model": AI_MODEL, "error": err})
+        return {"success": False, "error": err}
+    try:
+        out = json.loads(text or "")
+        points = [{"title": str(p.get("title") or "").strip(), "detail": str(p.get("detail") or "").strip()}
+                  for p in out.get("points") or [] if isinstance(p, dict)]
+        res = {"success": True, "error": None, "model": AI_MODEL, "headline": str(out.get("headline") or "").strip(),
+               "points": [p for p in points if p["title"] or p["detail"]][:6], "try_first": str(out.get("try_first") or "").strip()}
+    except (ValueError, AttributeError):
+        return {"success": False, "error": "Claude ตอบกลับในรูปแบบที่อ่านไม่ได้ — กดใหม่อีกครั้ง"}
+    log_action("insights_summary", True, {"model": AI_MODEL, "points": len(res["points"])})
+    return res
 
 
 def suggest_interests(spec: dict[str, Any]) -> dict[str, Any]:
@@ -2294,10 +2362,12 @@ def run_http(server, host: str, port: int) -> None:
 if __name__ == "__main__":
     if (ARGS.status or ARGS.create_json or ARGS.suggest_json or ARGS.search_json or ARGS.adset_json
             or ARGS.reach_json or ARGS.lives or ARGS.live_ad_json or ARGS.pages
-            or ARGS.portfolios or ARGS.check_portfolio):
+            or ARGS.portfolios or ARGS.check_portfolio or ARGS.insights_summary_json):
         if PORTFOLIO != 1 and (ARGS.status or ARGS.create_json):
             _auto_portfolio_ids()
-        if ARGS.check_portfolio:
+        if ARGS.insights_summary_json:
+            out = insights_summary(json.loads(Path(ARGS.insights_summary_json).read_text(encoding="utf-8")))
+        elif ARGS.check_portfolio:
             out = check_portfolio()
         elif ARGS.portfolios:
             out = {"success": True, "portfolios": portfolios_list()}

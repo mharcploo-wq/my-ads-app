@@ -4,11 +4,12 @@ import AgentCompare from "@/components/AgentCompare";
 import CampaignTable from "@/components/CampaignTable";
 import ConnectPanel from "@/components/ConnectPanel";
 import CreatePanel from "@/components/CreatePanel";
+import InsightsPanel from "@/components/InsightsPanel";
 import TrendChart from "@/components/TrendChart";
 import { campaignStats, dateWindow, fmt, seriesByAgent, totals } from "@/lib/calc";
 import { AGENTS, MetricsResponse, Prefix, PREFIXES } from "@/lib/types";
 
-type Tab = "overview" | "create" | "connect";
+type Tab = "overview" | "insights" | "create" | "connect";
 type Metric = "spend" | "results" | "link_clicks";
 const METRIC_LABEL: Record<Metric, string> = { spend: "ค่าใช้จ่าย (บาท)", results: "ผลลัพธ์", link_clicks: "คลิกลิงก์" };
 
@@ -83,6 +84,7 @@ export default function Page() {
           </div>
           <nav className="tabs" role="tablist" style={{ marginLeft: 24 }}>
             <button role="tab" aria-selected={tab === "overview"} onClick={() => setTab("overview")}>ภาพรวม</button>
+            <button role="tab" aria-selected={tab === "insights"} onClick={() => setTab("insights")}>วิเคราะห์โฆษณา</button>
             <button role="tab" aria-selected={tab === "create"} onClick={() => setTab("create")}>＋ สร้างโฆษณา</button>
             <button role="tab" aria-selected={tab === "connect"} onClick={() => setTab("connect")}>เชื่อมต่อ API</button>
           </nav>
@@ -100,7 +102,7 @@ export default function Page() {
         {err && <div className="banner">โหลดข้อมูลไม่สำเร็จ: {err}</div>}
         {!data && !err && <div className="empty">กำลังโหลด…</div>}
 
-        {data && data.demo && tab !== "create" && (
+        {data && data.demo && tab !== "create" && tab !== "insights" && (
           <div className="banner">
             <span>⚠</span>
             <span>ยังไม่มีข้อมูลจริง — ตัวเลขทั้งหมดในหน้านี้เป็น<b>ข้อมูลตัวอย่าง</b> เชื่อมต่อแล้วข้อมูลจริงจะแทนที่ทันที</span>
@@ -167,6 +169,8 @@ export default function Page() {
             <CampaignTable rows={view.camps} editable={!!connected} />
           </>
         )}
+
+        {tab === "insights" && <InsightsPanel />}
 
         {tab === "create" && <CreatePanel onCreated={load} />}
 
