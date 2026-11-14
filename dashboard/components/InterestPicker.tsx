@@ -1,5 +1,5 @@
 "use client";
-import { Dispatch, RefObject, SetStateAction, useEffect, useState } from "react";
+import { Dispatch, RefObject, SetStateAction, useEffect, useRef, useState } from "react";
 
 type AgentId = "claude" | "manus" | "chatgpt";
 
@@ -11,12 +11,19 @@ export interface Interest {
 }
 /** คนในไทยที่สนใจอย่างน้อย 1 อย่างในชุด (server.py interests_reach) */
 interface Reach { lower: number; upper: number; share?: number | null; age_min?: number }
-export interface PickerAI { provider: string; label: string; ready: boolean; missing: string | null }
+/** slow = สั่งงานแล้วรอผล (Manus) — แสดงสถานะรอ + ปุ่มยกเลิก */
+export interface PickerAI { provider: string; label: string; ready: boolean; missing: string | null; slow?: boolean }
 /** ส่วนของสถานะ agent ที่กล่องนี้ใช้ (มาจาก /api/agents) */
 export interface PickerAgent { agent: AgentId; prefix: string; audience?: { ai: PickerAI } }
 export interface AdCopy { texts: string[]; titles: string[]; link_url: string }
 /** อายุ/ภาษาที่ AI แนะนำ — server.py ตัดให้อยู่ในช่วงที่ Meta รับแล้ว */
 export interface AudienceHint { age_min: number; age_max: number; languages: string[]; label: string; reason: string }
+/** งานที่สั่ง Manus ไว้ระหว่างรอ */
+interface Waiting { task_id: string; task_url: string; label: string; since: number }
+const POLL_MS = 5_000;            // ถามผล Manus ทุก 5 วินาที (Manus จำกัด 100 ครั้ง/นาที)
+const WAIT_MAX_MS = 5 * 60_000;   // รอนานสุด 5 นาที แล้วยกเลิกงานให้
+/** เวลาที่รอ Manus เช่น 0:42 · 2:05 */
+const fmtWait = (ms: number) => { const t = Math.max(0, Math.floor(ms / 1000)); return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`; };
 
 /** ขนาดกลุ่มคนจาก Meta เช่น 150,000,000–176,000,000 → "≈150–176 ล้าน" · 1,100,000–1,300,000 → "≈1.1–1.3 ล้าน"
  *  · 86,760–102,030 → "≈87–102 พัน" */
@@ -48,13 +55,27 @@ export default function InterestPicker({ agent, agents, interests, setInterests,
   const [kw, setKw] = useState("");
   const [kwBusy, setKwBusy] = useState(false);
   const [hint, setHint] = useState<AudienceHint | null>(null);   // อายุ/ภาษาที่ AI แนะนำ (กดใช้เอง)
+  const [wait, setWait] = useState<Waiting | null>(null);       // Manus กำลังคิด
+  const [now, setNow] = useState(() => Date.now());
+  const cancelled = useRef(false);
+  const waitRef = useRef<Waiting | null>(null);
 
   const cur = agents?.find((a) => a.agent === agent) ?? null;
   const ai = cur?.audience?.ai ?? null;   // AI ของ agent ที่เลือก (คีย์แยกต่อ agent)
   // AI ของ agent นี้ใช้ไม่ได้ → ยืม Claude ของ agent อื่นที่พร้อม (เลือก agent Claude ก่อน) · ผลยังเป็นของ agent เดิม
-  const claudeReady = (agents ?? []).filter((a) => a.agent !== agent && a.audience?.ai.ready && a.audience.ai.provider === "anthropic");
+  // ยกเว้น Manus: แต่ละค่ายคิดเองจริง ไม่ยืมค่ายอื่น (ผู้ใช้เลือกไว้)
+  const noBorrow = ai?.provider === "manus";
+  const claudeReady = noBorrow ? [] : (agents ?? []).filter((a) => a.agent !== agent && a.audience?.ai.ready && a.audience.ai.provider === "anthropic");
   const fallback = (!ai?.ready || aiDown) ? (claudeReady.find((a) => a.agent === "claude") ?? claudeReady[0] ?? null) : null;
   useEffect(() => { setAiDown(false); setAiMsg(null); }, [agent]);
+  // นาฬิการะหว่างรอ Manus
+  useEffect(() => {
+    if (!wait) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [wait]);
+  // ออกจากหน้า/เปลี่ยน agent ระหว่างรอ = ยกเลิกงานที่ Manus ไม่ให้กินเครดิตต่อ
+  useEffect(() => () => { if (waitRef.current) stopTask(waitRef.current.task_id); }, [agent]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { onBusy?.(aiBusy || kwBusy); }, [aiBusy, kwBusy, onBusy]);
 
   // รวมคนในไทยของทั้งชุด — ถาม Meta ใหม่เมื่อรายการเปลี่ยน (รอให้หยุดแก้ก่อนสักครู่)
@@ -81,6 +102,47 @@ export default function InterestPicker({ agent, agents, interests, setInterests,
     return () => { clearTimeout(t); ctl.abort(); setReachBusy(false); };
   }, [agent, reachKey]);
 
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  function stopTask(taskId: string) {
+    cancelled.current = true;
+    waitRef.current = null;
+    fetch("/api/interests", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agent, mode: "stop", task_id: taskId }),
+    }).catch(() => {});
+  }
+
+  /** Manus ตอบว่า "กำลังคิด" → ถามผลทุก 5 วินาทีจนเสร็จ/ยกเลิก/ครบ 5 นาที · ได้ผลรูปเดียวกับค่ายอื่น */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async function waitFor(first: any, have: string[]): Promise<any> {
+    const w: Waiting = { task_id: first.task_id, task_url: first.task_url ?? "", label: first.ai ?? "Manus", since: Date.now() };
+    const stopped = `ยกเลิกแล้ว — ${w.label} หยุดคิดงานนี้`;
+    cancelled.current = false;
+    waitRef.current = w;
+    setWait(w); setNow(Date.now());
+    try {
+      for (;;) {
+        for (let t = 0; t < POLL_MS && !cancelled.current; t += 250) await sleep(250);   // กดยกเลิกแล้วหยุดทันที
+        if (cancelled.current) throw new Error(stopped);
+        if (Date.now() - w.since > WAIT_MAX_MS) {
+          stopTask(w.task_id);
+          throw new Error(`${w.label} คิดนานเกิน 5 นาที — ยกเลิกงานให้แล้ว ลองกดใหม่อีกครั้ง`);
+        }
+        const r = await fetch("/api/interests", {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ agent, mode: "poll", task_id: w.task_id, kind: first.kind, have }),
+        });
+        const j = await r.json();
+        if (cancelled.current) throw new Error(stopped);
+        if (!j.ok) throw new Error(j.error);
+        if (!j.result.pending) return j.result;
+      }
+    } finally {
+      waitRef.current = null;
+      setWait(null);
+    }
+  }
+
   /** ปุ่ม ✨ — via = ยืม AI ของ agent อื่น */
   async function suggest(via?: PickerAgent) {
     if (aiBusy || kwBusy || (!via && !ai?.ready)) return;
@@ -94,11 +156,12 @@ export default function InterestPicker({ agent, agents, interests, setInterests,
       });
       const j = await r.json();
       if (!j.ok) throw new Error(j.error);
-      if (!j.result.success) throw new Error(j.result.error);
-      setInterests(j.result.interests);   // กดซ้ำ = แทนที่ชุดเดิมทั้งหมด
-      if (j.result.audience) setHint(j.result.audience);
+      const res = j.result.success && j.result.pending ? await waitFor(j.result, []) : j.result;
+      if (!res.success) throw new Error(res.error);
+      setInterests(res.interests);   // กดซ้ำ = แทนที่ชุดเดิมทั้งหมด
+      if (res.audience) setHint(res.audience);
       if (!via) setAiDown(false);
-      setAiMsg({ ok: true, text: `${j.result.ai}${via ? " (ยืมมาใช้แทน)" : ""} คิดจากข้อความ ได้ ${j.result.interests.length} รายการ` });
+      setAiMsg({ ok: true, text: `${res.ai}${via ? " (ยืมมาใช้แทน)" : ""} คิดจากข้อความ ได้ ${res.interests.length} รายการ` });
     } catch (e) {
       if (!via) setAiDown(true);
       setAiMsg({ ok: false, text: (e as Error).message });
@@ -120,7 +183,7 @@ export default function InterestPicker({ agent, agents, interests, setInterests,
       });
       const j = await r.json();
       if (!j.ok) throw new Error(j.error);
-      return j.result;
+      return j.result.success && j.result.pending ? waitFor(j.result, interests.map((x) => x.id)) : j.result;
     };
     try {
       let via = fallback ?? undefined;
@@ -151,9 +214,9 @@ export default function InterestPicker({ agent, agents, interests, setInterests,
     <div className="c-int">
       <div className="c-aud-row c-int-bar">
         <button type="button" className="btn c-ai" onClick={() => suggest()} disabled={!ai?.ready || aiBusy || kwBusy}>
-          {aiBusy ? "AI กำลังคิด…" : "✨ ให้ AI คิดกลุ่มเป้าหมาย"}
+          {aiBusy ? `${ai?.label ?? "AI"} กำลังคิด…` : "✨ ให้ AI คิดกลุ่มเป้าหมาย"}
         </button>
-        {ai?.ready && !aiBusy && <span className="c-hint">{ai.label} คิดจาก{copyHint}</span>}
+        {ai?.ready && !aiBusy && <span className="c-hint">{ai.label} คิดจาก{copyHint}{ai.slow ? " · อาจนาน 1–3 นาที" : ""}</span>}
         <span className="c-cnt">{interests.length} / {max}</span>
       </div>
       {interests.length > 0 && (
@@ -176,6 +239,16 @@ export default function InterestPicker({ agent, agents, interests, setInterests,
             👥 รวมคนในไทยที่สนใจอย่างน้อย 1 อย่าง <b>{fmtSize(reach.lower, reach.upper)} คน</b>
             {reach.share != null && <small> · ราว {reach.share}% ของคนอายุ {reach.age_min ?? 20}+ ในไทยบน Facebook/Instagram</small>}
           </>}
+        </div>
+      )}
+      {wait && (
+        <div className="c-wait" role="status">
+          <span className="c-wait-dot" aria-hidden />
+          <span><b>{wait.label} กำลังคิด…</b> (อาจนาน 1–3 นาที) · ผ่านไป {fmtWait(now - wait.since)}</span>
+          <span className="c-aud-hint-act">
+            {wait.task_url && <a className="linkish" href={wait.task_url} target="_blank" rel="noreferrer">ดูงานใน {wait.label} ↗</a>}
+            <button type="button" className="btn" onClick={() => stopTask(wait.task_id)}>ยกเลิก</button>
+          </span>
         </div>
       )}
       {ai && !ai.ready && <div className="c-warn">{ai.missing}</div>}

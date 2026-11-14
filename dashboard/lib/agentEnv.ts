@@ -8,13 +8,21 @@ import { AgentId, MAX_PORTFOLIO } from "@/lib/creator";
 const SERVER_DIR = path.resolve(process.cwd(), "..", "mcp-server");
 const PREFIX: Record<AgentId, string> = { claude: "CLD-", manus: "MANUS-", chatgpt: "GPT-" };
 
-/** คีย์ AI ของปุ่ม ✨ ให้ AI คิดกลุ่มเป้าหมาย — claude/manus ใช้ Claude · chatgpt ใช้ OpenAI (ตรงกับ server.py AI_PROVIDER) */
-export const AI_KEY: Record<AgentId, { name: string; label: string; workspace: boolean }> = {
-  claude: { name: "ANTHROPIC_API_KEY", label: "Claude", workspace: true },
-  manus: { name: "ANTHROPIC_API_KEY", label: "Claude", workspace: true },
-  chatgpt: { name: "OPENAI_API_KEY", label: "OpenAI", workspace: false },
+/** คีย์ AI ของปุ่ม ✨ ให้ AI คิดกลุ่มเป้าหมาย — แต่ละค่ายคิดเอง: claude = Claude · manus = Manus · chatgpt = OpenAI
+ *  (ตรงกับ server.py AI_PROVIDER) · hint = คำบอกรูปแบบคีย์ในช่องกรอก */
+export const AI_KEY: Record<AgentId, { name: string; label: string; workspace: boolean; hint: string }> = {
+  claude: { name: "ANTHROPIC_API_KEY", label: "Claude", workspace: true, hint: "วางคีย์ที่ขึ้นต้นด้วย sk-…" },
+  manus: { name: "MANUS_API_KEY", label: "Manus", workspace: false, hint: "วางคีย์ API ของ Manus (manus.im → Settings → API integration)" },
+  chatgpt: { name: "OPENAI_API_KEY", label: "OpenAI", workspace: false, hint: "วางคีย์ที่ขึ้นต้นด้วย sk-…" },
 };
-const AI_KEY_PATTERN = /^sk-[\x21-\x7e]{20,}$/;
+/** Claude/OpenAI ขึ้นต้นด้วย sk- · Manus ไม่ได้ประกาศรูปแบบคีย์ → ตัวอักษรที่พิมพ์ได้ 20 ตัวขึ้นไป ไม่มีช่องว่าง */
+const AI_KEY_PATTERN: Record<AgentId, RegExp> = {
+  claude: /^sk-[\x21-\x7e]{20,}$/, chatgpt: /^sk-[\x21-\x7e]{20,}$/, manus: /^[\x21-\x7e]{20,}$/,
+};
+const AI_KEY_ERROR: Record<AgentId, string> = {
+  claude: "คีย์ต้องขึ้นต้นด้วย sk- และไม่มีช่องว่าง", chatgpt: "คีย์ต้องขึ้นต้นด้วย sk- และไม่มีช่องว่าง",
+  manus: "คีย์ต้องยาวอย่างน้อย 20 ตัว และไม่มีช่องว่าง",
+};
 /** คีย์ Claude ระดับผู้ใช้ไม่ผูก workspace → ต้องมี ANTHROPIC_WORKSPACE_ID (server.py ส่งเป็น header ให้) */
 const USER_KEY_PREFIX = "sk-ant-usr-";
 
@@ -57,7 +65,7 @@ export interface AgentEnvView {
   values: EnvValues;
   token: SecretInfo;     // META_ACCESS_TOKEN
   secret: SecretInfo;    // DASHBOARD_API_SECRET
-  aiKey: SecretInfo & { name: string; label: string; workspace: boolean; userKey: boolean };   // ANTHROPIC_API_KEY / OPENAI_API_KEY
+  aiKey: SecretInfo & { name: string; label: string; workspace: boolean; hint: string; userKey: boolean };   // ANTHROPIC_API_KEY / MANUS_API_KEY / OPENAI_API_KEY
   portfolios: PortfolioView[];   // พอร์ตเพิ่มเติมที่ตั้งไว้ (เรียงตามเลขพอร์ต)
 }
 
@@ -109,7 +117,7 @@ export async function readAgentEnv(a: AgentId): Promise<AgentEnvView> {
     token: secretInfo(m.get("META_ACCESS_TOKEN"), /^EAA[A-Za-z0-9]{20,}$/),
     secret: secretInfo(m.get("DASHBOARD_API_SECRET"), /^[\x21-\x7e]{8,}$/),
     aiKey: {
-      ...secretInfo(m.get(AI_KEY[a].name), AI_KEY_PATTERN), ...AI_KEY[a],
+      ...secretInfo(m.get(AI_KEY[a].name), AI_KEY_PATTERN[a]), ...AI_KEY[a],
       userKey: AI_KEY[a].workspace && (m.get(AI_KEY[a].name) ?? "").trim().startsWith(USER_KEY_PREFIX),
     },
     portfolios: EXTRA_SLOTS
@@ -147,7 +155,7 @@ export function validatePortfolios(list: PortfolioInput[], saved: Set<number>): 
 }
 
 /** ตรวจค่าก่อนบันทึก — คืนรายการข้อผิดพลาดแยกตามช่อง (ว่าง = ผ่าน) */
-export function validate(input: AgentEnvInput): Partial<Record<EditableKey | "token" | "secret" | "aiKey", string>> {
+export function validate(a: AgentId, input: AgentEnvInput): Partial<Record<EditableKey | "token" | "secret" | "aiKey", string>> {
   const v = input.values;
   const e: Partial<Record<EditableKey | "token" | "secret" | "aiKey", string>> = {};
   for (const k of EDITABLE_KEYS) {
@@ -166,8 +174,12 @@ export function validate(input: AgentEnvInput): Partial<Record<EditableKey | "to
   if (v.DASHBOARD_API_URL && !/^https?:\/\/[^\s]+$/.test(v.DASHBOARD_API_URL)) e.DASHBOARD_API_URL = "ต้องขึ้นต้นด้วย http:// หรือ https://";
   if (input.token && !/^EAA[A-Za-z0-9]{20,}$/.test(input.token)) e.token = "รหัสต้องขึ้นต้นด้วย EAA และไม่มีช่องว่าง";
   if (input.secret && !/^[\x21-\x7e]{8,}$/.test(input.secret)) e.secret = "อย่างน้อย 8 ตัว ไม่มีช่องว่าง";
-  if (input.aiKey && !AI_KEY_PATTERN.test(input.aiKey)) e.aiKey = "คีย์ต้องขึ้นต้นด้วย sk- และไม่มีช่องว่าง";
-  if (v.AI_MODEL && !/^[A-Za-z0-9._:-]{2,80}$/.test(v.AI_MODEL)) e.AI_MODEL = "ชื่อรุ่น เช่น claude-haiku-5-5 หรือเว้นว่าง";
+  if (input.aiKey && !AI_KEY_PATTERN[a].test(input.aiKey)) e.aiKey = AI_KEY_ERROR[a];
+  if (a === "manus") {
+    // Manus: AI_MODEL = ระดับของ agent · ชื่อรุ่น Claude ที่ค้างในไฟล์เดิมไม่ถือว่าผิด (server.py ใช้ lite แทน)
+    if (v.AI_MODEL && !/^(lite|standard|max)$/.test(v.AI_MODEL) && !/^claude-/.test(v.AI_MODEL))
+      e.AI_MODEL = "ระดับของ Manus: lite / standard / max หรือเว้นว่าง (= lite)";
+  } else if (v.AI_MODEL &&!/^[A-Za-z0-9._:-]{2,80}$/.test(v.AI_MODEL)) e.AI_MODEL = "ชื่อรุ่น เช่น claude-haiku-5-5 หรือเว้นว่าง";
   if (v.ANTHROPIC_WORKSPACE_ID && !/^wrkspc_[A-Za-z0-9]{8,64}$/.test(v.ANTHROPIC_WORKSPACE_ID))
     e.ANTHROPIC_WORKSPACE_ID = "ต้องขึ้นต้นด้วย wrkspc_ ตามด้วยตัวอักษร/ตัวเลข หรือเว้นว่าง";
   return e;

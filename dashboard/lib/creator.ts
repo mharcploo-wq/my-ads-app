@@ -83,6 +83,11 @@ export interface SuggestResult {
   brief?: boolean;       // ช่องพิมพ์คำค้น: เป็นประโยค → AI อ่านก่อนค้น
   interests?: Interest[];
   audience?: AudienceHint | null;   // อายุ/ภาษาที่ AI แนะนำ (ผู้ใช้กดใช้เอง)
+  // Manus: สั่งงานแล้วรอผล — pending = ยังคิดอยู่ หน้าเว็บถามผลต่อด้วย mode "poll" (task_id) · ยกเลิกด้วย mode "stop"
+  pending?: boolean;
+  kind?: "suggest" | "brief";
+  task_id?: string;
+  task_url?: string;
 }
 
 /** อายุ/ภาษาที่ AI แนะนำ — ตัดให้อยู่ในช่วงที่ Meta รับแล้วที่ server.py */

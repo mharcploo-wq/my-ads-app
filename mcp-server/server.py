@@ -87,6 +87,10 @@ parser.add_argument("--portfolios", action="store_true",
                     help="(หน้าแอป) รายการพอร์ตโฟลิโอของ agent นี้ + สถานะ แล้วพิมพ์ผลเป็น JSON")
 parser.add_argument("--insights-summary-json", metavar="PATH", default=None,
                     help="(หน้าแอป) ปุ่ม ✨ หน้าวิเคราะห์โฆษณา: ตัวเลขสรุปจากไฟล์ → Claude สรุป+แนะนำ แล้วพิมพ์ผลเป็น JSON")
+parser.add_argument("--ai-poll-json", metavar="PATH", default=None,
+                    help="(หน้าแอป · Manus) ถามผลงานคิดความสนใจที่สั่ง Manus ไว้ 1 ครั้ง แล้วพิมพ์ผลเป็น JSON")
+parser.add_argument("--ai-stop", metavar="TASK_ID", default=None,
+                    help="(หน้าแอป · Manus) ยกเลิกงานคิดความสนใจที่สั่ง Manus ไว้ แล้วพิมพ์ผลเป็น JSON")
 parser.add_argument("--check-portfolio", action="store_true",
                     help="(หน้าแอป) ตรวจ token ของพอร์ต (token ใหม่ส่งทาง env PORTFOLIO_CHECK_TOKEN) แล้วพิมพ์ผลเป็น JSON")
 ARGS, _ = parser.parse_known_args()
@@ -156,13 +160,19 @@ MAX_CAMPAIGNS_PER_DAY = min(int(os.getenv("MAX_CAMPAIGNS_PER_DAY", "5")), HARD_M
 DASHBOARD_API_URL = os.getenv("DASHBOARD_API_URL", "").strip()
 DASHBOARD_API_SECRET = os.getenv("DASHBOARD_API_SECRET", "").strip()
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v21.0").strip()
-# AI ที่ใช้คิดความสนใจ (ปุ่ม ✨ ในหน้าแอป) — claude/manus ใช้ Claude · chatgpt ใช้ OpenAI
-AI_PROVIDER = "openai" if AGENT == "chatgpt" else "anthropic"
+# AI ที่ใช้คิดความสนใจ (ปุ่ม ✨ ในหน้าแอป) — แต่ละค่ายคิดเอง: claude = Claude · manus = Manus · chatgpt = OpenAI
+AI_PROVIDER = {"chatgpt": "openai", "manus": "manus"}.get(AGENT, "anthropic")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
 # คีย์ระดับผู้ใช้ (sk-ant-usr-…) ไม่ผูก workspace → ต้องส่ง workspace id ไปกับทุกคำขอ ไม่งั้น Claude ตอบ 400
 ANTHROPIC_WORKSPACE_ID = os.getenv("ANTHROPIC_WORKSPACE_ID", "").strip()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
-AI_MODEL = os.getenv("AI_MODEL", "").strip() or {"anthropic": "claude-haiku-5-5", "openai": "gpt-4o-mini"}[AI_PROVIDER]
+MANUS_API_KEY = os.getenv("MANUS_API_KEY", "").strip()
+# Manus: AI_MODEL = ระดับของ agent (lite/standard/max) · ค่าอื่น (เช่นชื่อรุ่น Claude ที่ค้างในไฟล์) → lite
+MANUS_PROFILES = ("lite", "standard", "max")
+AI_MODEL = os.getenv("AI_MODEL", "").strip() or {"anthropic": "claude-haiku-5-5", "openai": "gpt-4o-mini",
+                                                 "manus": "lite"}[AI_PROVIDER]
+if AI_PROVIDER == "manus" and AI_MODEL not in MANUS_PROFILES:
+    AI_MODEL = "lite"
 MCP_HTTP_TOKEN = os.getenv("MCP_HTTP_TOKEN", "").strip()            # กุญแจป้องกันโหมด HTTP
 MCP_PUBLIC_HOST = os.getenv("MCP_PUBLIC_HOST", "").strip()          # เช่น xxxx.ngrok-free.app
 
@@ -513,15 +523,19 @@ def creative_options() -> dict[str, Any]:
 
 def ai_info() -> dict[str, Any]:
     """AI ที่ปุ่ม ✨ ของ agent นี้ใช้ — หน้าเว็บแค่แสดง (คีย์ไม่ถูกส่งออกไป)"""
-    label = "Claude" if AI_PROVIDER == "anthropic" else "OpenAI"
-    key_name = "ANTHROPIC_API_KEY" if AI_PROVIDER == "anthropic" else "OPENAI_API_KEY"
-    ready = bool(ANTHROPIC_API_KEY if AI_PROVIDER == "anthropic" else OPENAI_API_KEY)
+    label, key_name, key = {
+        "anthropic": ("Claude", "ANTHROPIC_API_KEY", ANTHROPIC_API_KEY),
+        "openai": ("OpenAI", "OPENAI_API_KEY", OPENAI_API_KEY),
+        "manus": ("Manus", "MANUS_API_KEY", MANUS_API_KEY),
+    }[AI_PROVIDER]
+    ready = bool(key)
     missing = None if ready else f"ยังไม่ได้ใส่คีย์ {label} ({key_name}) — ใส่ได้ที่แท็บ \"เชื่อมต่อ API\""
     if ready and AI_PROVIDER == "anthropic" and ANTHROPIC_API_KEY.startswith(USER_KEY_PREFIX) \
             and not ANTHROPIC_WORKSPACE_ID:
         ready, missing = False, CLAUDE_NEEDS_WORKSPACE
+    # slow = สั่งงานแล้วรอผล (Manus) — หน้าเว็บแสดงสถานะรอ + ปุ่มยกเลิก
     return {"provider": AI_PROVIDER, "label": label, "model": AI_MODEL, "key_name": key_name, "ready": ready,
-            "missing": missing}
+            "missing": missing, "slow": AI_PROVIDER == "manus"}
 
 
 USER_KEY_PREFIX = "sk-ant-usr-"
@@ -1885,6 +1899,8 @@ def _ai_keywords(copy: str) -> tuple[list[str], dict[str, Any] | None, str | Non
     """ถาม AI ของ agent นี้ → (คำค้นความสนใจ ~8 คำ, อายุ/ภาษาที่แนะนำ, ข้อผิดพลาด)
     copy = บรีฟของผู้ใช้ และ/หรือ ข้อความโฆษณา (ติดหัวข้อไว้แล้ว)"""
     prompt = f"{copy}\n\nReturn 8 keywords and the audience suggestion."
+    if AI_PROVIDER == "manus":   # Manus ตอบช้า → ใช้ _manus_start + ai_poll แทน (ไม่รอในคำขอเดียว)
+        return [], None, "Manus ต้องสั่งงานแล้วรอผล — เรียกผ่านปุ่ม ✨ ในหน้าแอป"
     if AI_PROVIDER == "anthropic":
         text, err = _claude_text(AI_SYSTEM, prompt, AI_PLAN_SCHEMA,
                                  "Claude ไม่คิดกลุ่มเป้าหมายให้ข้อความนี้ — ลองปรับข้อความโฆษณา")
@@ -1926,6 +1942,145 @@ def _ai_keywords(copy: str) -> tuple[list[str], dict[str, Any] | None, str | Non
     except (ValueError, AttributeError):
         return [], None, "AI ตอบกลับในรูปแบบที่อ่านไม่ได้ — กดใหม่อีกครั้ง"
     return list(dict.fromkeys(words))[:12], _audience_hint(plan.get("audience")), None
+
+
+def _plan_words(plan: Any) -> tuple[list[str], dict[str, Any] | None]:
+    """ผลของ AI {"keywords", "audience"} → (คำค้นไม่ซ้ำ ≤12, อายุ/ภาษาที่แนะนำ)"""
+    plan = plan if isinstance(plan, dict) else {}
+    words = [str(w).strip() for w in plan.get("keywords") or [] if str(w).strip()]
+    return list(dict.fromkeys(words))[:12], _audience_hint(plan.get("audience"))
+
+
+# ---------------------------------------------------------------------------
+# Manus (agent manus) — Manus API v2 ทำงานแบบสั่งงานแล้วรอผล (อาจนานเป็นนาที)
+#   _manus_start = สั่งงาน → task_id · ai_poll = หน้าเว็บถามผลทีละครั้ง · ai_stop = ยกเลิก
+# ---------------------------------------------------------------------------
+MANUS_API = "https://api.manus.ai/v2"
+# structured output ของ Manus รับ JSON Schema แบบย่อ (ไม่รับ enum) → ภาษาเป็นข้อความ แล้ว _audience_hint กรองเอง
+MANUS_PLAN_SCHEMA = json.loads(json.dumps(AI_PLAN_SCHEMA))
+MANUS_PLAN_SCHEMA["properties"]["audience"]["properties"]["languages"] = {"type": "array", "items": {"type": "string"}}
+MANUS_TASK_ID = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+
+
+def _manus(method: str, path: str, **kw: Any) -> tuple[dict[str, Any] | None, str | None]:
+    """เรียก Manus API → (body, ข้อผิดพลาดภาษาไทย)"""
+    try:
+        r = requests.request(method, f"{MANUS_API}/{path}", timeout=30,
+                             headers={"x-manus-api-key": MANUS_API_KEY}, **kw)
+    except requests.RequestException:
+        return None, "เชื่อมต่อ Manus ไม่ได้ — ตรวจอินเทอร์เน็ต"
+    try:
+        body = r.json()
+    except ValueError:
+        body = {}
+    err = body.get("error") if isinstance(body, dict) else None
+    why = str(err.get("message") or "").strip()[:200] if isinstance(err, dict) else ""
+    code = str(err.get("code") or "") if isinstance(err, dict) else ""
+    if r.status_code == 401 or code == "unauthenticated":
+        return None, "คีย์ Manus ไม่ถูกต้องหรือหมดอายุ — ตรวจ MANUS_API_KEY ที่แท็บ \"เชื่อมต่อ API\""
+    if r.status_code == 429 or code == "rate_limited":
+        return None, "Manus ถูกใช้ถี่เกินไป (สั่งงานได้ 10 ครั้ง/นาที) — รอสักครู่แล้วกดใหม่"
+    if r.status_code == 402 or "credit" in why.lower():
+        return None, f"เครดิต Manus ไม่พอ — เติมที่ manus.im แล้วกดใหม่ (Manus: {why or 'ไม่ระบุ'})"
+    if r.status_code != 200 or not (isinstance(body, dict) and body.get("ok")):
+        return None, f"Manus ปฏิเสธคำขอ (HTTP {r.status_code}): {why or 'ไม่ระบุสาเหตุ'}"
+    return body, None
+
+
+def _manus_start(copy: str) -> tuple[dict[str, Any] | None, str | None]:
+    """สั่ง Manus คิดคำค้นความสนใจ (+ อายุ/ภาษา) → ({task_id, task_url}, ข้อผิดพลาด)"""
+    text = (AI_SYSTEM + "\n\n" + copy + "\n\nReturn 8 keywords and the audience suggestion. "
+            "Answer directly from your own knowledge: do not browse, create files, or build anything.")
+    body, err = _manus("POST", "task.create", json={
+        "message": {"content": text},
+        "agent_profile": AI_MODEL,
+        "interactive_mode": False,
+        "structured_output_schema": MANUS_PLAN_SCHEMA,
+        "title": "Ads Control · คิดความสนใจโฆษณา",
+        "hide_in_task_list": True,
+    })
+    if err:
+        return None, err
+    task_id = str(body.get("task_id") or "")
+    if not MANUS_TASK_ID.match(task_id):
+        return None, "Manus รับงานแล้วแต่ไม่ส่งรหัสงานกลับมา — กดใหม่อีกครั้ง"
+    return {"task_id": task_id, "task_url": str(body.get("task_url") or "")}, None
+
+
+def _manus_pending(copy: str, kind: str, extra: dict[str, Any]) -> dict[str, Any]:
+    """สั่งงาน Manus แล้วตอบหน้าเว็บทันทีว่า "กำลังคิด" — หน้าเว็บถามผลต่อด้วย --ai-poll-json"""
+    info = ai_info()
+    task, err = _manus_start(copy)
+    log_action(f"{kind}_interests_start", not err, {"ai": "Manus", "model": AI_MODEL, "error": err,
+                                                    "task_id": task and task["task_id"]})
+    if err:
+        return {"success": False, "error": err, **extra}
+    return {"success": True, "pending": True, "ai": info["label"], "model": AI_MODEL, "kind": kind, **task, **extra}
+
+
+def ai_poll(spec: dict[str, Any]) -> dict[str, Any]:
+    """(หน้าแอป) ถามผลงานที่สั่ง Manus ไว้ 1 ครั้ง · spec: task_id, kind (suggest|brief), have[] (id ที่เลือกไว้แล้ว)
+    ยังไม่เสร็จ → {pending} · เสร็จ → ผลรูปเดียวกับปุ่ม ✨ / ช่องพิมพ์ประโยค (ค้นคลัง Meta ต่อให้แล้ว)"""
+    if AI_PROVIDER != "manus":
+        return {"success": False, "error": "ถามผลแบบรอได้เฉพาะ agent ที่ใช้ Manus"}
+    task_id = str(spec.get("task_id") or "")
+    kind = "brief" if spec.get("kind") == "brief" else "suggest"
+    if not MANUS_TASK_ID.match(task_id):
+        return {"success": False, "error": "รหัสงาน Manus ไม่ถูกต้อง"}
+    body, err = _manus("GET", "task.listMessages", params={"task_id": task_id, "order": "desc", "limit": 50})
+    if err:
+        return {"success": False, "error": err}
+    msgs = [m for m in body.get("messages") or [] if isinstance(m, dict)]
+    out = next((m.get("structured_output_result") for m in msgs if m.get("type") == "structured_output_result"), None)
+    if isinstance(out, dict):
+        if not out.get("success"):
+            log_action(f"{kind}_interests", False, {"ai": "Manus", "task_id": task_id, "error": out.get("error")})
+            return {"success": False, "error": "Manus คิดเสร็จแต่ส่งผลในรูปแบบที่อ่านไม่ได้ — กดใหม่อีกครั้ง"}
+        words, aud = _plan_words(out.get("value"))
+        return _finish_interests(kind, words, aud, spec, task_id)
+    status = next((m.get("status_update") for m in msgs if m.get("type") == "status_update"), None) or {}
+    state = str(status.get("agent_status") or "running") if isinstance(status, dict) else "running"
+    if state == "error" or any(m.get("type") == "error_message" for m in msgs[:3]):
+        why = next((str((m.get("error_message") or {}).get("content") or "") for m in msgs
+                    if m.get("type") == "error_message"), "")
+        log_action(f"{kind}_interests", False, {"ai": "Manus", "task_id": task_id, "error": why or "error"})
+        return {"success": False, "error": f"Manus ทำงานไม่สำเร็จ{f': {why[:200]}' if why else ''} — กดใหม่อีกครั้ง"}
+    if state == "waiting":   # interactive_mode ปิดไว้แล้ว แต่ถ้ายังถามกลับ → หยุดงาน ไม่ปล่อยค้างกินเครดิต
+        _manus("POST", "task.stop", json={"task_id": task_id})
+        log_action(f"{kind}_interests", False, {"ai": "Manus", "task_id": task_id, "error": "waiting"})
+        return {"success": False, "error": "Manus ถามกลับแทนที่จะตอบ — ลองเขียนข้อความโฆษณา/ประโยคให้ชัดขึ้นแล้วกดใหม่"}
+    return {"success": True, "pending": True, "ai": "Manus", "kind": kind, "task_id": task_id, "state": state}
+
+
+def ai_stop(task_id: str) -> dict[str, Any]:
+    """(หน้าแอป) ปุ่มยกเลิกระหว่างรอ Manus — หยุดงานที่ Manus เพื่อไม่ให้กินเครดิตต่อ"""
+    if AI_PROVIDER != "manus" or not MANUS_TASK_ID.match(task_id or ""):
+        return {"success": False, "error": "รหัสงาน Manus ไม่ถูกต้อง"}
+    _, err = _manus("POST", "task.stop", json={"task_id": task_id})
+    log_action("interests_cancel", not err, {"ai": "Manus", "task_id": task_id, "error": err})
+    return {"success": not err, "error": err}
+
+
+def _finish_interests(kind: str, words: list[str], aud: dict[str, Any] | None, spec: dict[str, Any],
+                      task_id: str | None = None) -> dict[str, Any]:
+    """คำค้นจาก AI → ค้นคลังความสนใจของ Meta → ผลสำหรับหน้าเว็บ (ใช้ร่วมกันทุกค่าย)
+    kind: suggest = ปุ่ม ✨ (แทนชุดเดิม) · brief = ช่องพิมพ์ประโยค (ต่อท้ายรายการเดิม ไม่เอา id ใน have)"""
+    info = ai_info()
+    have = [{"id": str(i)} for i in (spec.get("have") or []) if str(i).isdigit()] if kind == "brief" else []
+    found, missed = _search_interests(words, have)
+    found = found[len(have):]
+    log_action("brief_interests" if kind == "brief" else "suggest_interests", bool(found),
+               {"ai": info["label"], "model": AI_MODEL, "keywords": words, "interests": [x["name"] for x in found],
+                "missed": missed, "audience": aud and aud["label"], **({"task_id": task_id} if task_id else {}),
+                **({"brief": str(spec.get("text") or "")} if kind == "brief" else {})})
+    if not found:
+        if kind == "brief":   # ไม่ติด brief: AI ทำงานได้ แค่คำไม่ตรงคลัง (หน้าเว็บไม่ต้องยืม AI อื่น)
+            return {"success": False, "error": "AI อ่านแล้วได้คำค้น " + ", ".join(words[:6])
+                    + " แต่ไม่ตรงกับคลังของ Meta — ลองเล่าให้ชัดขึ้นว่าลูกค้าเป็นใคร"}
+        return {"success": False, "error": "AI คิดคำค้นได้ แต่ไม่ตรงกับความสนใจในคลังของ Meta — ลองปรับข้อความแล้วกดใหม่"}
+    res = {"success": True, "ai": info["label"], "model": AI_MODEL, "keywords": words, "missed": missed,
+           "interests": found, "audience": aud}
+    return {**res, "brief": True, "skipped": []} if kind == "brief" else res
 
 
 INSIGHTS_SYSTEM = (
@@ -1995,18 +2150,14 @@ def suggest_interests(spec: dict[str, Any]) -> dict[str, Any]:
     link = str(spec.get("link_url") or "").strip()
     if not texts:
         return {"success": False, "error": "ใส่ข้อความโฆษณาก่อน แล้วค่อยให้ AI คิดกลุ่มเป้าหมาย"}
-    words, aud, err = _ai_keywords(_copy_block(texts, titles, link))
+    copy = _copy_block(texts, titles, link)
+    if AI_PROVIDER == "manus":
+        return _manus_pending(copy, "suggest", {})
+    words, aud, err = _ai_keywords(copy)
     if err:
         log_action("suggest_interests", False, {"ai": info["label"], "model": AI_MODEL, "error": err})
         return {"success": False, "error": err}
-    found, missed = _search_interests(words)
-    log_action("suggest_interests", bool(found), {"ai": info["label"], "model": AI_MODEL, "keywords": words,
-                                                  "interests": [x["name"] for x in found], "missed": missed,
-                                                  "audience": aud and aud["label"]})
-    if not found:
-        return {"success": False, "error": "AI คิดคำค้นได้ แต่ไม่ตรงกับความสนใจในคลังของ Meta — ลองปรับข้อความแล้วกดใหม่"}
-    return {"success": True, "ai": info["label"], "model": AI_MODEL, "keywords": words, "missed": missed,
-            "interests": found, "audience": aud}
+    return _finish_interests("suggest", words, aud, {})
 
 
 def _copy_block(texts: list[str], titles: list[str], link: str) -> str:
@@ -2064,20 +2215,14 @@ def _brief_interests(text: str, have: list[dict[str, Any]], spec: dict[str, Any]
                                            "— หรือพิมพ์เป็นคำสั้น ๆ คั่นด้วย , เช่น ERP, โรงงาน"}
     clean = lambda v: [str(x).strip() for x in (v or []) if str(x).strip()]  # noqa: E731
     copy = _copy_block(clean(spec.get("texts")), clean(spec.get("titles")), str(spec.get("link_url") or "").strip())
-    words, aud, err = _ai_keywords(f"Advertiser's brief:\n{text}" + (f"\n\n{copy}" if copy else ""))
+    brief = f"Advertiser's brief:\n{text}" + (f"\n\n{copy}" if copy else "")
+    if AI_PROVIDER == "manus":
+        return _manus_pending(brief, "brief", {"brief": True})
+    words, aud, err = _ai_keywords(brief)
     if err:
         log_action("brief_interests", False, {"ai": info["label"], "brief": text, "error": err})
         return {"success": False, "brief": True, "error": err}
-    found, missed = _search_interests(words, have)
-    found = found[len(have):]
-    log_action("brief_interests", bool(found), {"ai": info["label"], "model": AI_MODEL, "brief": text,
-                                                "keywords": words, "interests": [x["name"] for x in found],
-                                                "audience": aud and aud["label"]})
-    if not found:
-        return {"success": False, "error": "AI อ่านแล้วได้คำค้น " + ", ".join(words[:6])
-                + " แต่ไม่ตรงกับคลังของ Meta — ลองเล่าให้ชัดขึ้นว่าลูกค้าเป็นใคร"}
-    return {"success": True, "brief": True, "ai": info["label"], "keywords": words, "interests": found,
-            "missed": missed, "skipped": [], "audience": aud}
+    return _finish_interests("brief", words, aud, {"text": text, "have": [x["id"] for x in have]})
 
 
 def _ad_copy(adset_id: str) -> dict[str, Any]:
@@ -2362,10 +2507,15 @@ def run_http(server, host: str, port: int) -> None:
 if __name__ == "__main__":
     if (ARGS.status or ARGS.create_json or ARGS.suggest_json or ARGS.search_json or ARGS.adset_json
             or ARGS.reach_json or ARGS.lives or ARGS.live_ad_json or ARGS.pages
-            or ARGS.portfolios or ARGS.check_portfolio or ARGS.insights_summary_json):
+            or ARGS.portfolios or ARGS.check_portfolio or ARGS.insights_summary_json
+            or ARGS.ai_poll_json or ARGS.ai_stop):
         if PORTFOLIO != 1 and (ARGS.status or ARGS.create_json):
             _auto_portfolio_ids()
-        if ARGS.insights_summary_json:
+        if ARGS.ai_poll_json:
+            out = ai_poll(json.loads(Path(ARGS.ai_poll_json).read_text(encoding="utf-8")))
+        elif ARGS.ai_stop:
+            out = ai_stop(ARGS.ai_stop)
+        elif ARGS.insights_summary_json:
             out = insights_summary(json.loads(Path(ARGS.insights_summary_json).read_text(encoding="utf-8")))
         elif ARGS.check_portfolio:
             out = check_portfolio()

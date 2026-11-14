@@ -8,7 +8,7 @@ type Values = Record<string, string>;
 type SecretInfo = { set: boolean; last4: string | null };
 type EnvView = {
   agent: string; prefix: string; file: string; exists: boolean; values: Values; token: SecretInfo; secret: SecretInfo;
-  aiKey: SecretInfo & { name: string; label: string; workspace: boolean; userKey: boolean };
+  aiKey: SecretInfo & { name: string; label: string; workspace: boolean; hint: string; userKey: boolean };
   portfolios: { slot: number; token: SecretInfo; values: Record<PfKey, string> }[];
 };
 type Check = { key: string; label: string; ok: boolean; detail: string; warn?: boolean };
@@ -211,7 +211,7 @@ export default function AgentEnvForm() {
             </label>
             <input id="env-aikey" className={`input${errors.aiKey ? " invalid" : ""}`} type="password" autoComplete="off" value={aiKey}
               onChange={(e) => setAiKey(e.target.value)}
-              placeholder={env.aiKey.set ? "เว้นว่าง = ใช้คีย์เดิม · วางใหม่เพื่อเปลี่ยน" : "วางคีย์ที่ขึ้นต้นด้วย sk-…"} />
+              placeholder={env.aiKey.set ? "เว้นว่าง = ใช้คีย์เดิม · วางใหม่เพื่อเปลี่ยน" : env.aiKey.hint} />
             {errors.aiKey ? <div className="err">{errors.aiKey}</div> : <div className="d">บันทึกเป็น {env.aiKey.name} · คีย์จะไม่ถูกส่งกลับมาแสดงบนหน้าจอ</div>}
           </div>
           {env.aiKey.workspace && (

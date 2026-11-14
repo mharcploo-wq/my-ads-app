@@ -42,7 +42,7 @@ export async function POST(req: Request) {
   };
   const before = await readAgentEnv(agent);
   const errors = {
-    ...validate(input),
+    ...validate(agent, input),
     ...validatePortfolios(portfolios ?? [], new Set(before.portfolios.filter((p) => p.token.set).map((p) => p.slot))),
   };
   if (Object.keys(errors).length) return NextResponse.json({ ok: false, error: "มีช่องที่กรอกไม่ถูกต้อง", errors }, { status: 400 });
