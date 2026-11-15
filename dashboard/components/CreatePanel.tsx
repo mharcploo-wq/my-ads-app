@@ -934,7 +934,6 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
             <InterestCompare agents={status} list={AGENTS} current={agent} lists={interestsBy} runs={aiRuns} copy={adCopy}
               locked={pickBusy || busy} onBusy={setCmpBusy}
               onResult={(id, list, run) => { setInterestsBy((m) => ({ ...m, [id]: list })); setAiRuns((m) => ({ ...m, [id]: run })); }}
-              onUse={(id) => { if (id !== agent) { setAgent(id); setPortfolio(1); setPageId(""); } }}
               renderCreate={(id) => (
                 <CompareCreate label={labelOf(id)} ids={interestsBy[id].map((x) => x.id)} made={made[id]}
                   running={busy && busyAs === id} since={busySince} now={now}

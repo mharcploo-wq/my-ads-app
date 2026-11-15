@@ -13,8 +13,8 @@ interface Reach { lower: number; upper: number }
 interface Running { since: number; wait: Waiting | null }
 
 /** 🎯 ชุดความสนใจของ AI ในหน้าที่เลือก — หน้า Claude ให้ Claude คิดคนเดียว (Manus/ChatGPT เหมือนกัน) · ไม่ยืม AI ตัวอื่น
- *  ชุดของตัวอื่นไม่แสดงในหน้านี้ — มีปุ่ม "ไปหน้า X →" ให้สลับไปคิด/สร้างจากหน้าของตัวนั้น */
-export default function InterestCompare({ agents, list, current, lists, runs, copy, locked, onResult, onUse, onBusy, renderCreate }: {
+ *  ชุดของตัวอื่นไม่แสดงในหน้านี้ — สลับที่ "สร้างในนาม" ด้านบน */
+export default function InterestCompare({ agents, list, current, lists, runs, copy, locked, onResult, onBusy, renderCreate }: {
   agents: CmpStatus[] | null;
   list: CompareAgent[];
   current: AgentId;
@@ -23,7 +23,6 @@ export default function InterestCompare({ agents, list, current, lists, runs, co
   copy: () => AdCopy;
   locked: boolean;                                    // กล่องความสนใจด้านบนกำลังทำงาน / กำลังสร้าง
   onResult: (agent: AgentId, interests: Interest[], run: AiRun) => void;
-  onUse: (agent: AgentId) => void;                    // สลับไปหน้าของ agent นั้น
   onBusy: (agents: AgentId[]) => void;                // agent ที่กำลังคิดอยู่ (ให้ฟอร์มล็อกกล่องด้านบน)
   renderCreate?: (agent: AgentId) => ReactNode;       // 🚀 สร้างแคมเปญจากชุดนี้ (ท้ายกล่อง)
 }) {
@@ -109,7 +108,6 @@ export default function InterestCompare({ agents, list, current, lists, runs, co
   const fmtAt = (t: number) => new Date(t).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" });
   const fmtMs = (ms: number) => ms < 60_000 ? `${Math.max(1, Math.round(ms / 1000))} วินาที`
     : `${Math.floor(ms / 60_000)} นาที ${Math.round((ms % 60_000) / 1000)} วินาที`;
-  const others = list.filter((a) => a.id !== me.id);
 
   return (
     <div className="c-cmp" style={{ ["--c" as string]: me.color }}>
@@ -117,17 +115,6 @@ export default function InterestCompare({ agents, list, current, lists, runs, co
         <div>
           <b>🎯 ชุดความสนใจของ {me.label}</b>
           <div className="c-hint">{ai?.label ?? me.label} คิดคนเดียวจากข้อความ · พาดหัว · คำอธิบาย · ลิงก์ — ไม่ยืม AI ตัวอื่น</div>
-        </div>
-        <div className="c-cmp-go">
-          {others.map((a) => {
-            const n = lists[a.id].length;
-            return (
-              <button key={a.id} type="button" className="btn" style={{ ["--c" as string]: a.color }} disabled={locked}
-                title={`สลับไปสร้างในนาม ${a.label} — ให้ ${a.label} คิดหรือสร้างจากหน้าของตัวเอง`} onClick={() => onUse(a.id)}>
-                ไปหน้า {a.label} →<small>{running[a.id] ? "กำลังคิด…" : n ? `${n} ความสนใจ` : "ยังไม่ได้คิด"}</small>
-              </button>
-            );
-          })}
         </div>
       </div>
       <div className="c-cmp-col on">
