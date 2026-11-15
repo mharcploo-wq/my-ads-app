@@ -510,11 +510,12 @@ MAX_VIDEO_MB, MAX_TOTAL_MB = 200, 1024          # ขนาดคลิปต่
 DYNAMIC_KINDS = ["WEBSITE"]                      # ยิงข้อความ + ไดนามิก ยังยืนยันกับ Meta ไม่ได้ → ยังไม่เปิด
 VIDEO_TYPES = {".mp4", ".mov", ".m4v"}
 # ชนิด "การมีส่วนร่วม" (ยอดดู ThruPlay): คลิปละ 1 โฆษณาในชุดเดียวกัน · ปุ่มใช้เมื่อใส่ลิงก์เว็บเท่านั้น
+# "จองเลย" ใน Ads Manager = BOOK_TRAVEL (generatepreviews รับกับคลิปจริง 15/11/69)
 ENGAGE_CTAS: dict[str, str] = {
-    "SHOP_NOW": "สั่งซื้อตอนนี้", "BUY_NOW": "ซื้อเลย", "LEARN_MORE": "ดูเพิ่มเติม",
+    "BOOK_TRAVEL": "จองเลย", "SHOP_NOW": "สั่งซื้อตอนนี้", "BUY_NOW": "ซื้อเลย", "LEARN_MORE": "ดูเพิ่มเติม",
     "CONTACT_US": "ติดต่อเรา", "SIGN_UP": "สมัคร",
 }
-DEFAULT_ENGAGE_CTA = "SHOP_NOW"
+DEFAULT_ENGAGE_CTA = "BOOK_TRAVEL"
 # Ads Manager: ปลายทาง "บนโฆษณาของคุณ" · การเล่นวิดีโอ = destination_type ON_VIDEO (ยืนยันกับบัญชีจริง 15/11/69)
 # เผื่อบัญชีที่ Meta ยังไม่เปิด ON_VIDEO → ลองใหม่แบบไม่ใส่ (ตามตัวอย่างคู่มือ Video Ads ของ Meta)
 VIDEO_DESTINATIONS = ("ON_VIDEO", None)
