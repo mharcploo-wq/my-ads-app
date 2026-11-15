@@ -13,7 +13,7 @@ export interface CreateFail { msg: string; steps?: Step[] }
 const fmtAt = (t: number) => new Date(t).toLocaleTimeString("th-TH", { timeZone: "Asia/Bangkok", hour: "2-digit", minute: "2-digit", hour12: false });
 const fmtRun = (ms: number) => `${Math.floor(ms / 60_000)}:${String(Math.floor((ms % 60_000) / 1000)).padStart(2, "0")}`;
 
-/** 🚀 สร้างแคมเปญจากชุดความสนใจของ AI ตัวหนึ่ง (ท้ายคอลัมน์ในกล่องเทียบ) — ถามยืนยันก่อน · สร้างได้ทีละแคมเปญ · สร้างแล้วจำไว้กันซ้ำ */
+/** 🚀 สร้างแคมเปญจากชุดความสนใจของ AI ตัวหนึ่ง (ท้ายกล่องชุดความสนใจของหน้านั้น) — ถามยืนยันก่อน · สร้างได้ทีละแคมเปญ · สร้างแล้วจำไว้กันซ้ำ */
 export default function CompareCreate({ label, ids, made, running, since, now, waitFor, blocked, plan, fail, onCreate }: {
   label: string;                      // ชื่อ AI ในคอลัมน์
   ids: string[];                      // ความสนใจในชุดตอนนี้

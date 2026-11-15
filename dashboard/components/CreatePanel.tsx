@@ -134,7 +134,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
   const [ageMin, setAgeMin] = useState<number | null>(d0.ageMin);
   const [langs, setLangs] = useState<string[] | null>(d0.langs);
   const [ageMax, setAgeMax] = useState<number | null>(d0.ageMax);
-  // ความสนใจแยกต่อ agent — แต่ละ AI คิดเอง ไว้เทียบกัน · ตอนสร้างใช้ชุดของผู้สร้างที่เลือก
+  // ความสนใจแยกต่อ agent — หน้าของใครให้ AI ของคนนั้นคิดเอง · ตอนสร้างใช้ชุดของผู้สร้างที่เลือก
   // ร่างที่อ่านมาอาจเก่า/ไม่ครบ → ตรวจทีละ agent
   const [interestsBy, setInterestsBy] = useState<Record<AgentId, Interest[]>>(() => {
     const s = (d0.interestsBy ?? {}) as Partial<Record<AgentId, Interest[]>>;
@@ -148,7 +148,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
   const setInterests = useCallback((v: Interest[] | ((cur: Interest[]) => Interest[])) =>
     setInterestsBy((m) => ({ ...m, [agent]: typeof v === "function" ? v(m[agent]) : v })), [agent]);
   const [pickBusy, setPickBusy] = useState(false);       // กล่องความสนใจด้านบนกำลังคิด/ค้น
-  const [cmpBusy, setCmpBusy] = useState<AgentId[]>([]); // agent ที่กล่องเทียบกำลังให้คิดอยู่
+  const [cmpBusy, setCmpBusy] = useState<AgentId[]>([]); // agent ที่กล่องชุดความสนใจกำลังให้คิดอยู่
   const [pickerKey, setPickerKey] = useState(0);         // เปลี่ยนค่า = ล้างข้อความ/ช่องค้นในกล่องความสนใจ
   const [editAdset, setEditAdset] = useState(false);     // กล่องเพิ่มความสนใจให้ Ad Set ที่เพิ่งสร้าง
   const [confirmEmpty, setConfirmEmpty] = useState(false); // กดสร้างตอนยังไม่มีความสนใจ → ถามก่อน
@@ -188,9 +188,9 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
   const [title, setTitle] = useState(d0.title ?? "");
   const [desc, setDesc] = useState(d0.desc ?? "");
   const [cta, setCta] = useState(d0.cta ?? "");
-  // 🚀 สร้างจากกล่องเทียบ 3 AI: แคมเปญที่สร้างแล้วต่อ agent (เก็บในเครื่อง · กันซ้ำ) · ใครกำลังสร้าง · ผลที่ล้ม
+  // 🚀 สร้างจากกล่องชุดความสนใจ: แคมเปญที่สร้างแล้วต่อ agent (เก็บในเครื่อง · กันซ้ำ) · ใครกำลังสร้าง · ผลที่ล้ม
   const [made, setMade] = useState<Partial<Record<AgentId, Made>>>({});
-  const [busyAs, setBusyAs] = useState<AgentId | null>(null);   // ระหว่าง busy: null = ปุ่มสร้างของฟอร์ม · agent = คอลัมน์ในกล่องเทียบ
+  const [busyAs, setBusyAs] = useState<AgentId | null>(null);   // ระหว่าง busy: null = ปุ่มสร้างของฟอร์ม · agent = 🚀 ในกล่องชุดความสนใจ
   const [busySince, setBusySince] = useState<number | null>(null);
   const [cmpFail, setCmpFail] = useState<Partial<Record<AgentId, CreateFail>>>({});
   const loadMade = useCallback(async () => {
@@ -200,7 +200,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
     } catch { /* อ่านไม่ได้ = ไม่จำ */ }
   }, []);
   useEffect(() => { loadMade(); }, [loadMade]);
-  useEffect(() => {   // นาฬิการะหว่างสร้างจากกล่องเทียบ
+  useEffect(() => {   // นาฬิการะหว่างสร้างจากกล่องชุดความสนใจ
     if (!busySince) return;
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
@@ -357,7 +357,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
   const hourChoices = liveOpt ? Array.from({ length: liveOpt.max_hours - liveOpt.min_hours + 1 }, (_, i) => liveOpt.min_hours + i) : [hours];
   const liveBudgetFor = (h: number) => (liveOpt ? Math.min(maxBudget, h * liveOpt.thb_per_hour) : null);
   const live = lives?.find((l) => l.id === liveId) ?? null;
-  /** โจทย์ที่ส่งให้ AI คิดความสนใจ — ชุดเดียวกันทั้งกล่องด้านบนและกล่องเทียบ 3 AI */
+  /** โจทย์ที่ส่งให้ AI คิดความสนใจ — ชุดเดียวกันทั้งกล่องด้านบนและกล่องชุดความสนใจ */
   const adCopy = (): AdCopy => isLive ? { texts: [text.trim()].filter(Boolean), titles: [live?.name ?? ""].filter(Boolean), link_url: "" }
     : isEngage ? { texts: [text.trim()].filter(Boolean), titles: [title.trim(), desc.trim()].filter(Boolean), link_url: link.trim() }
     : { texts: isDyn ? filledTexts : [text.trim()].filter(Boolean), titles: isDyn ? filledTitles : [],
@@ -455,7 +455,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
     };
   }, [startMode, startDate, startTime, hasEnd, endDate, endTime]);
 
-  /** สิ่งที่ยังขาดก่อนสร้างในนาม agent หนึ่ง (st = สถานะของ agent นั้น) — ฟอร์มใช้ของผู้สร้างที่เลือก · กล่องเทียบใช้ของแต่ละคอลัมน์ */
+  /** สิ่งที่ยังขาดก่อนสร้างในนาม agent หนึ่ง (st = สถานะของ agent นั้น) — ฟอร์มและ 🚀 ใช้ของผู้สร้างที่เลือก */
   const problemsFor = useCallback((st: AgentStatus | null, notReady = "ผู้สร้างที่เลือกยังไม่ได้ตั้งค่า") => {
     const p: string[] = [];
     const maxBudget = st?.max_daily_budget_thb || 1000;
@@ -493,7 +493,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
     isDyn, crOpt, dynImages.length, dynVideos, filledTexts.length, videoBytes, isLive, live, lives, isEngage, hasLink]);
   const problems = useMemo(() => problemsFor(cur), [problemsFor, cur]);
 
-  // ---- 🚀 สร้างจากกล่องเทียบ 3 AI (พอร์ตหลักเท่านั้น · ส่วนอื่นใช้ร่วมกับฟอร์ม ต่างกันแค่ในนามใคร + ความสนใจ) ----
+  // ---- 🚀 สร้างจากกล่องชุดความสนใจ (พอร์ตหลักเท่านั้น · ส่วนอื่นใช้ร่วมกับฟอร์ม ต่างกันแค่ในนามใคร + ความสนใจ) ----
   const statusOf = (id: AgentId) => status?.find((a) => a.agent === id) ?? null;
   const labelOf = (id: AgentId) => AGENTS.find((a) => a.id === id)!.label;
   /** เพจของ agent ในพอร์ตหลัก: เพจที่ฟอร์มเลือกไว้ (ถ้า token ของตัวนั้นลงโฆษณาได้) → เพจประจำของตัวนั้น */
@@ -535,7 +535,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
     setImageUrl("");
   }
 
-  /** สร้างโฆษณา · as = จากกล่องเทียบ 3 AI (ในนาม agent นั้น · ชุดความสนใจของตัวนั้น · พอร์ตหลัก) · ไม่ใส่ = ปุ่มสร้างของฟอร์ม */
+  /** สร้างโฆษณา · as = จาก 🚀 ในกล่องชุดความสนใจ (ในนาม agent นั้น · ชุดความสนใจของตัวนั้น · พอร์ตหลัก) · ไม่ใส่ = ปุ่มสร้างของฟอร์ม */
   async function submit(allowEmpty = false, as?: AgentId) {
     const who = as ?? agent;
     const list = interestsBy[who];
@@ -994,7 +994,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
 
         <div className="c-actions">
           <button className="btn primary c-submit" disabled={problems.length > 0 || busy} onClick={() => submit()}>
-            {busy && busyAs ? `รอ ${labelOf(busyAs)} สร้างเสร็จก่อน (กล่องเทียบ 3 AI)` : busy ? ((isDyn || isEngage) && dynVideos.length ? "กำลังอัปโหลดและรอ Meta ประมวลผลคลิป… (อาจนานหลายนาที)" : "กำลังสร้าง… (ประมาณ 20 วินาที)")
+            {busy && busyAs ? `รอ ${labelOf(busyAs)} สร้างเสร็จก่อน (🚀 ในกล่องชุดความสนใจ)` : busy ? ((isDyn || isEngage) && dynVideos.length ? "กำลังอัปโหลดและรอ Meta ประมวลผลคลิป… (อาจนานหลายนาที)" : "กำลังสร้าง… (ประมาณ 20 วินาที)")
               : isLive ? "🔴 สร้างแคมเปญ Live" : isEngage ? `🎬 สร้างโฆษณาการมีส่วนร่วม${dynVideos.length ? ` (${dynVideos.length} คลิป)` : ""}` : "สร้างโฆษณา"}
           </button>
           {left != null && <span className="c-hint">วันนี้สร้างได้อีก {left} จาก {cur!.max_campaigns_per_day} แคมเปญ</span>}

@@ -118,7 +118,7 @@ export async function POST(req: Request) {
     const timeout = spec.video_paths?.length ? 30 * 60_000 : 180_000;
     const portfolio = portfolioOf(form.get("portfolio"));
     const result = await runCreator<CreateResult>(agent, ["--create-json", specFile, ...portfolioArgs(portfolio)], timeout);
-    // จำว่าชุดความสนใจของ agent นี้ถูกสร้างเป็นแคมเปญแล้ว (กล่องเทียบ 3 AI ใช้กันสร้างซ้ำ) · จำไม่ได้ก็ไม่ทำให้การสร้างล้ม
+    // จำว่าชุดความสนใจของ agent นี้ถูกสร้างเป็นแคมเปญแล้ว (ใช้กันสร้างซ้ำ) · จำไม่ได้ก็ไม่ทำให้การสร้างล้ม
     if (result.success && result.campaign_id && spec.interests?.length) {
       await setMade(agent, {
         campaign_id: result.campaign_id, campaign_name: result.campaign_name ?? spec.name,

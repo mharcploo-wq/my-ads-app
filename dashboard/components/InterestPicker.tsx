@@ -3,6 +3,8 @@ import { Dispatch, RefObject, SetStateAction, useEffect, useRef, useState } from
 import { AiRun, fmtWait, stopAiTask, Waiting, waitForAi } from "@/lib/interestAi";
 
 type AgentId = "claude" | "manus" | "chatgpt";
+/** ชื่อบนปุ่ม ✨ — หน้าไหนก็ให้ AI ของหน้านั้นคิด */
+const AGENT_NAME: Record<AgentId, string> = { claude: "Claude", manus: "Manus", chatgpt: "ChatGPT" };
 
 /** ความสนใจจากคลังของ Meta · gone = Meta เลิกใช้แล้ว (ต้องลบก่อนบันทึก) */
 export interface Interest {
@@ -44,8 +46,8 @@ export default function InterestPicker({ agent, agents, interests, setInterests,
   onBusy?: (busy: boolean) => void;
   action?: string;               // คำของปุ่มส่งงาน เช่น "กดสร้าง" / "บันทึก"
   onAudience?: (a: AudienceHint) => void;   // มี = แสดงอายุ/ภาษาที่ AI แนะนำ พร้อมปุ่ม "ใช้ค่านี้"
-  borrow?: boolean;              // false = ไม่ยืม Claude ของ agent อื่น (ฟอร์มสร้าง: แต่ละ AI ต้องคิดเองเพื่อเทียบกันได้)
-  locked?: boolean;              // true = ปิดปุ่ม ✨/ค้น (เช่น กล่องเทียบกำลังให้ AI ตัวนี้คิดอยู่)
+  borrow?: boolean;              // false = ไม่ยืม Claude ของ agent อื่น (ฟอร์มสร้าง: หน้าของใครให้ AI ของคนนั้นคิดเอง)
+  locked?: boolean;              // true = ปิดปุ่ม ✨/ค้น (เช่น กล่องชุดความสนใจกำลังให้ AI ตัวนี้คิดอยู่)
   onResult?: (r: AiRun) => void; // ✨ คิดเสร็จ (AI ของ agent นี้เอง) → เวลาที่ใช้ + อายุ/ภาษาที่แนะนำ ไว้เทียบ
 }) {
   const [aiBusy, setAiBusy] = useState(false);
@@ -193,7 +195,7 @@ export default function InterestPicker({ agent, agents, interests, setInterests,
     <div className="c-int">
       <div className="c-aud-row c-int-bar">
         <button type="button" className="btn c-ai" onClick={() => suggest()} disabled={!ai?.ready || aiBusy || kwBusy || locked}>
-          {aiBusy ? `${ai?.label ?? "AI"} กำลังคิด…` : "✨ ให้ AI คิดกลุ่มเป้าหมาย"}
+          {aiBusy ? `${ai?.label ?? "AI"} กำลังคิด…` : `✨ ให้ ${AGENT_NAME[agent]} คิดกลุ่มเป้าหมาย`}
         </button>
         {ai?.ready && !aiBusy && <span className="c-hint">{ai.label} คิดจาก{copyHint}{ai.slow ? " · อาจนาน 1–3 นาที" : ""}</span>}
         <span className="c-cnt">{interests.length} / {max}</span>
