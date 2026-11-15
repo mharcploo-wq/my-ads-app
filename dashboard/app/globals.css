@@ -312,6 +312,11 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 /* ชนิด Live สด · การรับรู้ */
 .c-opt.c-opt-live.on { border-color: #e5484d; box-shadow: 0 0 0 1px #e5484d inset; background: #2a1415; }
 .c-row.c-row-live { grid-template-columns: 2fr 0.8fr 1.2fr; }
+/* ชนิดโฆษณา 4 แบบ เรียง 2×2 · แถวลิงก์+ปุ่ม (ชนิดการมีส่วนร่วม) */
+.c-seg.c-kinds { display: grid; grid-template-columns: 1fr 1fr; }
+.c-row.c-row-cta { grid-template-columns: 2fr 1fr; }
+.c-warn-t { color: var(--warning); font-weight: 600; }
+.c-nowrap { white-space: nowrap; }
 .c-lives { display: flex; flex-direction: column; gap: 6px; }
 .c-live { display: flex; align-items: center; gap: 10px; text-align: left; border: 1px solid var(--border); background: var(--surface-2); border-radius: 10px; padding: 8px 11px; cursor: pointer; color: inherit; font: inherit; }
 .c-live.on { border-color: #e5484d; background: #2a1415; }

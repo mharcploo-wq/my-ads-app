@@ -194,7 +194,7 @@ export interface LiveAdsResult {
 }
 
 export interface CreateSpec {
-  kind: "MESSENGER" | "WEBSITE" | "LIVE";
+  kind: "MESSENGER" | "WEBSITE" | "LIVE" | "ENGAGEMENT";
   page_id?: string;      // เพจที่จะยิง — ว่าง = เพจประจำของพอร์ต · server.py ตรวจสิทธิ์ซ้ำ      // เพจที่จะยิง — ว่าง = เพจประจำ agent · server.py ตรวจสิทธิ์ซ้ำ
   live_id?: string;      // Live: กิจกรรม fb_live ที่นัดไว้ — server.py ตรวจว่าอยู่ในเพจและยังไม่เริ่ม
   live_hours?: number;   // Live: ความยาว (ชม.) — daily_budget_thb = งบรวมทั้ง Live
@@ -215,7 +215,11 @@ export interface CreateSpec {
   texts?: string[];
   titles?: string[];
   image_paths?: string[];
-  video_paths?: string[];
+  video_paths?: string[];   // ไดนามิก หรือ ชนิดการมีส่วนร่วม (คลิปละ 1 โฆษณา)
+  // ชนิดการมีส่วนร่วม (ยอดดู ThruPlay)
+  title?: string;
+  description?: string;
+  cta?: string;          // ปุ่ม (ENGAGE_CTAS ของ server.py) — ใช้เมื่อมี link_url
 }
 
 export interface CreateResult {

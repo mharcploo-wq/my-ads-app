@@ -13,7 +13,8 @@ const MAX_IMAGE = 30 * 1024 * 1024;
 
 /** สร้างโฆษณาครบชุด (PAUSED) จากฟอร์ม — multipart: agent, kind, name, daily_budget_thb, text, link_url, image_url, image,
  *  portfolio (พอร์ตโฟลิโอ 1–5 · 1 = พอร์ตหลัก), page_id (เพจที่จะยิง), start_time, end_time, age_min, age_max, languages (ส่งซ้ำได้หลายค่า), interests (JSON [{id,name}])
- *  ชิ้นงานแบบไดนามิก: dynamic=1, images, videos, texts, titles (ส่งซ้ำได้หลายค่า) — ตรวจจำนวน/ขนาดจริงที่ server.py */
+ *  ชิ้นงานแบบไดนามิก: dynamic=1, images, videos, texts, titles (ส่งซ้ำได้หลายค่า) — ตรวจจำนวน/ขนาดจริงที่ server.py
+ *  ชนิดการมีส่วนร่วม (ENGAGEMENT): videos (คลิปละ 1 โฆษณา), text, title, description, link_url (ไม่บังคับ), cta */
 export async function POST(req: Request) {
   if (!isLocalRequest(req)) return NextResponse.json({ ok: false, error: "ใช้ได้จากเครื่องนี้เท่านั้น" }, { status: 403 });
   let form: FormData;
@@ -25,7 +26,7 @@ export async function POST(req: Request) {
   const agent = String(form.get("agent") ?? "");
   if (!isAgentId(agent)) return NextResponse.json({ ok: false, error: "เลือกผู้สร้างไม่ถูกต้อง" }, { status: 400 });
   const kind = String(form.get("kind") ?? "");
-  if (kind !== "MESSENGER" && kind !== "WEBSITE" && kind !== "LIVE") return NextResponse.json({ ok: false, error: "เลือกชนิดโฆษณา" }, { status: 400 });
+  if (kind !== "MESSENGER" && kind !== "WEBSITE" && kind !== "LIVE" && kind !== "ENGAGEMENT") return NextResponse.json({ ok: false, error: "เลือกชนิดโฆษณา" }, { status: 400 });
 
   const spec: CreateSpec = {
     kind,
@@ -62,7 +63,14 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: "ข้อมูลความสนใจไม่ถูกต้อง" }, { status: 400 });
     }
   }
-  const dynamic = form.get("dynamic") === "1" && kind !== "LIVE";
+  const engage = kind === "ENGAGEMENT";
+  if (engage) {
+    spec.title = String(form.get("title") ?? "").trim();
+    spec.description = String(form.get("description") ?? "").trim();
+    spec.cta = String(form.get("cta") ?? "").trim();
+    spec.image_url = "";
+  }
+  const dynamic = form.get("dynamic") === "1" && kind !== "LIVE" && !engage;
   if (dynamic) {
     spec.dynamic = true;
     spec.texts = form.getAll("texts").map((v) => String(v).trim()).filter(Boolean);
@@ -81,11 +89,11 @@ export async function POST(req: Request) {
       await fs.writeFile(spec.image_path, Buffer.from(await file.arrayBuffer()));
       spec.image_url = "";
     }
-    if (dynamic) {
+    if (dynamic || engage) {
       spec.image_paths = [];
       spec.video_paths = [];
       let i = 0;
-      for (const f of form.getAll("images")) {
+      for (const f of engage ? [] : form.getAll("images")) {
         if (!(f instanceof File) || f.size === 0) continue;
         const ext = IMAGE_TYPES[f.type];
         if (!ext) return NextResponse.json({ ok: false, error: `ไฟล์ ${f.name} ไม่ใช่รูป JPG / PNG / WEBP / GIF` }, { status: 400 });

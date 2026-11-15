@@ -7,12 +7,13 @@ import { clearDraft, FileGroup, FormDraft, loadDraft, loadFiles, saveDraft, save
 import type { AdPage, LiveEvent, LiveNext, LiveOptions, Portfolio } from "@/lib/creator";
 
 type AgentId = "claude" | "manus" | "chatgpt";
-type Kind = "MESSENGER" | "WEBSITE" | "LIVE";
+type Kind = "MESSENGER" | "WEBSITE" | "LIVE" | "ENGAGEMENT";
 
 interface CheckItem { key: string; label: string; ok: boolean; detail: string; warn?: boolean }
 interface CreativeOptions {
   max_images: number; max_videos: number; max_bodies: number; max_titles: number; max_assets: number;
   max_video_mb: number; max_total_mb: number; dynamic_kinds: string[]; dynamic_off_reason: string;
+  engage_ctas?: { key: string; label: string }[]; default_engage_cta?: string;   // ชนิดการมีส่วนร่วม
 }
 interface AudienceOptions {
   min_age: number; max_age_min: number; default_age: number;
@@ -44,6 +45,7 @@ const KINDS: { id: Kind; icon: string; label: string; hint: string; cta: string 
   { id: "MESSENGER", icon: "💬", label: "ยิงข้อความ", hint: "คนกดปุ่ม \"ส่งข้อความ\" ทักแชทเพจ", cta: "ส่งข้อความ" },
   { id: "WEBSITE", icon: "🔗", label: "พาเข้าเว็บไซต์", hint: "คนกดปุ่ม \"ดูเพิ่มเติม\" ไปหน้าเว็บ", cta: "ดูเพิ่มเติม" },
   { id: "LIVE", icon: "🔴", label: "Live สด", hint: "การรับรู้ · คนเห็น Live มากที่สุด", cta: "ดูเพิ่มเติม" },
+  { id: "ENGAGEMENT", icon: "🎬", label: "การมีส่วนร่วม", hint: "ยอดดูวิดีโอ ThruPlay · คนดูคลิปจนจบหรือ 15 วิ", cta: "" },
 ];
 
 /** วันเวลาของ Live แบบไทย เช่น "จ. 16 พ.ย. 2569 · 06:00 น." */
@@ -95,7 +97,7 @@ const blankForm = (): Omit<FormDraft, "agent" | "savedAt"> => ({
   kind: "MESSENGER", name: "", budget: "300", text: "", link: "", imageUrl: "",
   startMode: "now", startDate: thDate(1), startTime: "08:00", hasEnd: false, endDate: thDate(8), endTime: "23:59",
   ageMin: null, ageMax: null, langs: null, interests: [], dynamic: false, texts: [""], titles: [],
-  liveId: "", liveHours: null, pageId: "", portfolio: 1,
+  liveId: "", liveHours: null, pageId: "", portfolio: 1, title: "", desc: "", cta: "",
 });
 
 export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
@@ -163,6 +165,10 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
   const [portfolio, setPortfolio] = useState<number>(d0.portfolio ?? 1);
   const [pfStatus, setPfStatus] = useState<AgentStatus | null>(null);   // สถานะของพอร์ตที่เลือก (ถ้าไม่ใช่พอร์ตหลัก)
   const [pfErr, setPfErr] = useState<string | null>(null);
+  // ชนิดการมีส่วนร่วม: พาดหัว · คำอธิบาย · ปุ่ม (คลิปใช้ชุดเดียวกับคลิปไดนามิก)
+  const [title, setTitle] = useState(d0.title ?? "");
+  const [desc, setDesc] = useState(d0.desc ?? "");
+  const [cta, setCta] = useState(d0.cta ?? "");
 
   const loadStatus = useCallback(async () => {
     setStatusErr(null);
@@ -218,14 +224,14 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
   useEffect(() => {
     const t = setTimeout(() => {
       const form = { kind, name, budget, text, link, imageUrl, startMode, startDate, startTime, hasEnd, endDate,
-        endTime, ageMin, ageMax, langs, interests, dynamic, texts, titles, liveId, liveHours, pageId, portfolio };
+        endTime, ageMin, ageMax, langs, interests, dynamic, texts, titles, liveId, liveHours, pageId, portfolio, title, desc, cta };
       if (JSON.stringify(form) === JSON.stringify(blankForm()) && !loadDraft()) return;
       const at = Date.now();
       if (saveDraft({ ...form, agent, savedAt: at })) setSavedAt(at);
     }, 400);
     return () => clearTimeout(t);
   }, [agent, kind, name, budget, text, link, imageUrl, startMode, startDate, startTime, hasEnd, endDate, endTime,
-    ageMin, ageMax, langs, interests, dynamic, texts, titles, liveId, liveHours, pageId, portfolio]);
+    ageMin, ageMax, langs, interests, dynamic, texts, titles, liveId, liveHours, pageId, portfolio, title, desc, cta]);
 
   // บันทึกรูป/คลิปเมื่อรายการเปลี่ยน (ข้ามชุดที่เพิ่งโหลดมา ไม่ต้องเขียนซ้ำ)
   useEffect(() => {
@@ -294,7 +300,17 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
         (filledTitles.length ? filledTitles : [""]).map((h) => ({ m, t, h }))))
     : [];
   const combo = combos.length ? combos[pvIdx % combos.length] : null;
-  const imageSource = isDyn
+  // ---- การมีส่วนร่วม · ยอดดู ThruPlay (คลิปละ 1 โฆษณา) ----
+  const isEngage = kind === "ENGAGEMENT";
+  const ctas = crOpt?.engage_ctas ?? [];
+  const ctaKey = ctas.some((c) => c.key === cta) ? cta : crOpt?.default_engage_cta ?? ctas[0]?.key ?? "";
+  const ctaLabel = ctas.find((c) => c.key === ctaKey)?.label ?? "";
+  const hasLink = link.trim() !== "";
+  const pixelCheck = cur?.checks.find((c) => c.key === "pixel") ?? null;
+  const engageVid = isEngage && dynVideos.length ? pvIdx % dynVideos.length : null;
+  const imageSource = isEngage
+    ? `คลิป ${dynVideos.length} คลิป → ${dynVideos.length} โฆษณา`
+    : isDyn
     ? `ชิ้นงานไดนามิก ${dynImages.length} รูป · ${dynVideos.length} คลิป`
     : file ? "ไฟล์จากเครื่อง" : imageUrl.trim() ? "ลิงก์รูป" : "รูปปกเพจ (ค่าเริ่มต้น)";
 
@@ -410,7 +426,14 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
       if (audOpt && pickedLangs.length === 0) p.push("เลือกภาษาอย่างน้อย 1 ภาษา");
       return p;   // Live ไม่มีรูป/ลิงก์/กำหนดเวลาเอง · ข้อความไม่บังคับ
     }
-    if (isDyn && crOpt) {
+    if (isEngage && crOpt) {
+      if (!dynVideos.length) p.push("ใส่คลิปอย่างน้อย 1 คลิป");
+      if (!text.trim()) p.push("ใส่ข้อความหลัก");
+      const big = dynVideos.find((f) => f.size > crOpt.max_video_mb * MB);
+      if (big) p.push(`คลิป ${big.name} ใหญ่เกิน ${crOpt.max_video_mb}MB`);
+      if (videoBytes > crOpt.max_total_mb * MB) p.push(`คลิปรวมกันเกิน ${crOpt.max_total_mb / 1024}GB`);
+      if (hasLink && !/^https?:\/\//.test(link.trim())) p.push("ลิงก์เว็บไซต์ต้องขึ้นต้น https://");
+    } else if (isDyn && crOpt) {
       if (!dynImages.length && !dynVideos.length) p.push("ใส่รูปหรือคลิปอย่างน้อย 1 ชิ้น");
       if (!filledTexts.length) p.push("ใส่ข้อความหลักอย่างน้อย 1 แบบ");
       const big = dynVideos.find((f) => f.size > crOpt.max_video_mb * MB);
@@ -423,7 +446,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
     if (audOpt && pickedLangs.length === 0) p.push("เลือกภาษาอย่างน้อย 1 ภาษา");
     return p;
   }, [cur, name, budgetNum, maxBudget, text, kind, link, left, sched.error, audOpt, pickedLangs.length,
-    isDyn, crOpt, dynImages.length, dynVideos, filledTexts.length, videoBytes, isLive, live, lives]);
+    isDyn, crOpt, dynImages.length, dynVideos, filledTexts.length, videoBytes, isLive, live, lives, isEngage, hasLink]);
 
   function pickFile(f: File | undefined | null) {
     if (!f) return;
@@ -443,7 +466,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
     fd.set("portfolio", String(portfolio));
     if (page) fd.set("page_id", page.id);
     fd.set("daily_budget_thb", String(budgetNum)); fd.set("text", text.trim());
-    if (kind === "WEBSITE") fd.set("link_url", link.trim());
+    if (kind === "WEBSITE" || (isEngage && hasLink)) fd.set("link_url", link.trim());
     if (isLive) { fd.set("live_id", liveId); fd.set("live_hours", String(hours)); }
     else {
       if (sched.start_time) fd.set("start_time", sched.start_time);
@@ -453,7 +476,12 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
     if (ageHi != null) fd.set("age_max", String(ageHi));
     if (interests.length) fd.set("interests", JSON.stringify(interests.map(({ id, name }) => ({ id, name }))));
     pickedLangs.forEach((k) => fd.append("languages", k));
-    if (isDyn && !isLive) {
+    if (isEngage) {
+      if (title.trim()) fd.set("title", title.trim());
+      if (desc.trim()) fd.set("description", desc.trim());
+      if (hasLink && ctaKey) fd.set("cta", ctaKey);
+      dynVideos.forEach((f) => fd.append("videos", f));
+    } else if (isDyn && !isLive) {
       fd.set("dynamic", "1");
       fd.delete("text");
       dynImages.forEach((f) => fd.append("images", f));
@@ -485,6 +513,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
     setAgeMin(b.ageMin); setAgeMax(b.ageMax); setLangs(b.langs); setInterests([]); setPickerKey((k) => k + 1);
     setDynamic(b.dynamic); setTexts(b.texts); setTitles(b.titles); setPvIdx(0); setDynMsg(null);
     setLiveId(b.liveId); setLiveHours(b.liveHours); setPageId(b.pageId ?? ""); setPortfolio(1);
+    setTitle(""); setDesc(""); setCta("");
     stored.current = { single: [], images: [], videos: [] };
     setFile(null); setDynImages([]); setDynVideos([]); setLostFiles([]);
     await clearDraft();
@@ -601,7 +630,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
         </>)}
 
         <div className="c-label">ชนิดโฆษณา</div>
-        <div className="c-seg">
+        <div className="c-seg c-kinds">
           {KINDS.map((k) => (
             <button key={k.id} type="button" className={`c-opt ${k.id === "LIVE" ? "c-opt-live" : ""} ${kind === k.id ? "on" : ""}`} onClick={() => pickKind(k.id)}>
               <b>{k.icon} {k.label}</b><span>{k.hint}</span>
@@ -653,9 +682,23 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
           <small className="c-hint">คิดให้ {liveOpt.thb_per_hour.toLocaleString()} บาท/ชม. แก้ตัวเลขเองได้ · ใช้ &quot;งบรวม&quot; เพราะงบรายวัน Meta บังคับให้เปิดอย่างน้อย 24 ชม.</small>
         )}
 
+        {isEngage && crOpt && (<>
+          <div className="c-label c-row-h"><span>🎬 คลิป <small className="c-hint">(อย่างน้อย 1 คลิป · 1 คลิป = 1 โฆษณาในชุดเดียวกัน)</small></span><span className={dynVideos.length >= crOpt.max_videos ? "c-cnt full" : "c-cnt"}>{dynVideos.length} / {crOpt.max_videos}</span></div>
+          <div className="c-grid" onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); addMedia(e.dataTransfer.files, "video"); }}>
+            {dynVideos.map((f, i) => (
+              <VideoThumb key={`${f.name}-${i}`} url={vidUrls[i]} file={f} onRemove={() => { setDynVideos(dynVideos.filter((_, j) => j !== i)); setPvIdx(0); }} />
+            ))}
+            {dynVideos.length < crOpt.max_videos && <button type="button" className="c-add" onClick={() => vidInput.current?.click()}>＋<br />เพิ่มคลิป</button>}
+          </div>
+          <small className="c-hint">คลิป MP4 / MOV ไม่เกิน {crOpt.max_video_mb}MB ต่อไฟล์ · รวม {fmtMb(videoBytes)} / {crOpt.max_total_mb / 1024}GB · ลากคลิปมาวางได้ · ตอนกดสร้าง แอปอัปโหลดแล้วรอ Meta ประมวลผล (1–5 นาที/คลิป)</small>
+          <div className="c-bar"><i style={{ width: `${Math.min(100, (videoBytes / (crOpt.max_total_mb * MB)) * 100)}%` }} /></div>
+          {dynMsg && <div className="c-hint c-sched bad">{dynMsg}</div>}
+          <input ref={vidInput} type="file" multiple accept={VIDEO_ACCEPT} hidden onChange={(e) => { addMedia(e.target.files, "video"); e.target.value = ""; }} />
+        </>)}
+
         {isLive ? (<div className="field"><label htmlFor="c-text">ข้อความชวนดู Live <small className="c-hint">(ไม่บังคับ — เป็นข้อความของโฆษณารูป และให้ AI ใช้คิดกลุ่มเป้าหมาย · ว่าง = แอปเขียนชื่อ+เวลา Live ให้)</small></label>
           <textarea id="c-text" className="input c-text" value={text} maxLength={2000} placeholder="เช่น Live แนะนำระบบ ERP + AI สำหรับโรงงาน ถาม-ตอบสด" onChange={(e) => setText(e.target.value)} /></div>)
-        : !isDyn && (<div className="field"><label htmlFor="c-text">ข้อความโฆษณา</label>
+        : !isDyn && (<div className="field"><label htmlFor="c-text">{isEngage ? "ข้อความหลัก" : "ข้อความโฆษณา"}</label>
           <textarea id="c-text" className="input c-text" value={text} maxLength={2000} placeholder="เช่น ทักแชทสอบถามสินค้าได้เลยครับ" onChange={(e) => setText(e.target.value)} /></div>)}
 
         {kind === "WEBSITE" && (
@@ -663,7 +706,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
             <input id="c-link" className="input" value={link} placeholder="https://..." onChange={(e) => setLink(e.target.value)} /></div>
         )}
 
-        {crOpt && !isLive && (
+        {crOpt && !isLive && !isEngage && (
           <div className={`c-dyn ${dynAllowed ? "" : "off"}`}>
             <div>
               <b>ชิ้นงานโฆษณาแบบไดนามิก</b>
@@ -677,7 +720,30 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
           </div>
         )}
 
-        {isDyn && crOpt ? (<>
+        {isEngage ? (crOpt && (<>
+          <div className="c-row">
+            <div className="field"><label htmlFor="c-title">พาดหัว <small className="c-hint">(ไม่บังคับ)</small></label>
+              <input id="c-title" className="input" value={title} maxLength={255} placeholder="เช่น ของฝากอบใหม่ ส่งฟรี" onChange={(e) => setTitle(e.target.value)} /></div>
+            <div className="field"><label htmlFor="c-desc">คำอธิบาย <small className="c-hint">(ไม่บังคับ)</small></label>
+              <input id="c-desc" className="input" value={desc} maxLength={255} placeholder="เช่น ชื่อร้าน หรือโปรสั้น ๆ" onChange={(e) => setDesc(e.target.value)} /></div>
+          </div>
+          <div className="c-row c-row-cta">
+            <div className="field"><label htmlFor="c-link">ลิงก์เว็บไซต์ <small className="c-hint">(ไม่บังคับ — ไม่ใส่ = ไม่มีปุ่ม)</small></label>
+              <input id="c-link" className="input" value={link} placeholder="https://..." onChange={(e) => setLink(e.target.value)} /></div>
+            <div className="field"><label htmlFor="c-cta">ปุ่ม</label>
+              <select id="c-cta" className="input" value={ctaKey} disabled={!hasLink} onChange={(e) => setCta(e.target.value)}>
+                {ctas.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
+              </select></div>
+          </div>
+          <div className="c-aud">
+            <div className="c-aud-row">
+              <span className="c-aud-k">📈 การติดตาม</span>
+              {pixelCheck?.ok
+                ? <><b className="c-ok c-nowrap">✔ Pixel {pixelCheck.detail.split(" ")[0]}</b><span className="c-hint">— ติดให้ทุกโฆษณา นับเหตุการณ์บนเว็บไซต์ของคนที่กดปุ่ม (Pixel ของพอร์ตที่เลือก)</span></>
+                : <><b className="c-warn-t c-nowrap">⚠ ไม่มี Pixel</b><span className="c-hint">— สร้างได้ แต่ไม่นับเหตุการณ์บนเว็บไซต์</span></>}
+            </div>
+          </div>
+        </>)) : isDyn && crOpt ? (<>
           <div className="c-label c-row-h"><span>🖼 รูป</span><span className={dynImages.length >= crOpt.max_images ? "c-cnt full" : "c-cnt"}>{dynImages.length} / {crOpt.max_images}</span></div>
           <div className="c-grid" onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); dropMedia(e.dataTransfer.files); }}>
             {dynImages.map((f, i) => (
@@ -771,8 +837,9 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
               <InterestPicker key={pickerKey} agent={agent} agents={status} interests={interests} setInterests={setInterests}
                 max={audOpt.max_interests} kwRef={kwInput}
                 onAudience={(a) => { setAgeMin(a.age_min); setAgeMax(a.age_max); setLangs(a.languages); }}
-                copyHint={isLive ? "ชื่อ Live + เกี่ยวกับ Live นี้" : `ข้อความหลัก${isDyn ? " + พาดหัว" : ""}${kind === "WEBSITE" ? " + ลิงก์" : ""}`}
+                copyHint={isLive ? "ชื่อ Live + เกี่ยวกับ Live นี้" : isEngage ? "ข้อความหลัก + พาดหัว + คำอธิบาย + ลิงก์" : `ข้อความหลัก${isDyn ? " + พาดหัว" : ""}${kind === "WEBSITE" ? " + ลิงก์" : ""}`}
                 copy={() => isLive ? { texts: [text.trim()].filter(Boolean), titles: [live?.name ?? ""].filter(Boolean), link_url: "" }
+                  : isEngage ? { texts: [text.trim()].filter(Boolean), titles: [title.trim(), desc.trim()].filter(Boolean), link_url: link.trim() }
                   : ({ texts: isDyn ? filledTexts : [text.trim()].filter(Boolean), titles: isDyn ? filledTitles : [],
                   link_url: kind === "WEBSITE" ? link.trim() : "" })} />
             </div>
@@ -823,11 +890,14 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
 
         <div className="c-safe">{isLive
           ? <>⏸ สร้างแบบ <b>หยุดไว้</b> · เป้าหมาย: เข้าถึงคนให้มากที่สุด · ความถี่ตามค่าเริ่มต้นของ Meta · ตำแหน่ง Advantage+ — แอปสร้างแคมเปญและชุดโฆษณา ส่วนการผูก Live ทำต่อใน Ads Manager ~1 นาที</>
+          : isEngage
+          ? <>⏸ สร้างแบบ <b>หยุดไว้</b> · เป้าหมาย: <b>ยอดดู ThruPlay</b> (คนดูคลิปจนจบหรืออย่างน้อย 15 วิ) · คิดเงินตามการแสดงผล · ตำแหน่ง Advantage+ · ได้ 1 แคมเปญ → 1 ชุดโฆษณา → {dynVideos.length || "…"} โฆษณา (คลิปละ 1)</>
           : <>⏸ โฆษณาจะถูกสร้างแบบ <b>หยุดไว้</b> — ยังไม่เสียเงินจนกว่าคุณจะไปกดเปิดใน Ads Manager</>}</div>
 
         <div className="c-actions">
           <button className="btn primary c-submit" disabled={problems.length > 0 || busy} onClick={() => submit()}>
-            {busy ? (isDyn && dynVideos.length ? "กำลังอัปโหลดและรอ Meta ประมวลผลคลิป… (อาจนานหลายนาที)" : "กำลังสร้าง… (ประมาณ 20 วินาที)") : isLive ? "🔴 สร้างแคมเปญ Live" : "สร้างโฆษณา"}
+            {busy ? ((isDyn || isEngage) && dynVideos.length ? "กำลังอัปโหลดและรอ Meta ประมวลผลคลิป… (อาจนานหลายนาที)" : "กำลังสร้าง… (ประมาณ 20 วินาที)")
+              : isLive ? "🔴 สร้างแคมเปญ Live" : isEngage ? `🎬 สร้างโฆษณาการมีส่วนร่วม${dynVideos.length ? ` (${dynVideos.length} คลิป)` : ""}` : "สร้างโฆษณา"}
           </button>
           {left != null && <span className="c-hint">วันนี้สร้างได้อีก {left} จาก {cur!.max_campaigns_per_day} แคมเปญ</span>}
         </div>
@@ -904,6 +974,10 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
             : isLive
             ? <div className="fbp-img fbp-live"><span className="fbp-live-b">🔴 ถ่ายทอดสด</span><b>{live?.name ?? "Live ที่นัดไว้"}</b>
                 {live && <small>{fmtLive(live.start_time)}</small>}</div>
+            : isEngage
+            ? engageVid !== null
+              ? <video className="fbp-img" src={vidUrls[engageVid]} muted controls preload="metadata" />
+              : <div className="fbp-img fbp-noimg">คลิปโฆษณา</div>
             : isDyn
             ? combo
               ? combo.m.type === "video"
@@ -915,12 +989,25 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
             // eslint-disable-next-line @next/next/no-img-element
             ? <img className="fbp-img" src={previewImage} alt="รูปโฆษณา" />
             : <div className="fbp-img fbp-noimg">รูปโฆษณา</div>}
+          {isEngage ? ((hasLink || title.trim() || desc.trim()) && (
+          <div className="fbp-cta">
+            <div>{hasLink && <small>{(link.replace(/^https?:\/\//, "").split("/")[0] || "เว็บไซต์ของคุณ").toUpperCase()}</small>}
+              {title.trim() && <b>{title.trim()}</b>}{desc.trim() && <small>{desc.trim()}</small>}</div>
+            {hasLink && <span>{ctaLabel}</span>}
+          </div>)) : (
           <div className="fbp-cta">
             <div><small>{kind === "MESSENGER" ? "MESSENGER" : isLive ? "FACEBOOK · กิจกรรม LIVE" : (link.replace(/^https?:\/\//, "").split("/")[0] || "เว็บไซต์ของคุณ").toUpperCase()}</small>
               <b>{(isLive && live?.name) || (isDyn && combo?.h) || name || "ชื่อแคมเปญ"}</b></div>
             <span>{kindInfo.cta}</span>
-          </div>
+          </div>)}
         </div>
+        {isEngage && dynVideos.length > 1 && (
+          <div className="c-pvnav">
+            <button type="button" className="btn" aria-label="โฆษณาก่อนหน้า" onClick={() => setPvIdx((pvIdx - 1 + dynVideos.length) % dynVideos.length)}>‹</button>
+            <span>โฆษณาที่ {(engageVid ?? 0) + 1} จาก {dynVideos.length} (คลิปละ 1 โฆษณา)</span>
+            <button type="button" className="btn" aria-label="โฆษณาถัดไป" onClick={() => setPvIdx((pvIdx + 1) % dynVideos.length)}>›</button>
+          </div>
+        )}
         {isDyn && combos.length > 0 && (
           <div className="c-pvnav">
             <button type="button" className="btn" aria-label="ชุดก่อนหน้า" onClick={() => setPvIdx((pvIdx - 1 + combos.length) % combos.length)}>‹</button>
@@ -928,7 +1015,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
             <button type="button" className="btn" aria-label="ชุดถัดไป" onClick={() => setPvIdx((pvIdx + 1) % combos.length)}>›</button>
           </div>
         )}
-        <p className="c-hint" style={{ textAlign: "center" }}>{isLive ? `โฆษณารูปชวนดู Live · รูปที่ใช้: ${imageSource} · คลิป Live เพิ่มได้ตอนออกอากาศ` : `${isDyn ? "ชิ้นงาน" : "รูปที่ใช้"}: ${imageSource}`}</p>
+        <p className="c-hint" style={{ textAlign: "center" }}>{isLive ? `โฆษณารูปชวนดู Live · รูปที่ใช้: ${imageSource} · คลิป Live เพิ่มได้ตอนออกอากาศ` : `${isDyn || isEngage ? "ชิ้นงาน" : "รูปที่ใช้"}: ${imageSource}`}</p>
 
         <div className="c-checks">
           <b>เช็คก่อนสร้าง</b>

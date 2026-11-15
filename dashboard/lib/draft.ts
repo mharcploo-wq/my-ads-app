@@ -18,6 +18,7 @@ export interface FormDraft {
   liveId: string; liveHours: number | null;   // ชนิด Live สด: Live ที่เลือก + ความยาว (null = ค่าเริ่มต้นของ server.py)
   pageId?: string;   // เพจที่จะยิง ("" = เพจประจำ agent)
   portfolio?: number;   // พอร์ตโฟลิโอธุรกิจ (1 = พอร์ตหลัก)
+  title?: string; desc?: string; cta?: string;   // ชนิดการมีส่วนร่วม: พาดหัว · คำอธิบาย · ปุ่ม ("" = ค่าเริ่มของ server.py)
   savedAt: number;
 }
 

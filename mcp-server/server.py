@@ -509,6 +509,15 @@ MAX_IMAGES, MAX_VIDEOS, MAX_BODIES, MAX_TITLES, MAX_ASSETS = 10, 10, 5, 5, 30
 MAX_VIDEO_MB, MAX_TOTAL_MB = 200, 1024          # ขนาดคลิปต่อไฟล์ / รวมทั้งชุด (กันอัปโหลดนานและกินแรม)
 DYNAMIC_KINDS = ["WEBSITE"]                      # ยิงข้อความ + ไดนามิก ยังยืนยันกับ Meta ไม่ได้ → ยังไม่เปิด
 VIDEO_TYPES = {".mp4", ".mov", ".m4v"}
+# ชนิด "การมีส่วนร่วม" (ยอดดู ThruPlay): คลิปละ 1 โฆษณาในชุดเดียวกัน · ปุ่มใช้เมื่อใส่ลิงก์เว็บเท่านั้น
+ENGAGE_CTAS: dict[str, str] = {
+    "SHOP_NOW": "สั่งซื้อตอนนี้", "BUY_NOW": "ซื้อเลย", "LEARN_MORE": "ดูเพิ่มเติม",
+    "CONTACT_US": "ติดต่อเรา", "SIGN_UP": "สมัคร",
+}
+DEFAULT_ENGAGE_CTA = "SHOP_NOW"
+# Ads Manager: ปลายทาง "บนโฆษณาของคุณ" · การเล่นวิดีโอ = destination_type ON_VIDEO (ยืนยันกับบัญชีจริง 15/11/69)
+# เผื่อบัญชีที่ Meta ยังไม่เปิด ON_VIDEO → ลองใหม่แบบไม่ใส่ (ตามตัวอย่างคู่มือ Video Ads ของ Meta)
+VIDEO_DESTINATIONS = ("ON_VIDEO", None)
 
 
 def creative_options() -> dict[str, Any]:
@@ -518,6 +527,8 @@ def creative_options() -> dict[str, Any]:
         "max_assets": MAX_ASSETS, "max_video_mb": MAX_VIDEO_MB, "max_total_mb": MAX_TOTAL_MB,
         "dynamic_kinds": DYNAMIC_KINDS,
         "dynamic_off_reason": "ชิ้นงานแบบไดนามิกใช้ได้กับโฆษณาพาเข้าเว็บไซต์ (ยิงข้อความยังไม่ได้ยืนยันกับ Meta)",
+        "engage_ctas": [{"key": k, "label": v} for k, v in ENGAGE_CTAS.items()],
+        "default_engage_cta": DEFAULT_ENGAGE_CTA,
     }
 
 
@@ -829,6 +840,9 @@ def create_adset(campaign_id: str, name: str, daily_budget_thb: int, destination
     interests: ความสนใจ (ค่าแนะนำ) ไม่เกิน 10 — คิดจากเนื้อหาโฆษณาแล้วส่งเป็นคำค้นสั้น ๆ เช่น
                ["digital marketing", "small business", "ร้านกาแฟ"] ระบบจะค้น id ในคลังของ Meta ให้
                (ภาษาอังกฤษมักเจอง่ายกว่า · หาไม่เจอจะแจ้งกลับให้เปลี่ยนคำ) · ไม่ใส่ = ไม่กำหนด"""
+    if str(destination or "").upper().strip() == "VIDEO":
+        # ชุดยอดดูวิดีโอต้องคู่กับโฆษณาคลิป ซึ่งเครื่องมือ create_ad (รูป) สร้างไม่ได้ → ใช้จากหน้าแอปเท่านั้น
+        return {"success": False, "error": 'destination ต้องเป็น "WEBSITE" หรือ "MESSENGER"'}
     return _create_adset(campaign_id, name, daily_budget_thb, destination, start_time, end_time, age_min, languages,
                          age_max=age_max, interests=interests)
 
@@ -853,7 +867,7 @@ def _create_adset(campaign_id: str, name: str, daily_budget_thb: int, destinatio
     aud, aud_err = _audience(age_min, languages, age_max, picked)
     if aud_err:
         return {"success": False, "error": aud_err}
-    if destination not in ("WEBSITE", "MESSENGER"):
+    if destination not in ("WEBSITE", "MESSENGER", "VIDEO"):
         return {"success": False, "error": 'destination ต้องเป็น "WEBSITE" หรือ "MESSENGER"'}
     perm = _run_checks(int(daily_budget_thb), count_campaigns=False)
     if not perm["allowed"]:
@@ -871,6 +885,10 @@ def _create_adset(campaign_id: str, name: str, daily_budget_thb: int, destinatio
         if not _page():
             return {"success": False, "error": NO_PAGE}
         opt = {"optimization_goal": "CONVERSATIONS", "destination_type": "MESSENGER"}
+    if destination == "VIDEO":
+        if camp.get("objective") != "OUTCOME_ENGAGEMENT":
+            return {"success": False, "error": "ชุดยอดดูวิดีโอต้องอยู่ใต้แคมเปญ OUTCOME_ENGAGEMENT"}
+        opt = {"optimization_goal": "THRUPLAY"}   # destination_type ลองตาม VIDEO_DESTINATIONS ตอนยิง
 
     payload: dict[str, Any] = {
         "name": with_prefix(name),
@@ -903,13 +921,25 @@ def _create_adset(campaign_id: str, name: str, daily_budget_thb: int, destinatio
             return {"success": False, "error": creative_options()["dynamic_off_reason"]}
         payload["is_dynamic_creative"] = True
 
-    ok, body = _graph_post(f"{META_AD_ACCOUNT_ID}/adsets", payload)
-    log_action("create_adset", ok, {"name": payload["name"], "campaign_id": campaign_id,
-                                    "daily_budget_thb": daily_budget_thb, "lifetime": lifetime, **sched, "dynamic": dynamic,
-                                    "adset_id": body.get("id") if ok else None,
-                                    "error": None if ok else _meta_error(body)})
+    tries: tuple[str | None, ...] = VIDEO_DESTINATIONS if destination == "VIDEO" else (None,)
+    first_err = ""
+    for dest_type in tries:
+        if dest_type:
+            payload["destination_type"] = dest_type
+        elif destination == "VIDEO":
+            payload.pop("destination_type", None)
+        ok, body = _graph_post(f"{META_AD_ACCOUNT_ID}/adsets", payload)
+        log_action("create_adset", ok, {"name": payload["name"], "campaign_id": campaign_id,
+                                        "daily_budget_thb": daily_budget_thb, "lifetime": lifetime, **sched,
+                                        "dynamic": dynamic, "destination_type": payload.get("destination_type"),
+                                        "adset_id": body.get("id") if ok else None,
+                                        "error": None if ok else _meta_error(body)})
+        if ok:
+            break
+        first_err = first_err or _meta_error(body)
     if not ok:
-        return {"success": False, "error": _meta_error(body)}
+        return {"success": False, "error": first_err if len(tries) == 1 else
+                f"{first_err} · ลองแบบไม่ระบุปลายทางแล้วก็ไม่ผ่าน: {_meta_error(body)}"}
     return {"success": True, "adset_id": body["id"], "name": payload["name"], "status": REQUIRED_STATUS,
             "daily_budget_thb": daily_budget_thb, "audience": f"Advantage+ Audience · ประเทศไทย · {aud['_label']}",
             "destination": destination,
@@ -1101,6 +1131,57 @@ def _create_ad(adset_id: str, name: str, page_post_text: str, link_url: str,
             "note": "โฆษณายังไม่วิ่ง — ตรวจใน Ads Manager แล้วเปิดเองด้วยมือ"}
 
 
+def _create_video_ad(adset_id: str, name: str, video: dict[str, str], text: str, title: str, description: str,
+                     link_url: str, cta: str) -> dict[str, Any]:
+    """โฆษณาคลิป 1 ตัว (ชนิดการมีส่วนร่วม · ยอดดู ThruPlay) PAUSED: คลิป + ข้อความหลัก + พาดหัว/คำอธิบาย
+    + ปุ่มไปเว็บ (ถ้ามีลิงก์) · ติด Pixel ของพอร์ต (ถ้ามี) — Meta ไม่รับการติดตาม → สร้างใหม่แบบไม่ติด แล้วบอกไว้"""
+    perm = _run_checks(None, count_campaigns=False)
+    if not perm["allowed"]:
+        log_action("create_ad", False, {"blocked": perm["reason"]})
+        return {"success": False, "blocked_by": "check_permission", **perm}
+    if not _page():
+        return {"success": False, "error": NO_PAGE}
+    ok, adset = _own_object(adset_id, "name")
+    if not ok:
+        return {"success": False, "error": adset}
+    vd: dict[str, Any] = {"video_id": video["video_id"], "image_url": video["thumbnail_url"], "message": text}
+    if title:
+        vd["title"] = title
+    if link_url:
+        vd["link_description"] = description   # ใต้พาดหัว (ว่างได้)
+        vd["call_to_action"] = {"type": cta, "value": {"link": link_url}}
+    elif description:
+        vd["link_description"] = description
+
+    ad_name = with_prefix(name)
+    ok, cr = _graph_post(f"{META_AD_ACCOUNT_ID}/adcreatives", {
+        "name": f"{ad_name}-Creative",
+        "object_story_spec": {"page_id": _page(), "video_data": vd},
+    })
+    if not ok:
+        log_action("create_ad", False, {"name": ad_name, "step": "creative", "video": True, "error": _meta_error(cr)})
+        return {"success": False, "error": f"สร้าง Creative ไม่สำเร็จ: {_meta_error(cr)}"}
+    payload: dict[str, Any] = {"name": ad_name, "adset_id": adset_id, "creative": {"creative_id": cr["id"]},
+                               "status": REQUIRED_STATUS}
+    pixel_note = "ไม่มี Pixel"
+    if META_PIXEL_ID:
+        payload["tracking_specs"] = [{"action.type": ["offsite_conversion"], "fb_pixel": [META_PIXEL_ID]}]
+    ok, body = _graph_post(f"{META_AD_ACCOUNT_ID}/ads", payload)
+    if ok and META_PIXEL_ID:
+        pixel_note = f"Pixel {META_PIXEL_ID}"
+    if not ok and META_PIXEL_ID:
+        pixel_note = f"ติด Pixel ไม่ได้ ({_meta_error(body)})"
+        payload.pop("tracking_specs")
+        ok, body = _graph_post(f"{META_AD_ACCOUNT_ID}/ads", payload)
+    log_action("create_ad", ok, {"name": ad_name, "adset_id": adset_id, "creative_id": cr["id"], "video": True,
+                                 "cta": cta if link_url else None, "pixel": pixel_note,
+                                 "ad_id": body.get("id") if ok else None, "error": None if ok else _meta_error(body)})
+    if not ok:
+        return {"success": False, "error": _meta_error(body), "creative_id": cr["id"]}
+    return {"success": True, "ad_id": body["id"], "creative_id": cr["id"], "name": ad_name,
+            "status": REQUIRED_STATUS, "pixel": pixel_note}
+
+
 # ---------------------------------------------------------------------------
 # โหมดหน้าแอป (Dashboard → หน้า "สร้างโฆษณา") — เรียกผ่านบรรทัดคำสั่งเท่านั้น
 # ไม่เปิดเป็นเครื่องมือ MCP เพราะอ่านไฟล์รูปจากเครื่องได้ (กัน agent ภายนอกดึงไฟล์ในเครื่อง)
@@ -1109,6 +1190,7 @@ KINDS = {
     # ชนิดโฆษณา: objective ของแคมเปญ + ปลายทางของ Ad Set
     "MESSENGER": ("OUTCOME_ENGAGEMENT", "MESSENGER"),
     "WEBSITE": ("OUTCOME_TRAFFIC", "WEBSITE"),
+    "ENGAGEMENT": ("OUTCOME_ENGAGEMENT", "VIDEO"),   # การมีส่วนร่วม · ยอดดู ThruPlay (_create_full_engagement)
 }
 
 
@@ -1411,7 +1493,7 @@ def _verify_interests(adset_id: str, sent: list[dict[str, Any]]) -> dict[str, An
 
 def create_full(spec: dict[str, Any]) -> dict[str, Any]:
     """สร้างครบชุด: check_permission → แคมเปญ → Ad Set → โฆษณา (PAUSED ทั้งหมด) แล้วส่งผลเข้า Dashboard
-    spec: kind (MESSENGER/WEBSITE), name, daily_budget_thb, text, link_url?, image_path?, image_url?,
+    spec: kind (MESSENGER/WEBSITE · LIVE → _create_full_live · ENGAGEMENT → _create_full_engagement), name, daily_budget_thb, text, link_url?, image_path?, image_url?,
           start_time?, end_time? (เวลาไทย เช่น 2026-11-11T08:00), age_min?, age_max?, languages?,
           interests? [{id,name}] (จากปุ่ม ✨ ในหน้าแอป)
           ชิ้นงานแบบไดนามิก: dynamic=true, image_paths[], video_paths[], texts[], titles[]
@@ -1451,6 +1533,8 @@ def create_full(spec: dict[str, Any]) -> dict[str, Any]:
         budget = 0
     if kind == "LIVE":
         return _create_full_live(spec, name, budget, step, done)
+    if kind == "ENGAGEMENT":
+        return _create_full_engagement(spec, name, budget, step, done)
     problems = []
     if kind not in KINDS:
         problems.append("เลือกชนิดโฆษณา")
@@ -1521,7 +1605,7 @@ def create_full(spec: dict[str, Any]) -> dict[str, Any]:
                                 f"{META_AD_ACCOUNT_ID.removeprefix('act_')}&selected_campaign_ids={camp['campaign_id']}")
 
 
-SOFT_STEPS = {"verify", "teaser"}
+SOFT_STEPS = {"verify", "teaser", "skipped"}
 
 
 def _live_event_url(live_id: str) -> str:
@@ -1651,6 +1735,12 @@ def _dynamic_problems(kind: str, texts: list[str], titles: list[str],
         p.append(f"พาดหัวได้ไม่เกิน {MAX_TITLES} แบบ")
     if len(image_paths) + len(video_paths) + len(texts) + len(titles) + 1 > MAX_ASSETS:
         p.append(f"ชิ้นงานรวมเกิน {MAX_ASSETS} ชิ้น")
+    return p + _video_file_problems(video_paths)
+
+
+def _video_file_problems(video_paths: list[str]) -> list[str]:
+    """ตรวจไฟล์คลิปในเครื่อง (ชนิด/ขนาดต่อไฟล์/ขนาดรวม) ก่อนอัปโหลดเข้า Meta"""
+    p: list[str] = []
     total = 0
     for v in video_paths:
         try:
@@ -1720,6 +1810,104 @@ def _create_full_dynamic(name: str, budget: int, texts: list[str], titles: list[
 
     dash = send_to_dashboard("last_7d")
     return done(campaign_id=camp["campaign_id"], adset_id=adset["adset_id"], ad_id=ad["ad_id"],
+                campaign_name=camp["name"], dashboard_updated=bool(dash.get("delivered")),
+                ads_manager_url=f"https://adsmanager.facebook.com/adsmanager/manage/campaigns?act="
+                                f"{META_AD_ACCOUNT_ID.removeprefix('act_')}&selected_campaign_ids={camp['campaign_id']}")
+
+
+def _create_full_engagement(spec: dict[str, Any], name: str, budget: int,
+                            step: Callable[..., bool], done: Callable[..., dict[str, Any]]) -> dict[str, Any]:
+    """create_full ชนิดการมีส่วนร่วม · ยอดดู ThruPlay: อัปโหลดคลิป → แคมเปญ OUTCOME_ENGAGEMENT → Ad Set THRUPLAY
+    → โฆษณาคลิปละ 1 (PAUSED) · คลิป/โฆษณาบางตัวไม่ผ่าน = เก็บที่ผ่านไว้ แล้วบอกว่าตัวไหนพังเพราะอะไร (ขั้น "skipped")
+    spec: text (บังคับ), title?, description?, link_url? (ไม่ใส่ = ไม่มีปุ่ม), cta? (ENGAGE_CTAS),
+          video_paths[1–MAX_VIDEOS], start_time?, end_time?, age_min?, age_max?, languages?, interests?"""
+    text = str(spec.get("text") or "").strip()
+    title = str(spec.get("title") or "").strip()
+    description = str(spec.get("description") or "").strip()
+    link_url = str(spec.get("link_url") or "").strip()
+    cta = str(spec.get("cta") or DEFAULT_ENGAGE_CTA).strip().upper()
+    video_paths = [str(x).strip() for x in (spec.get("video_paths") or []) if str(x).strip()]
+    problems = []
+    if not name:
+        problems.append("ใส่ชื่อแคมเปญ")
+    if not text:
+        problems.append("ใส่ข้อความหลัก")
+    if budget <= 0:
+        problems.append("ใส่งบต่อวันเป็นตัวเลขมากกว่า 0")
+    if link_url and not link_url.startswith(("http://", "https://")):
+        problems.append("ลิงก์เว็บไซต์ต้องขึ้นต้นด้วย http:// หรือ https://")
+    if cta not in ENGAGE_CTAS:
+        problems.append("เลือกปุ่มจากรายการ")
+    if len(title) > 255 or len(description) > 255:
+        problems.append("พาดหัว/คำอธิบายยาวได้ไม่เกิน 255 ตัวอักษร")
+    if not video_paths:
+        problems.append("ใส่คลิปอย่างน้อย 1 คลิป")
+    elif len(video_paths) > MAX_VIDEOS:
+        problems.append(f"คลิปได้ไม่เกิน {MAX_VIDEOS} คลิป")
+    problems += _video_file_problems(video_paths)
+    start_time = str(spec.get("start_time") or "").strip()
+    end_time = str(spec.get("end_time") or "").strip()
+    sched, sched_err = _schedule(start_time, end_time)
+    if sched_err:
+        problems.append(sched_err)
+    age_min, languages, age_max = spec.get("age_min"), spec.get("languages"), spec.get("age_max")
+    interests, int_err = _resolve_interests(spec.get("interests"))
+    if int_err:
+        problems.append(int_err)
+    aud, aud_err = _audience(age_min, languages, age_max, interests)
+    if aud_err:
+        problems.append(aud_err)
+    if problems:
+        step("form", "ข้อมูลในฟอร์ม", {"success": False, "error": " · ".join(problems)})
+        return done()
+
+    perm = check_permission(budget)
+    if not step("check", "เช็คสิทธิ์", perm, "ผ่านทุกเงื่อนไข"):
+        return done()
+
+    # อัปโหลดคลิปทั้งหมดก่อนสร้างอะไรใน Meta · คลิปไหนพังข้ามไป (ไม่มีสักคลิป = หยุด ไม่เหลือแคมเปญค้าง)
+    skipped: list[str] = []
+    videos: list[tuple[int, dict[str, str]]] = []
+    for i, path in enumerate(video_paths, 1):
+        ok, v = _upload_video_file(path)
+        if ok:
+            videos.append((i, v))  # type: ignore[arg-type]
+        else:
+            skipped.append(f"คลิปที่ {i} ({Path(path).name}) อัปโหลดไม่ผ่าน: {v}")
+    if not step("videos", "คลิปโฆษณา", {"success": bool(videos), "error": " · ".join(skipped)},
+                f"อัปโหลดแล้ว {len(videos)}/{len(video_paths)} คลิป (Meta ประมวลผลเสร็จแล้ว)"):
+        return done()
+
+    camp = create_campaign(name, "OUTCOME_ENGAGEMENT", budget)
+    if not step("campaign", "แคมเปญ", camp, f"{camp.get('name', '')} · การมีส่วนร่วม"):
+        return done()
+    adset = _create_adset(camp["campaign_id"], f"{name} - ยอดดูวิดีโอ", budget, "VIDEO", start_time, end_time,
+                          age_min, languages, age_max=aud["age_max"], interests=aud["interests"])
+    if not step("adset", "ชุดโฆษณา", adset,
+                f"งบ {budget:,} บาท/วัน · ยอดดู ThruPlay · {aud['_label']} · {_schedule_label(sched)}"):
+        return done(campaign_id=camp["campaign_id"])
+    if (chk := _verify_interests(adset["adset_id"], aud["interests"])):
+        step(chk["key"], chk["label"], {"success": chk["ok"], "error": chk["detail"]}, chk["detail"])
+
+    ad_ids: list[str] = []
+    pixel = ""
+    for i, v in videos:
+        ad = _create_video_ad(adset["adset_id"], f"{name} - คลิป {i}", v, text, title, description, link_url, cta)
+        if ad.get("success"):
+            ad_ids.append(ad["ad_id"])
+            pixel = pixel or ad.get("pixel", "")
+        else:
+            skipped.append(f"โฆษณาคลิปที่ {i}: {ad.get('error') or ad.get('reason') or 'ไม่สำเร็จ'}")
+    button = f"ปุ่ม {ENGAGE_CTAS[cta]} → {link_url.split('//', 1)[-1].split('/')[0]}" if link_url else "ไม่มีปุ่ม (ไม่ได้ใส่ลิงก์)"
+    ok_ads = step("ad", "โฆษณา", {"success": bool(ad_ids), "error": " · ".join(skipped)},
+                  f"{len(ad_ids)}/{len(video_paths)} โฆษณา (คลิปละ 1) · {button} · {pixel or 'ไม่มี Pixel'}")
+    if skipped and ad_ids:
+        step("skipped", "คลิปที่ไม่ผ่าน", {"success": False, "error": " · ".join(skipped)})
+    if not ok_ads:
+        return done(campaign_id=camp["campaign_id"], adset_id=adset["adset_id"])
+
+    dash = send_to_dashboard("last_7d")
+    return done(campaign_id=camp["campaign_id"], adset_id=adset["adset_id"], ad_id=ad_ids[0], ad_ids=ad_ids,
                 campaign_name=camp["name"], dashboard_updated=bool(dash.get("delivered")),
                 ads_manager_url=f"https://adsmanager.facebook.com/adsmanager/manage/campaigns?act="
                                 f"{META_AD_ACCOUNT_ID.removeprefix('act_')}&selected_campaign_ids={camp['campaign_id']}")
