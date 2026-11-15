@@ -4,6 +4,8 @@ import AdsetInterests from "@/components/AdsetInterests";
 import { LiveOnAirButton } from "@/components/LiveAds";
 import InterestPicker, { AdCopy, Interest } from "@/components/InterestPicker";
 import InterestCompare from "@/components/InterestCompare";
+import CompareCreate, { CreateFail, CreatePlan } from "@/components/CompareCreate";
+import { interestSig, Made } from "@/lib/madeTypes";
 import { clearDraft, FileGroup, FormDraft, loadDraft, loadFiles, saveDraft, saveFiles } from "@/lib/draft";
 import type { AiRun } from "@/lib/interestAi";
 import type { AdPage, LiveEvent, LiveNext, LiveOptions, Portfolio } from "@/lib/creator";
@@ -33,7 +35,7 @@ interface AgentStatus {
   portfolio?: number; portfolios?: Portfolio[] | null;
 }
 interface CreateResult {
-  success: boolean; steps: CheckItem[]; campaign_name?: string; ads_manager_url?: string; dashboard_updated?: boolean;
+  success: boolean; steps: CheckItem[]; campaign_id?: string; campaign_name?: string; ads_manager_url?: string; dashboard_updated?: boolean;
   adset_id?: string; live_next?: LiveNext; page?: { id: string; name: string };
   portfolio?: number;   // พอร์ตที่สร้าง (หน้าเว็บจำไว้เอง) — ปุ่มแก้ชุดหลังสร้างใช้ได้เฉพาะพอร์ตหลัก
 }
@@ -186,6 +188,23 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
   const [title, setTitle] = useState(d0.title ?? "");
   const [desc, setDesc] = useState(d0.desc ?? "");
   const [cta, setCta] = useState(d0.cta ?? "");
+  // 🚀 สร้างจากกล่องเทียบ 3 AI: แคมเปญที่สร้างแล้วต่อ agent (เก็บในเครื่อง · กันซ้ำ) · ใครกำลังสร้าง · ผลที่ล้ม
+  const [made, setMade] = useState<Partial<Record<AgentId, Made>>>({});
+  const [busyAs, setBusyAs] = useState<AgentId | null>(null);   // ระหว่าง busy: null = ปุ่มสร้างของฟอร์ม · agent = คอลัมน์ในกล่องเทียบ
+  const [busySince, setBusySince] = useState<number | null>(null);
+  const [cmpFail, setCmpFail] = useState<Partial<Record<AgentId, CreateFail>>>({});
+  const loadMade = useCallback(async () => {
+    try {
+      const j = await (await fetch("/api/made", { cache: "no-store" })).json();
+      if (j.ok) setMade(j.made);
+    } catch { /* อ่านไม่ได้ = ไม่จำ */ }
+  }, []);
+  useEffect(() => { loadMade(); }, [loadMade]);
+  useEffect(() => {   // นาฬิการะหว่างสร้างจากกล่องเทียบ
+    if (!busySince) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [busySince]);
 
   const loadStatus = useCallback(async () => {
     setStatusErr(null);
@@ -436,9 +455,12 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
     };
   }, [startMode, startDate, startTime, hasEnd, endDate, endTime]);
 
-  const problems = useMemo(() => {
+  /** สิ่งที่ยังขาดก่อนสร้างในนาม agent หนึ่ง (st = สถานะของ agent นั้น) — ฟอร์มใช้ของผู้สร้างที่เลือก · กล่องเทียบใช้ของแต่ละคอลัมน์ */
+  const problemsFor = useCallback((st: AgentStatus | null, notReady = "ผู้สร้างที่เลือกยังไม่ได้ตั้งค่า") => {
     const p: string[] = [];
-    if (!cur?.configured) p.push("ผู้สร้างที่เลือกยังไม่ได้ตั้งค่า");
+    const maxBudget = st?.max_daily_budget_thb || 1000;
+    const left = st && st.campaigns_today != null ? Math.max(0, st.max_campaigns_per_day - st.campaigns_today) : null;
+    if (!st?.configured) p.push(notReady);
     if (!name.trim()) p.push("ใส่ชื่อแคมเปญ");
     if (!Number.isInteger(budgetNum) || budgetNum <= 0) p.push(isLive ? "ใส่งบรวมเป็นตัวเลขเต็ม" : "ใส่งบต่อวันเป็นตัวเลขเต็ม");
     else if (budgetNum > maxBudget) p.push(`งบเกินเพดาน ${maxBudget.toLocaleString()} บาท`);
@@ -467,8 +489,43 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
     if (sched.error) p.push(sched.error);
     if (audOpt && pickedLangs.length === 0) p.push("เลือกภาษาอย่างน้อย 1 ภาษา");
     return p;
-  }, [cur, name, budgetNum, maxBudget, text, kind, link, left, sched.error, audOpt, pickedLangs.length,
+  }, [name, budgetNum, text, kind, link, sched.error, audOpt, pickedLangs.length,
     isDyn, crOpt, dynImages.length, dynVideos, filledTexts.length, videoBytes, isLive, live, lives, isEngage, hasLink]);
+  const problems = useMemo(() => problemsFor(cur), [problemsFor, cur]);
+
+  // ---- 🚀 สร้างจากกล่องเทียบ 3 AI (พอร์ตหลักเท่านั้น · ส่วนอื่นใช้ร่วมกับฟอร์ม ต่างกันแค่ในนามใคร + ความสนใจ) ----
+  const statusOf = (id: AgentId) => status?.find((a) => a.agent === id) ?? null;
+  const labelOf = (id: AgentId) => AGENTS.find((a) => a.id === id)!.label;
+  /** เพจของ agent ในพอร์ตหลัก: เพจที่ฟอร์มเลือกไว้ (ถ้า token ของตัวนั้นลงโฆษณาได้) → เพจประจำของตัวนั้น */
+  const pageOf = (st: AgentStatus | null) =>
+    st?.pages?.find((p) => p.id === page?.id) ?? st?.pages?.find((p) => p.id === st.default_page_id) ?? null;
+  const cmpBlock = (id: AgentId): string[] => {
+    if (portfolio !== 1) return ["ใช้ได้เฉพาะพอร์ตหลัก — เปลี่ยนพอร์ตกลับเป็นพอร์ตหลักก่อน"];
+    const st = statusOf(id);
+    const why = st?.reason ? ` (${st.reason.length > 70 ? `${st.reason.slice(0, 70)}…` : st.reason})` : "";
+    return [...(pickBusy && id === agent ? ["รอกล่องความสนใจด้านบนคิดเสร็จก่อน"] : []), ...problemsFor(st, `${labelOf(id)} ยังไม่พร้อม${why}`)];
+  };
+  const langLabel = pickedLangs.map((k) => audOpt?.languages.find((l) => l.key === k)?.label ?? k).join(", ");
+  const cmpPlan = (id: AgentId): CreatePlan => {
+    const st = statusOf(id);
+    const a = AGENTS.find((x) => x.id === id)!;
+    const bare = AGENTS.reduce((n, x) => (n.toUpperCase().startsWith(x.prefix) ? n.slice(x.prefix.length).trimStart() : n), name.trim());
+    const lf = st && st.campaigns_today != null ? Math.max(0, st.max_campaigns_per_day - st.campaigns_today) : null;
+    const hi = ageHi != null && audOpt && ageHi >= audOpt.no_max_age ? `${ageHi}+` : ageHi ?? "?";
+    return {
+      name: `${a.prefix}${bare}`, page: pageOf(st)?.name ?? st?.page_name ?? null, kind: `${kindInfo.icon} ${kindInfo.label}`,
+      media: isLive ? `🔴 Live ${live?.name ?? "—"} · ${hours} ชม.`
+        : isEngage ? `🎬 ${dynVideos.length} คลิป → ${dynVideos.length} โฆษณา${hasLink && ctaLabel ? ` · ปุ่ม${ctaLabel}` : ""}`
+        : `🖼 ${imageSource}`,
+      money: isLive ? `งบรวม ฿${budgetNum.toLocaleString()}` : `฿${budgetNum.toLocaleString()}/วัน`,
+      when: isLive ? (live ? fmtLive(live.start_time) : "ยังไม่เลือก Live") : sched.label,
+      audience: `อายุ ${age ?? "?"}–${hi} · ${langLabel || "ทุกภาษา"}`,
+      left: lf != null && st ? `วันนี้ ${a.label} สร้างได้อีก ${lf}/${st.max_campaigns_per_day}` : null,
+    };
+  };
+  // ชุดของผู้สร้างที่เลือกถูกสร้างไปแล้ว (ความสนใจตรงกัน) → เตือนที่ปุ่มสร้างของฟอร์ม
+  const dupMade = interests.length && made[agent] && interestSig(made[agent]!.interest_ids) === interestSig(interests.map((x) => x.id))
+    ? made[agent]! : null;
 
   function pickFile(f: File | undefined | null) {
     if (!f) return;
@@ -478,15 +535,20 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
     setImageUrl("");
   }
 
-  async function submit(allowEmpty = false) {
-    if (problems.length || busy) return;
-    if (!interests.length && !allowEmpty) { setConfirmEmpty(true); return; }
+  /** สร้างโฆษณา · as = จากกล่องเทียบ 3 AI (ในนาม agent นั้น · ชุดความสนใจของตัวนั้น · พอร์ตหลัก) · ไม่ใส่ = ปุ่มสร้างของฟอร์ม */
+  async function submit(allowEmpty = false, as?: AgentId) {
+    const who = as ?? agent;
+    const list = interestsBy[who];
+    if (busy || (as ? cmpBlock(as) : problems).length) return;
+    if (!as && !list.length && !allowEmpty) { setConfirmEmpty(true); return; }
     setConfirmEmpty(false);
-    setBusy(true); setResult(null); setSubmitErr(null);
+    setBusy(true); setBusyAs(as ?? null); setBusySince(Date.now()); setNow(Date.now()); setSubmitErr(null);
+    if (as) setCmpFail((m) => ({ ...m, [as]: undefined })); else setResult(null);
+    const pg = as ? pageOf(statusOf(as)) : page;
     const fd = new FormData();
-    fd.set("agent", agent); fd.set("kind", kind); fd.set("name", name.trim());
-    fd.set("portfolio", String(portfolio));
-    if (page) fd.set("page_id", page.id);
+    fd.set("agent", who); fd.set("kind", kind); fd.set("name", name.trim());
+    fd.set("portfolio", String(as ? 1 : portfolio));
+    if (pg) fd.set("page_id", pg.id);
     fd.set("daily_budget_thb", String(budgetNum)); fd.set("text", text.trim());
     if (kind === "WEBSITE" || (isEngage && hasLink)) fd.set("link_url", link.trim());
     if (isLive) { fd.set("live_id", liveId); fd.set("live_hours", String(hours)); }
@@ -496,7 +558,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
     }
     if (age != null) fd.set("age_min", String(age));
     if (ageHi != null) fd.set("age_max", String(ageHi));
-    if (interests.length) fd.set("interests", JSON.stringify(interests.map(({ id, name }) => ({ id, name }))));
+    if (list.length) fd.set("interests", JSON.stringify(list.map(({ id, name }) => ({ id, name }))));
     pickedLangs.forEach((k) => fd.append("languages", k));
     if (isEngage) {
       if (title.trim()) fd.set("title", title.trim());
@@ -515,13 +577,15 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
       const r = await fetch("/api/create", { method: "POST", body: fd });
       const j = await r.json();
       if (!j.ok) throw new Error(j.error);
-      setResult({ ...(j.result as CreateResult), portfolio });
-      if (j.result.success) onCreated();
-      reloadAll();
+      const res = j.result as CreateResult;
+      if (!as) setResult({ ...res, portfolio });
+      else if (!res.success) setCmpFail((m) => ({ ...m, [as]: { msg: "สร้างไม่สำเร็จ", steps: res.steps } }));
+      if (res.success) onCreated();
+      reloadAll(); loadMade();
     } catch (e) {
-      setSubmitErr((e as Error).message);
+      if (as) setCmpFail((m) => ({ ...m, [as]: { msg: (e as Error).message } })); else setSubmitErr((e as Error).message);
     } finally {
-      setBusy(false);
+      setBusy(false); setBusyAs(null); setBusySince(null);
     }
   }
 
@@ -533,7 +597,8 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
     setStartMode(b.startMode); setStartDate(b.startDate); setStartTime(b.startTime);
     setHasEnd(b.hasEnd); setEndDate(b.endDate); setEndTime(b.endTime);
     setAgeMin(b.ageMin); setAgeMax(b.ageMax); setLangs(b.langs); setPickerKey((k) => k + 1);
-    setInterestsBy(b.interestsBy); setAiRuns(b.aiRuns);
+    setInterestsBy(b.interestsBy); setAiRuns(b.aiRuns); setCmpFail({});
+    setMade({}); fetch("/api/made", { method: "DELETE" }).catch(() => undefined);
     setDynamic(b.dynamic); setTexts(b.texts); setTitles(b.titles); setPvIdx(0); setDynMsg(null);
     setLiveId(b.liveId); setLiveHours(b.liveHours); setPageId(b.pageId ?? ""); setPortfolio(1);
     setTitle(""); setDesc(""); setCta("");
@@ -548,6 +613,7 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
     dynVideos.length ? `คลิป ${dynVideos.length} คลิป` : "",
     AGENTS.some((a) => interestsBy[a.id].length) ? `ความสนใจ ${AGENTS.filter((a) => interestsBy[a.id].length)
       .map((a) => `${a.label} ${interestsBy[a.id].length}`).join(" · ")} รายการ` : "",
+    Object.keys(made).length ? `ที่จำว่าสร้างแล้ว ${Object.keys(made).length} แคมเปญ (ปุ่ม 🚀 จะกดได้อีก · แคมเปญบน Meta ไม่ถูกลบ)` : "",
   ].filter(Boolean);
   const savedLabel = savedAt
     ? new Date(savedAt).toLocaleString("th-TH", { timeZone: "Asia/Bangkok", hour: "2-digit", minute: "2-digit", day: "numeric", month: "short" })
@@ -868,7 +934,13 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
             <InterestCompare agents={status} list={AGENTS} current={agent} lists={interestsBy} runs={aiRuns} copy={adCopy}
               locked={pickBusy || busy} onBusy={setCmpBusy}
               onResult={(id, list, run) => { setInterestsBy((m) => ({ ...m, [id]: list })); setAiRuns((m) => ({ ...m, [id]: run })); }}
-              onUse={(id) => { if (id !== agent) { setAgent(id); setPortfolio(1); setPageId(""); } }} />
+              onUse={(id) => { if (id !== agent) { setAgent(id); setPortfolio(1); setPageId(""); } }}
+              renderCreate={(id) => (
+                <CompareCreate label={labelOf(id)} ids={interestsBy[id].map((x) => x.id)} made={made[id]}
+                  running={busy && busyAs === id} since={busySince} now={now}
+                  waitFor={busy && busyAs !== id ? (busyAs ? labelOf(busyAs) : "ปุ่มสร้างด้านล่าง") : null}
+                  blocked={cmpBlock(id)} plan={cmpPlan(id)} fail={cmpFail[id]} onCreate={() => submit(true, id)} />
+              )} />
             <div className="c-aud-row">
               <span className="c-aud-k">🛡 คลังเนื้อหา</span><b className="c-ok">{audOpt.brand_safety.label}</b>
               <span className="c-hint">— {audOpt.brand_safety.detail}</span>
@@ -922,12 +994,15 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
 
         <div className="c-actions">
           <button className="btn primary c-submit" disabled={problems.length > 0 || busy} onClick={() => submit()}>
-            {busy ? ((isDyn || isEngage) && dynVideos.length ? "กำลังอัปโหลดและรอ Meta ประมวลผลคลิป… (อาจนานหลายนาที)" : "กำลังสร้าง… (ประมาณ 20 วินาที)")
+            {busy && busyAs ? `รอ ${labelOf(busyAs)} สร้างเสร็จก่อน (กล่องเทียบ 3 AI)` : busy ? ((isDyn || isEngage) && dynVideos.length ? "กำลังอัปโหลดและรอ Meta ประมวลผลคลิป… (อาจนานหลายนาที)" : "กำลังสร้าง… (ประมาณ 20 วินาที)")
               : isLive ? "🔴 สร้างแคมเปญ Live" : isEngage ? `🎬 สร้างโฆษณาการมีส่วนร่วม${dynVideos.length ? ` (${dynVideos.length} คลิป)` : ""}` : "สร้างโฆษณา"}
           </button>
           {left != null && <span className="c-hint">วันนี้สร้างได้อีก {left} จาก {cur!.max_campaigns_per_day} แคมเปญ</span>}
         </div>
         {!busy && problems.length > 0 && status && <div className="c-hint" style={{ marginTop: 8 }}>ยังขาด: {problems.join(" · ")}</div>}
+        {!busy && dupMade && (
+          <div className="c-warn" style={{ marginTop: 8 }}>⚠ ชุดความสนใจของ {labelOf(agent)} นี้สร้างเป็นแคมเปญไปแล้ว ({dupMade.campaign_name} · เลข {dupMade.campaign_id}) — กดสร้างอีกจะได้แคมเปญซ้ำ</div>
+        )}
         {confirmEmpty && !busy && (
           <div className="c-confirm" role="alertdialog" aria-label="ยังไม่มีความสนใจ">
             <b>⚠ ยังไม่มีความสนใจ</b>

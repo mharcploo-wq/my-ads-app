@@ -4,6 +4,7 @@ import os from "os";
 import path from "path";
 import { randomUUID } from "crypto";
 import { CreateResult, CreateSpec, isAgentId, isLocalRequest, portfolioArgs, portfolioOf, runCreator } from "@/lib/creator";
+import { setMade } from "@/lib/made";
 
 export const dynamic = "force-dynamic";
 
@@ -117,6 +118,15 @@ export async function POST(req: Request) {
     const timeout = spec.video_paths?.length ? 30 * 60_000 : 180_000;
     const portfolio = portfolioOf(form.get("portfolio"));
     const result = await runCreator<CreateResult>(agent, ["--create-json", specFile, ...portfolioArgs(portfolio)], timeout);
+    // จำว่าชุดความสนใจของ agent นี้ถูกสร้างเป็นแคมเปญแล้ว (กล่องเทียบ 3 AI ใช้กันสร้างซ้ำ) · จำไม่ได้ก็ไม่ทำให้การสร้างล้ม
+    if (result.success && result.campaign_id && spec.interests?.length) {
+      await setMade(agent, {
+        campaign_id: result.campaign_id, campaign_name: result.campaign_name ?? spec.name,
+        adset_id: result.adset_id ?? null, url: result.ads_manager_url ?? null,
+        ads: engage ? spec.video_paths?.length ?? null : 1,
+        interest_ids: spec.interests.map((x) => x.id), at: Date.now(),
+      }).catch(() => undefined);
+    }
     return NextResponse.json({ ok: true, result });
   } catch (e) {
     return NextResponse.json({ ok: false, error: (e as Error).message }, { status: 500 });

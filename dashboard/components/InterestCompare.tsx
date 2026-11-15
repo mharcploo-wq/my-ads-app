@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { ReactNode, useEffect, useRef, useState } from "react";
 import type { AdCopy, Interest, PickerAgent } from "@/components/InterestPicker";
 import { fmtSize } from "@/components/InterestPicker";
 import { AiRun, fmtWait, stopAiTask, thinkInterests, Waiting } from "@/lib/interestAi";
@@ -13,7 +13,7 @@ interface Reach { lower: number; upper: number }
 interface Running { since: number; wait: Waiting | null }
 
 /** ⚖️ เทียบความสนใจ 3 AI — โจทย์เดียวกัน แต่ละตัวคิดเองด้วยคีย์ของตัวเอง (ไม่ยืมกัน) · ป้ายซ้ำนับจากชุดที่มีรายการแล้ว */
-export default function InterestCompare({ agents, list, current, lists, runs, copy, locked, onResult, onUse, onBusy }: {
+export default function InterestCompare({ agents, list, current, lists, runs, copy, locked, onResult, onUse, onBusy, renderCreate }: {
   agents: CmpStatus[] | null;
   list: CompareAgent[];
   current: AgentId;
@@ -24,6 +24,7 @@ export default function InterestCompare({ agents, list, current, lists, runs, co
   onResult: (agent: AgentId, interests: Interest[], run: AiRun) => void;
   onUse: (agent: AgentId) => void;                    // สลับผู้สร้างไปใช้ชุดนี้
   onBusy: (agents: AgentId[]) => void;                // agent ที่กำลังคิดอยู่ (ให้ฟอร์มล็อกกล่องด้านบน)
+  renderCreate?: (agent: AgentId) => ReactNode;       // 🚀 สร้างแคมเปญจากชุดนี้ (ท้ายคอลัมน์)
 }) {
   const [running, setRunning] = useState<Partial<Record<AgentId, Running>>>({});
   const [errs, setErrs] = useState<Partial<Record<AgentId, string>>>({});
@@ -177,6 +178,7 @@ export default function InterestCompare({ agents, list, current, lists, runs, co
                 </>
               )}
               {errs[a.id] && <div className="c-warn">✕ {errs[a.id]}</div>}
+              {!rn && renderCreate?.(a.id)}
             </div>
           );
         })}

@@ -294,6 +294,24 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .c-cmp-wait { color: var(--warning); flex-direction: row; justify-content: center; flex-wrap: wrap; }
 .c-cmp-wait > div { width: 100%; }
 @media (max-width: 760px) { .c-cmp-cols { grid-template-columns: 1fr; } }
+/* 🚀 สร้างแคมเปญจากชุดของ AI แต่ละตัว (ท้ายคอลัมน์ในกล่องเทียบ) */
+.c-mk { border: 1px dashed var(--border); border-radius: 8px; padding: 8px; font-size: 12.5px; display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.c-mk b { color: var(--text-primary); }
+.c-mk .c-hint { font-size: 11.5px; }
+.c-mk.lock { color: var(--text-muted); text-align: center; }
+.c-mk.cf { border: 1px solid #7c3aed; background: #7c3aed14; }
+.c-mk.run { border: 1px solid var(--warning); background: #fab21914; color: var(--warning); }
+.c-mk.run b { color: var(--warning); }
+.c-mk.ok { border: 1px solid #0ca30c; background: #0ca30c1a; }
+.c-mk.ok > b { color: #7be37b; }
+.c-mk.bad { border: 1px solid #e5484d; background: #e5484d14; color: #ff9ea1; }
+.c-mk.bad > b { color: #ff9ea1; }
+.c-mk-warn { color: #ffd47a; font-size: 12px; }
+.c-mk-steps { list-style: none; margin: 0; padding: 0; font-size: 12px; }
+.c-mono { font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; color: var(--text-secondary); overflow-wrap: anywhere; }
+.btn.c-go { background: linear-gradient(90deg, #2563eb, #7c3aed); border: 0; color: #fff; font-weight: 600; padding: 7px 10px; font-size: 13px; }
+.btn.c-go:disabled { opacity: .45; cursor: not-allowed; }
+.c-mk > .btn.c-go { width: 100%; }
 @media (prefers-reduced-motion: reduce) { .c-wait-dot { animation: none; } }
 .c-itag.gone { border-color: var(--warning); color: var(--warning); }
 .c-reach { font-size: 13px; line-height: 1.6; }
