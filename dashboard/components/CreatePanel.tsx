@@ -2,8 +2,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AdsetInterests from "@/components/AdsetInterests";
 import { LiveOnAirButton } from "@/components/LiveAds";
-import InterestPicker, { Interest } from "@/components/InterestPicker";
+import InterestPicker, { AdCopy, Interest } from "@/components/InterestPicker";
+import InterestCompare from "@/components/InterestCompare";
 import { clearDraft, FileGroup, FormDraft, loadDraft, loadFiles, saveDraft, saveFiles } from "@/lib/draft";
+import type { AiRun } from "@/lib/interestAi";
 import type { AdPage, LiveEvent, LiveNext, LiveOptions, Portfolio } from "@/lib/creator";
 
 type AgentId = "claude" | "manus" | "chatgpt";
@@ -96,7 +98,8 @@ function VideoThumb({ url, file, onRemove }: { url: string; file: File; onRemove
 const blankForm = (): Omit<FormDraft, "agent" | "savedAt"> => ({
   kind: "MESSENGER", name: "", budget: "300", text: "", link: "", imageUrl: "",
   startMode: "now", startDate: thDate(1), startTime: "08:00", hasEnd: false, endDate: thDate(8), endTime: "23:59",
-  ageMin: null, ageMax: null, langs: null, interests: [], dynamic: false, texts: [""], titles: [],
+  ageMin: null, ageMax: null, langs: null, interestsBy: { claude: [], manus: [], chatgpt: [] },
+  aiRuns: { claude: null, manus: null, chatgpt: null }, dynamic: false, texts: [""], titles: [],
   liveId: "", liveHours: null, pageId: "", portfolio: 1, title: "", desc: "", cta: "",
 });
 
@@ -129,7 +132,21 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
   const [ageMin, setAgeMin] = useState<number | null>(d0.ageMin);
   const [langs, setLangs] = useState<string[] | null>(d0.langs);
   const [ageMax, setAgeMax] = useState<number | null>(d0.ageMax);
-  const [interests, setInterests] = useState<Interest[]>(d0.interests);
+  // ความสนใจแยกต่อ agent — แต่ละ AI คิดเอง ไว้เทียบกัน · ตอนสร้างใช้ชุดของผู้สร้างที่เลือก
+  // ร่างที่อ่านมาอาจเก่า/ไม่ครบ → ตรวจทีละ agent
+  const [interestsBy, setInterestsBy] = useState<Record<AgentId, Interest[]>>(() => {
+    const s = (d0.interestsBy ?? {}) as Partial<Record<AgentId, Interest[]>>;
+    return Object.fromEntries(AGENTS.map((a) => [a.id, Array.isArray(s[a.id]) ? s[a.id]! : []])) as Record<AgentId, Interest[]>;
+  });
+  const [aiRuns, setAiRuns] = useState<Record<AgentId, AiRun | null>>(() => {
+    const s = (d0.aiRuns ?? {}) as Partial<Record<AgentId, AiRun | null>>;
+    return Object.fromEntries(AGENTS.map((a) => [a.id, s[a.id]?.at ? s[a.id]! : null])) as Record<AgentId, AiRun | null>;
+  });
+  const interests = interestsBy[agent];
+  const setInterests = useCallback((v: Interest[] | ((cur: Interest[]) => Interest[])) =>
+    setInterestsBy((m) => ({ ...m, [agent]: typeof v === "function" ? v(m[agent]) : v })), [agent]);
+  const [pickBusy, setPickBusy] = useState(false);       // กล่องความสนใจด้านบนกำลังคิด/ค้น
+  const [cmpBusy, setCmpBusy] = useState<AgentId[]>([]); // agent ที่กล่องเทียบกำลังให้คิดอยู่
   const [pickerKey, setPickerKey] = useState(0);         // เปลี่ยนค่า = ล้างข้อความ/ช่องค้นในกล่องความสนใจ
   const [editAdset, setEditAdset] = useState(false);     // กล่องเพิ่มความสนใจให้ Ad Set ที่เพิ่งสร้าง
   const [confirmEmpty, setConfirmEmpty] = useState(false); // กดสร้างตอนยังไม่มีความสนใจ → ถามก่อน
@@ -224,14 +241,14 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
   useEffect(() => {
     const t = setTimeout(() => {
       const form = { kind, name, budget, text, link, imageUrl, startMode, startDate, startTime, hasEnd, endDate,
-        endTime, ageMin, ageMax, langs, interests, dynamic, texts, titles, liveId, liveHours, pageId, portfolio, title, desc, cta };
+        endTime, ageMin, ageMax, langs, interestsBy, aiRuns, dynamic, texts, titles, liveId, liveHours, pageId, portfolio, title, desc, cta };
       if (JSON.stringify(form) === JSON.stringify(blankForm()) && !loadDraft()) return;
       const at = Date.now();
       if (saveDraft({ ...form, agent, savedAt: at })) setSavedAt(at);
     }, 400);
     return () => clearTimeout(t);
   }, [agent, kind, name, budget, text, link, imageUrl, startMode, startDate, startTime, hasEnd, endDate, endTime,
-    ageMin, ageMax, langs, interests, dynamic, texts, titles, liveId, liveHours, pageId, portfolio, title, desc, cta]);
+    ageMin, ageMax, langs, interestsBy, aiRuns, dynamic, texts, titles, liveId, liveHours, pageId, portfolio, title, desc, cta]);
 
   // บันทึกรูป/คลิปเมื่อรายการเปลี่ยน (ข้ามชุดที่เพิ่งโหลดมา ไม่ต้องเขียนซ้ำ)
   useEffect(() => {
@@ -321,6 +338,11 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
   const hourChoices = liveOpt ? Array.from({ length: liveOpt.max_hours - liveOpt.min_hours + 1 }, (_, i) => liveOpt.min_hours + i) : [hours];
   const liveBudgetFor = (h: number) => (liveOpt ? Math.min(maxBudget, h * liveOpt.thb_per_hour) : null);
   const live = lives?.find((l) => l.id === liveId) ?? null;
+  /** โจทย์ที่ส่งให้ AI คิดความสนใจ — ชุดเดียวกันทั้งกล่องด้านบนและกล่องเทียบ 3 AI */
+  const adCopy = (): AdCopy => isLive ? { texts: [text.trim()].filter(Boolean), titles: [live?.name ?? ""].filter(Boolean), link_url: "" }
+    : isEngage ? { texts: [text.trim()].filter(Boolean), titles: [title.trim(), desc.trim()].filter(Boolean), link_url: link.trim() }
+    : { texts: isDyn ? filledTexts : [text.trim()].filter(Boolean), titles: isDyn ? filledTitles : [],
+      link_url: kind === "WEBSITE" ? link.trim() : "" };
   const liveStart = live ? Date.parse(live.start_time) : null;
   const liveSoon = liveStart !== null && !!liveOpt && liveStart - now < liveOpt.lead_hours * 3600_000;
 
@@ -510,7 +532,8 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
     setKind(b.kind as Kind); setName(b.name); setBudget(b.budget); setText(b.text); setLink(b.link); setImageUrl(b.imageUrl);
     setStartMode(b.startMode); setStartDate(b.startDate); setStartTime(b.startTime);
     setHasEnd(b.hasEnd); setEndDate(b.endDate); setEndTime(b.endTime);
-    setAgeMin(b.ageMin); setAgeMax(b.ageMax); setLangs(b.langs); setInterests([]); setPickerKey((k) => k + 1);
+    setAgeMin(b.ageMin); setAgeMax(b.ageMax); setLangs(b.langs); setPickerKey((k) => k + 1);
+    setInterestsBy(b.interestsBy); setAiRuns(b.aiRuns);
     setDynamic(b.dynamic); setTexts(b.texts); setTitles(b.titles); setPvIdx(0); setDynMsg(null);
     setLiveId(b.liveId); setLiveHours(b.liveHours); setPageId(b.pageId ?? ""); setPortfolio(1);
     setTitle(""); setDesc(""); setCta("");
@@ -523,7 +546,8 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
   const resetWhat = [
     dynImages.length + (file ? 1 : 0) ? `รูป ${dynImages.length + (file ? 1 : 0)} รูป` : "",
     dynVideos.length ? `คลิป ${dynVideos.length} คลิป` : "",
-    interests.length ? `ความสนใจ ${interests.length} รายการ` : "",
+    AGENTS.some((a) => interestsBy[a.id].length) ? `ความสนใจ ${AGENTS.filter((a) => interestsBy[a.id].length)
+      .map((a) => `${a.label} ${interestsBy[a.id].length}`).join(" · ")} รายการ` : "",
   ].filter(Boolean);
   const savedLabel = savedAt
     ? new Date(savedAt).toLocaleString("th-TH", { timeZone: "Asia/Bangkok", hour: "2-digit", minute: "2-digit", day: "numeric", month: "short" })
@@ -835,14 +859,16 @@ export default function CreatePanel({ onCreated }: { onCreated: () => void }) {
             <div className="c-aud-row c-aud-langs">
               <span>🎯 ความสนใจ</span>
               <InterestPicker key={pickerKey} agent={agent} agents={status} interests={interests} setInterests={setInterests}
-                max={audOpt.max_interests} kwRef={kwInput}
+                max={audOpt.max_interests} kwRef={kwInput} borrow={false} locked={cmpBusy.includes(agent) || busy}
+                onBusy={setPickBusy} onResult={(r) => setAiRuns((m) => ({ ...m, [agent]: r }))}
                 onAudience={(a) => { setAgeMin(a.age_min); setAgeMax(a.age_max); setLangs(a.languages); }}
                 copyHint={isLive ? "ชื่อ Live + เกี่ยวกับ Live นี้" : isEngage ? "ข้อความหลัก + พาดหัว + คำอธิบาย + ลิงก์" : `ข้อความหลัก${isDyn ? " + พาดหัว" : ""}${kind === "WEBSITE" ? " + ลิงก์" : ""}`}
-                copy={() => isLive ? { texts: [text.trim()].filter(Boolean), titles: [live?.name ?? ""].filter(Boolean), link_url: "" }
-                  : isEngage ? { texts: [text.trim()].filter(Boolean), titles: [title.trim(), desc.trim()].filter(Boolean), link_url: link.trim() }
-                  : ({ texts: isDyn ? filledTexts : [text.trim()].filter(Boolean), titles: isDyn ? filledTitles : [],
-                  link_url: kind === "WEBSITE" ? link.trim() : "" })} />
+                copy={adCopy} />
             </div>
+            <InterestCompare agents={status} list={AGENTS} current={agent} lists={interestsBy} runs={aiRuns} copy={adCopy}
+              locked={pickBusy || busy} onBusy={setCmpBusy}
+              onResult={(id, list, run) => { setInterestsBy((m) => ({ ...m, [id]: list })); setAiRuns((m) => ({ ...m, [id]: run })); }}
+              onUse={(id) => { if (id !== agent) { setAgent(id); setPortfolio(1); setPageId(""); } }} />
             <div className="c-aud-row">
               <span className="c-aud-k">🛡 คลังเนื้อหา</span><b className="c-ok">{audOpt.brand_safety.label}</b>
               <span className="c-hint">— {audOpt.brand_safety.detail}</span>

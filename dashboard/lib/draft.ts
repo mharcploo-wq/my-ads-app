@@ -1,4 +1,5 @@
 "use client";
+import type { AiRun } from "@/lib/interestAi";
 /** ร่างฟอร์ม "สร้างโฆษณาใหม่" — เก็บไว้ในเบราว์เซอร์เครื่องนี้จนกว่าจะกดรีเซ็ต (ไม่ส่งออกไปไหน)
  *  - ข้อความทุกช่อง → localStorage (อ่านได้ทันทีตอนเปิดฟอร์ม)
  *  - รูป/คลิป → IndexedDB (ไฟล์ใหญ่ เก็บใน localStorage ไม่ได้) · เก็บทีละไฟล์ ไฟล์ไหนเก็บไม่ลงก็บอกได้ทีละไฟล์ */
@@ -7,13 +8,19 @@ const KEY = "ads-create-draft-v1";
 const DB = "ads-create-draft";
 const STORE = "files";
 
+export interface DraftInterest {
+  id: string; name: string; gone?: boolean; size_lower?: number | null; size_upper?: number | null;
+  th_lower?: number | null; th_upper?: number | null;
+}
+
 /** ทุกช่องในฟอร์มที่เป็นข้อความ/ตัวเลือก (ไม่รวมไฟล์) */
 export interface FormDraft {
   agent: string; kind: string; name: string; budget: string; text: string; link: string; imageUrl: string;
   startMode: "now" | "set"; startDate: string; startTime: string; hasEnd: boolean; endDate: string; endTime: string;
   ageMin: number | null; ageMax: number | null; langs: string[] | null;
-  interests: { id: string; name: string; size_lower?: number | null; size_upper?: number | null;
-    th_lower?: number | null; th_upper?: number | null }[];
+  // ความสนใจแยกต่อ agent (แต่ละ AI คิดเอง ไว้เทียบกัน) · ตอนสร้างใช้ชุดของ agent ที่เลือก · ร่างเก่า (interests ชุดเดียว) ไม่ถูกนำมาใช้
+  interestsBy: Record<"claude" | "manus" | "chatgpt", DraftInterest[]>;
+  aiRuns: Record<"claude" | "manus" | "chatgpt", AiRun | null>;   // รอบล่าสุดที่ AI ของแต่ละ agent คิด
   dynamic: boolean; texts: string[]; titles: string[];
   liveId: string; liveHours: number | null;   // ชนิด Live สด: Live ที่เลือก + ความยาว (null = ค่าเริ่มต้นของ server.py)
   pageId?: string;   // เพจที่จะยิง ("" = เพจประจำ agent)
