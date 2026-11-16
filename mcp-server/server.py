@@ -2096,16 +2096,22 @@ def _ai_keywords(copy: str) -> tuple[list[str], dict[str, Any] | None, str | Non
         if err:
             return [], None, err
     else:
+        # คีย์ OpenRouter (sk-or-…) ใช้กับ api.openai.com ไม่ได้ (401) → ส่งไป OpenRouter แต่ยังเป็นรุ่น ChatGPT เดิม (openai/…)
+        via_or = OPENAI_API_KEY.startswith("sk-or-")
+        url = ("https://openrouter.ai/api/v1/chat/completions" if via_or
+               else "https://api.openai.com/v1/chat/completions")
+        model = f"openai/{AI_MODEL}" if via_or and "/" not in AI_MODEL else AI_MODEL
         try:
-            r = requests.post("https://api.openai.com/v1/chat/completions", timeout=60,
+            r = requests.post(url, timeout=60,
                               headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-                              json={"model": AI_MODEL, "response_format": {"type": "json_object"},
+                              json={"model": model, "response_format": {"type": "json_object"},
                                     "messages": [{"role": "system", "content": AI_SYSTEM + ' Reply as JSON: {"keywords": [...], "audience": {"age_min": 20, "age_max": 65, "languages": ["th"], "reason": "..."}}'},
                                                  {"role": "user", "content": prompt}]})
         except requests.RequestException:
             return [], None, "เชื่อมต่อ OpenAI ไม่ได้ — ตรวจอินเทอร์เน็ต"
         if r.status_code == 401:
-            return [], None, "คีย์ OpenAI ไม่ถูกต้องหรือหมดอายุ — ตรวจ OPENAI_API_KEY ที่แท็บ \"เชื่อมต่อ API\""
+            return [], None, (f"คีย์ {'OpenRouter' if via_or else 'OpenAI'} ไม่ถูกต้องหรือหมดอายุ"
+                              " — ตรวจ OPENAI_API_KEY ที่แท็บ \"เชื่อมต่อ API\"")
         if r.status_code == 404:
             return [], None, f"ไม่พบรุ่น AI \"{AI_MODEL}\" — แก้ AI_MODEL ใน .env หรือเว้นว่างเพื่อใช้ค่าเริ่มต้น"
         try:

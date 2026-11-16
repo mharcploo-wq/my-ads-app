@@ -13,7 +13,7 @@ const PREFIX: Record<AgentId, string> = { claude: "CLD-", manus: "MANUS-", chatg
 export const AI_KEY: Record<AgentId, { name: string; label: string; workspace: boolean; hint: string }> = {
   claude: { name: "ANTHROPIC_API_KEY", label: "Claude", workspace: true, hint: "วางคีย์ที่ขึ้นต้นด้วย sk-…" },
   manus: { name: "MANUS_API_KEY", label: "Manus", workspace: false, hint: "วางคีย์ API ของ Manus (manus.im → Settings → API integration)" },
-  chatgpt: { name: "OPENAI_API_KEY", label: "OpenAI", workspace: false, hint: "วางคีย์ที่ขึ้นต้นด้วย sk-…" },
+  chatgpt: { name: "OPENAI_API_KEY", label: "OpenAI", workspace: false, hint: "วางคีย์ OpenAI (sk-…) หรือ OpenRouter (sk-or-…)" },
 };
 /** Claude/OpenAI ขึ้นต้นด้วย sk- · Manus ไม่ได้ประกาศรูปแบบคีย์ → ตัวอักษรที่พิมพ์ได้ 20 ตัวขึ้นไป ไม่มีช่องว่าง */
 const AI_KEY_PATTERN: Record<AgentId, RegExp> = {
