@@ -7,7 +7,7 @@ import { AGENTS, MetricsResponse, PREFIXES } from "@/lib/types";
 type Check = { label: string; ok: boolean; detail: string };
 
 export default function ConnectPanel({ data, onChanged }: { data: MetricsResponse; onChanged: () => void }) {
-  const [origin, setOrigin] = useState("http://localhost:3000");
+  const [origin, setOrigin] = useState("http://localhost:3100");
   useEffect(() => setOrigin(window.location.origin), []);
   const ingestUrl = `${origin}/api/ingest`;
 

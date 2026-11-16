@@ -63,7 +63,7 @@ META_PAGE_ID=1234567890
 AGENT_PREFIX=CLD-                   # ห้ามแก้ (claude=CLD-, manus=MANUS-, chatgpt=GPT-)
 MAX_DAILY_BUDGET_THB=1000           # เพดานงบต่อวัน
 MAX_CAMPAIGNS_PER_DAY=5             # จำนวนแคมเปญสูงสุดต่อวันต่อ agent
-DASHBOARD_API_URL=http://localhost:3000/api/ingest
+DASHBOARD_API_URL=http://localhost:3100/api/ingest
 DASHBOARD_API_SECRET=รหัสลับยาวอย่างน้อย12ตัว   # ต้องตรงกับ dashboard/.env.local
 ```
 
@@ -170,7 +170,7 @@ cd my-ads-app/dashboard
 copy .env.example .env.local      # macOS/Linux: cp .env.example .env.local
 # แก้ DASHBOARD_API_SECRET ให้ตรงกับใน mcp-server/.env.*
 npm install
-npm run dev                        # → http://localhost:3000
+npm run dev                        # → http://localhost:3100
 ```
 
 - ยังไม่มีข้อมูลจริง → หน้าจอแสดง **ข้อมูลตัวอย่าง** พร้อมป้ายเตือนสีเหลือง
