@@ -517,3 +517,19 @@ a.btn { text-decoration: none; color: var(--text-primary); }
 .ptip { position: absolute; top: 28px; pointer-events: none; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px; font-size: 12px; white-space: nowrap; z-index: 5; }
 .ptip > div { display: flex; align-items: center; gap: 6px; }
 @media (max-width: 860px) { .brief-charts { grid-template-columns: minmax(0, 1fr); } }
+
+/* Daily Briefing — แถบตั้งเวลาอัปเดตอัตโนมัติ (ใต้หัวหน้า) */
+.topbar .wrap.brief-sched-row { padding-top: 0; padding-bottom: 0; border-top: 1px solid var(--border); }
+.brief-sched { flex: 1; display: flex; align-items: center; gap: 8px 16px; flex-wrap: wrap; padding: 8px 0; font-size: 12.5px; color: var(--text-secondary); }
+.brief-sched label { display: inline-flex; align-items: center; gap: 5px; }
+.brief-sched select { background: var(--surface-2); color: var(--text-primary); border: 1px solid var(--border); border-radius: 7px; padding: 3px 6px; font: inherit; font-size: 13px; font-variant-numeric: tabular-nums; color-scheme: dark; }
+.brief-sched b { color: var(--text-primary); font-weight: 600; }
+.brief-sched b.ok { color: #6fd46f; }
+.brief-sched .bad { color: #ff8a8a; }
+.brief-sched-note { font-size: 12px; }
+.brief-tog-wrap { display: inline-flex; align-items: center; gap: 6px; }
+.brief-tog { position: relative; width: 34px; height: 20px; border-radius: 999px; background: #3a3a36; border: 0; cursor: pointer; padding: 0; }
+.brief-tog::after { content: ""; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: #ddd; transition: left .15s; }
+.brief-tog[aria-checked="true"] { background: #2a7a3d; }
+.brief-tog[aria-checked="true"]::after { left: 17px; }
+.brief-tog:disabled { opacity: .6; cursor: wait; }

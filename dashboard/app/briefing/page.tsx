@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import PlatformChart, { PLATFORM_COLOR } from "@/components/PlatformChart";
 import { fmt } from "@/lib/calc";
-import type { BestWorst, BigNumber, Block, BriefingResult, BriefingSection, PageStat, Pick, PlatformSeries } from "@/lib/briefingTypes";
+import type { BestWorst, BigNumber, Block, BriefingResult, BriefingSchedule, BriefingSection, PageStat, Pick, PlatformSeries } from "@/lib/briefingTypes";
 
 /** Daily Briefing — เปิดตอนเช้า อ่านจบใน 1 นาที · ตัวเลขจริงของ "เมื่อวาน" จาก Meta ทุกพอร์ต
  *  หน้าเว็บแค่แสดง (คำนวณ/ตัดสินที่ server) · ดึงไม่ได้ = บอกว่าดึงไม่ได้ ไม่เดา */
@@ -147,9 +147,59 @@ function Section({ s }: { s: BriefingSection }) {
   );
 }
 
+const HOURS = Array.from({ length: 24 }, (_, h) => String(h).padStart(2, "0"));
+const MINUTES = ["00", "15", "30", "45"];
+const BKK = "Asia/Bangkok";
+const bkkDay = (d: Date) => d.toLocaleDateString("en-CA", { timeZone: BKK });
+const bkkTime = (d: Date) => d.toLocaleTimeString("en-GB", { timeZone: BKK, hour: "2-digit", minute: "2-digit", hour12: false });
+/** "วันนี้ 08:00" · "พรุ่งนี้ 08:00" · "เมื่อวาน 08:00" · วันอื่น = วันที่ */
+function when(iso: string) {
+  const d = new Date(iso), now = new Date();
+  const diff = Math.round((Date.parse(bkkDay(d)) - Date.parse(bkkDay(now))) / 86_400_000);
+  const day = diff === 0 ? "วันนี้" : diff === 1 ? "พรุ่งนี้" : diff === -1 ? "เมื่อวาน" : fmt.dateShort(bkkDay(d));
+  return `${day} ${bkkTime(d)}`;
+}
+
+/** แถบตั้งเวลาอัปเดตอัตโนมัติ (ใต้หัวหน้า) — เวลา 24 ชม. เวลาไทย · ทำงานเมื่อแอปเปิดอยู่ */
+function ScheduleStrip({ s, saving, onChange }: {
+  s: BriefingSchedule | null; saving: boolean; onChange: (p: { enabled?: boolean; time?: string }) => void;
+}) {
+  if (!s) return <div className="brief-sched"><span className="muted">กำลังอ่านการตั้งเวลา…</span></div>;
+  const [hh, mm] = s.time.split(":");
+  const minutes = MINUTES.includes(mm) ? MINUTES : [...MINUTES, mm].sort();
+  return (
+    <div className="brief-sched">
+      <label>⏰ อัปเดตอัตโนมัติทุกวัน เวลา
+        <select aria-label="ชั่วโมง" value={hh} disabled={saving} onChange={(e) => onChange({ time: `${e.target.value}:${mm}` })}>
+          {HOURS.map((h) => <option key={h} value={h}>{h}</option>)}
+        </select>:
+        <select aria-label="นาที" value={mm} disabled={saving} onChange={(e) => onChange({ time: `${hh}:${e.target.value}` })}>
+          {minutes.map((m) => <option key={m} value={m}>{m}</option>)}
+        </select>
+        น.
+      </label>
+      <span className="brief-tog-wrap">
+        <button className="brief-tog" role="switch" aria-checked={s.enabled} aria-label="เปิด/ปิดอัปเดตอัตโนมัติ"
+          disabled={saving} onClick={() => onChange({ enabled: !s.enabled })} />
+        {s.enabled ? "เปิดอยู่" : "ปิดอยู่"}
+      </span>
+      <span>อัปเดตล่าสุด {s.lastAuto ? <b className="ok">{when(s.lastAuto)}</b> : <b>ยังไม่เคย</b>} (อัตโนมัติ)</span>
+      {s.running
+        ? <span><b>กำลังอัปเดต…</b></span>
+        : <span>รอบถัดไป <b>{s.next ? when(s.next) : "— ปิดอยู่ ไม่อัปเดตเอง"}</b></span>}
+      {s.lastError && <span className="bad">⚠ รอบล่าสุดไม่สำเร็จ: {s.lastError}</span>}
+      <span className="spacer" />
+      <span className="muted brief-sched-note">ทำงานเมื่อแอปเปิดอยู่ · ถ้าเปิดแอปหลังเวลานี้ จะอัปเดตให้ทันที</span>
+    </div>
+  );
+}
+
 export default function BriefingPage() {
   const [data, setData] = useState<BriefingResult | null>(null);
   const [busy, setBusy] = useState(false);
+  const [sched, setSched] = useState<BriefingSchedule | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [schedErr, setSchedErr] = useState<string | null>(null);
 
   const load = useCallback(async (fresh: boolean) => {
     setBusy(true);
@@ -163,6 +213,38 @@ export default function BriefingPage() {
     }
   }, []);
   useEffect(() => { load(false); }, [load]);
+
+  const readSched = useCallback(async () => {
+    try {
+      const r = await (await fetch("/api/briefing/schedule", { cache: "no-store" })).json();
+      if (r.ok) setSched(r.schedule);
+    } catch { /* เซิร์ฟเวอร์ไม่ตอบ — รอบหน้าอ่านใหม่ */ }
+  }, []);
+  // อ่านสถานะทุก 30 วินาที — เปิดหน้าค้างไว้แล้วถึงเวลาอัปเดต จะเห็นข้อมูลชุดใหม่เอง
+  useEffect(() => {
+    readSched();
+    const t = setInterval(readSched, 30_000);
+    return () => clearInterval(t);
+  }, [readSched]);
+  const dataAt = data?.ok ? data.at : null;
+  useEffect(() => {
+    if (sched?.lastAuto && dataAt && Date.parse(sched.lastAuto) > Date.parse(dataAt) + 5_000) load(false);
+  }, [sched?.lastAuto, dataAt, load]);
+
+  const saveSched = async (p: { enabled?: boolean; time?: string }) => {
+    setSaving(true);
+    setSchedErr(null);
+    try {
+      const r = await (await fetch("/api/briefing/schedule", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(p),
+      })).json();
+      if (r.ok) setSched(r.schedule); else setSchedErr(r.error);
+    } catch (e) {
+      setSchedErr(`บันทึกเวลาไม่สำเร็จ: ${(e as Error).message}`);
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <>
@@ -178,8 +260,10 @@ export default function BriefingPage() {
           <button className="btn" onClick={() => load(true)} disabled={busy}>{busy ? "กำลังดึง…" : "↻ ดึงใหม่"}</button>
           <a className="btn" href="/">กลับ Ads Control</a>
         </div>
+        <div className="wrap brief-sched-row"><ScheduleStrip s={sched} saving={saving} onChange={saveSched} /></div>
       </header>
       <main className="wrap">
+        {schedErr && <div className="banner">⚠ {schedErr}</div>}
         {!data && <div className="empty">กำลังดึงข้อมูลเมื่อวานจาก Meta…</div>}
         {data && !data.ok && <div className="banner">⚠ {data.error}</div>}
         {data?.ok && data.stale && <div className="banner">⚠ ดึงใหม่ไม่ได้ — แสดงชุดเดิม: {data.stale}</div>}

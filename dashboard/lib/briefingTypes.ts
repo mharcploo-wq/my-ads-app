@@ -60,3 +60,14 @@ export interface BriefingData {
 }
 
 export type BriefingResult = BriefingData | { ok: false; error: string };
+
+/** ตั้งเวลาอัปเดตอัตโนมัติวันละ 1 รอบ (เวลาไทย) — ตัวจับเวลาอยู่ในแอป ทำงานเมื่อแอปเปิดอยู่
+ *  เลยเวลาแล้วแต่วันนี้ยังไม่ได้อัปเดต (เช่น เพิ่งเปิดแอป) → อัปเดตทันที · ล้มเหลว → ลองใหม่ทุก 15 นาทีจนสำเร็จ */
+export interface BriefingSchedule {
+  enabled: boolean;
+  time: string;              // "HH:MM" 24 ชม. เวลาไทย
+  lastAuto: string | null;   // อัปเดตอัตโนมัติสำเร็จครั้งล่าสุด (ISO)
+  lastError: string | null;  // รอบอัตโนมัติล่าสุดล้มเหลวเพราะอะไร (null = ไม่มีปัญหา)
+  next: string | null;       // รอบถัดไป (ISO) · null = ปิดอยู่
+  running: boolean;          // กำลังอัปเดตอยู่ตอนนี้
+}

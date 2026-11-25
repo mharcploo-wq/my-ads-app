@@ -1,4 +1,6 @@
 import "server-only";
+import { promises as fs } from "fs";
+import path from "path";
 import { briefingSources } from "./agentEnv";
 import { errMsg, get, getAll, Json, metaConfig } from "./meta";
 import { amLink, resultName } from "./insights";
@@ -10,7 +12,7 @@ import type { BestWorst, BigNumber, Block, BriefingData, BriefingResult, Briefin
 
 const TTL_MS = 10 * 60_000;
 const MIN_REFRESH_MS = 2 * 60_000;
-const gc = globalThis as unknown as { __adsBriefing?: { at: number; data: BriefingData } };
+const gc = globalThis as unknown as { __adsBriefing?: { at: number; data: BriefingData }; __adsBriefingPull?: Promise<BriefingResult> };
 
 const qs = (o: Record<string, string>) => new URLSearchParams(o).toString();
 const num = (v: unknown) => Number(v ?? 0) || 0;
@@ -260,19 +262,49 @@ async function pullSection(src: { account: string; page: string; token: string }
   return { s, y };
 }
 
-export async function getBriefing(fresh: boolean): Promise<BriefingResult> {
-  const hit = gc.__adsBriefing;
+type Snap = { at: number; data: BriefingData };
+const SNAP_FILE = path.join(process.cwd(), "data", "briefing-last.json");
+
+/** ชุดล่าสุดเก็บลงไฟล์ด้วย — ปิดแอปแล้วเปิดใหม่ยังเห็นชุดที่อัปเดตไว้ (ไม่มี token ในไฟล์ · data/ ไม่เข้า git) */
+async function loadSnap(): Promise<Snap | undefined> {
+  if (gc.__adsBriefing) return gc.__adsBriefing;
+  try {
+    const s = JSON.parse(await fs.readFile(SNAP_FILE, "utf8")) as Snap;
+    if (s?.data?.ok && Number.isFinite(s.at)) return (gc.__adsBriefing = s);
+  } catch { /* ยังไม่มีไฟล์ */ }
+  return undefined;
+}
+async function saveSnap(s: Snap) {
+  gc.__adsBriefing = s;
+  await fs.mkdir(path.dirname(SNAP_FILE), { recursive: true });
+  await fs.writeFile(SNAP_FILE + ".tmp", JSON.stringify(s), "utf8");
+  await fs.rename(SNAP_FILE + ".tmp", SNAP_FILE);
+}
+
+/** open = เปิดหน้า · fresh = ปุ่ม ↻ ดึงใหม่ · auto = ตัวจับเวลา (ดึงใหม่เสมอ)
+ *  keep = เปิดตั้งเวลาไว้ → เปิดหน้าแล้วใช้ชุดที่อัปเดตไว้ของวันนี้เลย ไม่ต้องรอ Meta (ไม่ใช้อายุ 10 นาที) */
+export async function getBriefing(mode: "open" | "fresh" | "auto", keep = false): Promise<BriefingResult> {
+  const hit = await loadSnap();
   const age = hit ? Date.now() - hit.at : Infinity;
   // วันเปลี่ยน (เลยเที่ยงคืน) → ชุดเดิมเป็นของ "เมื่อวาน" ที่ไม่ใช่แล้ว ต้องดึงใหม่
   const sameDay = hit && shiftDay(localDay("Asia/Bangkok"), -1) === hit.data.yesterday;
-  if (hit && sameDay && age < TTL_MS && !(fresh && age > MIN_REFRESH_MS)) return hit.data;
+  if (hit && sameDay) {
+    if (mode === "open" && (keep || age < TTL_MS)) return hit.data;
+    if (mode === "fresh" && age < MIN_REFRESH_MS) return hit.data;
+  }
+  // ดึงซ้อนกัน (ตัวจับเวลา + กดดึงใหม่พร้อมกัน) → ใช้คำขอเดียวกัน ไม่ยิง Meta ซ้ำ
+  gc.__adsBriefingPull ??= pull(hit).finally(() => { gc.__adsBriefingPull = undefined; });
+  return gc.__adsBriefingPull;
+}
+
+async function pull(hit: Snap | undefined): Promise<BriefingResult> {
   const list = await briefingSources();
   if (!list.length) return { ok: false, error: "ยังไม่มีพอร์ตที่ตั้งครบ (token + บัญชีโฆษณา + เพจ) — ตั้งได้ที่แท็บ ＋ สร้างโฆษณา → ตั้งค่า Agent" };
   const { base } = metaConfig();
   try {
     const parts = await Promise.all(list.map((src) => pullSection(src, base)));
     const data: BriefingData = { ok: true, at: new Date().toISOString(), yesterday: parts[0].y, sections: parts.map((p) => p.s) };
-    gc.__adsBriefing = { at: Date.now(), data };
+    await saveSnap({ at: Date.now(), data });
     return data;
   } catch (e) {
     const why = friendly((e as Error).message);
