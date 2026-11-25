@@ -2,7 +2,7 @@ import "server-only";
 import { briefingSources } from "./agentEnv";
 import { errMsg, get, getAll, Json, metaConfig } from "./meta";
 import { amLink, resultName } from "./insights";
-import type { BestWorst, BigNumber, Block, BriefingData, BriefingResult, BriefingSection, Fix, PageStat, Pick } from "./briefingTypes";
+import type { BestWorst, BigNumber, Block, BriefingData, BriefingResult, BriefingSection, Fix, PageStat, Pick, PlatformKey, PlatformSeries } from "./briefingTypes";
 
 /** หน้า Daily Briefing — ข้อมูล "เมื่อวาน" ของทุกพอร์ต อ่านอย่างเดียวจาก Meta (ads_read + เพจ + IG)
  *  กฎ: ใช้ตัวเลขจริงจาก Meta เท่านั้น · ดึงตัวไหนไม่ได้ → บอกว่าดึงไม่ได้ ห้ามเดา · token อยู่ฝั่ง server เท่านั้น
@@ -53,24 +53,44 @@ interface Day { spend: number; results: number; resultSpend: number; perKSpend: 
 const emptyDay = (): Day => ({ spend: 0, results: 0, resultSpend: 0, perKSpend: 0, mix: new Map() });
 const cprOf = (d: Day) => (d.results > 0 ? d.resultSpend / d.results : null);
 
-async function pullAds(base: string, token: string, act: string, y: string): Promise<Block<{ big: BigNumber[]; mix: string }> & { days?: Map<string, Day> }> {
+const PLATFORMS: { key: PlatformKey; label: string }[] = [
+  { key: "facebook", label: "Facebook" }, { key: "instagram", label: "Instagram" }, { key: "other", label: "อื่น ๆ" },
+];
+const platformOf = (p: unknown): PlatformKey => (p === "facebook" || p === "instagram" ? p : "other");
+
+function addRow(d: Day, row: Json) {
+  const spend = num(row.spend), res = resOf(row);
+  d.spend += spend;
+  if (res.kind === "count") {
+    d.results += res.value;
+    d.resultSpend += spend;
+    if (res.value) d.mix.set(res.short, (d.mix.get(res.short) ?? 0) + res.value);
+  } else if (res.kind === "perK") d.perKSpend += spend;
+}
+
+/** คำขอเดียว: ระดับแคมเปญ × รายวัน × แพลตฟอร์ม (publisher_platform) → ยอดรวม + แยก Facebook / Instagram / อื่น ๆ */
+async function pullAds(base: string, token: string, act: string, y: string): Promise<Block<{ big: BigNumber[]; mix: string; days: string[]; platforms: PlatformSeries[] }>> {
   const r = await getAll(`${base}/${act}/insights?${qs({
-    level: "campaign", time_increment: "1", time_range: JSON.stringify({ since: shiftDay(y, -7), until: y }),
+    level: "campaign", time_increment: "1", time_range: JSON.stringify({ since: shiftDay(y, -7), until: y }), breakdowns: "publisher_platform",
     fields: "campaign_id,spend,results", limit: "500", access_token: token,
   })}`);
   if (!r.ok) return fail(`อ่านผลโฆษณาไม่ได้: ${r.error}`);
   const days = new Map<string, Day>();
+  const plat = new Map<string, Day>();   // key = แพลตฟอร์ม|วันที่
   for (const row of r.rows) {
     const d = days.get(row.date_start) ?? emptyDay();
     days.set(row.date_start, d);
-    const spend = num(row.spend), res = resOf(row);
-    d.spend += spend;
-    if (res.kind === "count") {
-      d.results += res.value;
-      d.resultSpend += spend;
-      if (res.value) d.mix.set(res.short, (d.mix.get(res.short) ?? 0) + res.value);
-    } else if (res.kind === "perK") d.perKSpend += spend;
+    addRow(d, row);
+    const pk = `${platformOf(row.publisher_platform)}|${row.date_start}`;
+    const p = plat.get(pk) ?? emptyDay();
+    plat.set(pk, p);
+    addRow(p, row);
   }
+  const dates = Array.from({ length: 8 }, (_, i) => shiftDay(y, -7 + i));
+  const platforms: PlatformSeries[] = PLATFORMS.map(({ key, label }) => {
+    const ds = dates.map((d) => plat.get(`${key}|${d}`) ?? emptyDay());
+    return { key, label, spend: ds.map((d) => d.spend), results: ds.map((d) => d.results), cpr: ds.map(cprOf) };
+  }).filter((p) => p.key !== "other" || p.spend.some((v) => v > 0));
   // Meta ไม่ส่งแถวของวันที่ไม่ได้ใช้เงิน → วันนั้นใช้ ฿0 จริง
   const day = (d: string) => days.get(d) ?? emptyDay();
   const yd = day(y), pd = day(shiftDay(y, -1));
@@ -89,7 +109,7 @@ async function pullAds(base: string, token: string, act: string, y: string): Pro
       note: "ค่าโฆษณาของแคมเปญที่นับผลลัพธ์ ÷ ผลลัพธ์",
     },
   ];
-  return { ok: true, big, mix, days };
+  return { ok: true, big, mix, days: dates, platforms };
 }
 
 // ---------- โฆษณาดีสุด/แย่สุดของเมื่อวาน ----------
@@ -227,8 +247,8 @@ async function pullSection(src: { account: string; page: string; token: string }
     pageErr ? Promise.resolve(fail(pageErr)) : pullPageStats(base, pageToken, page, y),
     pg.ok ? pullInstagram(base, token, igAcc, y, tz) : Promise.resolve(fail(`ดึงข้อมูล Instagram ไม่ได้: ${errMsg(pg.body)}`)),
   ]);
-  // ตัดฟิลด์ภายใน (days / worstZero) ออกก่อนส่งให้หน้าเว็บ
-  const adsOut: BriefingSection["ads"] = ads.ok ? { ok: true, big: ads.big, mix: ads.mix } : ads;
+  // ตัดฟิลด์ภายใน (worstZero) ออกก่อนส่งให้หน้าเว็บ
+  const adsOut: BriefingSection["ads"] = ads;
   const picksOut: BriefingSection["adPicks"] = picks.ok ? { ok: true, best: picks.best, worst: picks.worst, note: picks.note } : picks;
   const s: BriefingSection = {
     account,

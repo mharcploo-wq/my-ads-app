@@ -12,6 +12,18 @@ export interface BigNumber {
   note: string;             // คำอธิบายสั้น ๆ ใต้ตัวเลข
 }
 
+/** ตัวเลขโฆษณาแยกแพลตฟอร์ม (publisher_platform ของ Meta) — 8 วัน ตรงกับ days[] (ตัวสุดท้าย = เมื่อวาน)
+ *  other = audience_network / messenger / threads / unknown รวมกัน · ส่งมาเฉพาะเมื่อมีค่าใช้จ่ายใน 8 วัน
+ *  cpr null = วันนั้นไม่มีผลลัพธ์ (หารไม่ได้ — ไม่ใช่ ฿0) */
+export type PlatformKey = "facebook" | "instagram" | "other";
+export interface PlatformSeries {
+  key: PlatformKey;
+  label: string;
+  spend: number[];
+  results: number[];
+  cpr: (number | null)[];
+}
+
 export interface Pick {
   name: string;
   detail: string;
@@ -31,7 +43,7 @@ export interface BriefingSection {
   account: string;
   accountName: string;
   page: { name: string; link: string; picture: string | null } | null;
-  ads: Block<{ big: BigNumber[]; mix: string }>;
+  ads: Block<{ big: BigNumber[]; mix: string; days: string[]; platforms: PlatformSeries[] }>;
   adPicks: Block<BestWorst>;
   posts: Block<BestWorst & { count: number }>;
   instagram: Block<BestWorst & { username: string; count: number }>;

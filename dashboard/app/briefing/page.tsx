@@ -1,7 +1,8 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
+import PlatformChart, { PLATFORM_COLOR } from "@/components/PlatformChart";
 import { fmt } from "@/lib/calc";
-import type { BestWorst, BigNumber, Block, BriefingResult, BriefingSection, PageStat, Pick } from "@/lib/briefingTypes";
+import type { BestWorst, BigNumber, Block, BriefingResult, BriefingSection, PageStat, Pick, PlatformSeries } from "@/lib/briefingTypes";
 
 /** Daily Briefing — เปิดตอนเช้า อ่านจบใน 1 นาที · ตัวเลขจริงของ "เมื่อวาน" จาก Meta ทุกพอร์ต
  *  หน้าเว็บแค่แสดง (คำนวณ/ตัดสินที่ server) · ดึงไม่ได้ = บอกว่าดึงไม่ได้ ไม่เดา */
@@ -14,7 +15,7 @@ function Compare({ label, now, base, unit, lowerIsBetter, neutral }: {
 }) {
   let mark: React.ReactNode;
   if (now === null || base === null) mark = <span className="muted">ไม่มีตัวเลขให้เทียบ</span>;
-  else if (base === 0 && now === 0) mark = <span className="muted">เท่าเดิม</span>;
+  else if (Math.abs(now - base) < 1e-9) mark = <span className="muted">เท่าเดิม</span>;
   else if (base === 0) mark = <span className="muted">จาก 0</span>;
   else {
     const pct = ((now - base) / base) * 100;
@@ -29,7 +30,10 @@ function Compare({ label, now, base, unit, lowerIsBetter, neutral }: {
   );
 }
 
-function Big({ b }: { b: BigNumber }) {
+/** ค่าของแพลตฟอร์มตามตัวเลขใหญ่ (spend / results / cpr) */
+const seriesOf = (p: PlatformSeries, key: BigNumber["key"]): (number | null)[] => (key === "cpr" ? p.cpr : p[key]);
+
+function Big({ b, platforms }: { b: BigNumber; platforms: PlatformSeries[] }) {
   return (
     <div className="kpi brief-big">
       <div className="label">{b.label}</div>
@@ -37,6 +41,12 @@ function Big({ b }: { b: BigNumber }) {
       <Compare label="วันก่อน" now={b.now} base={b.prev} unit={b.unit} lowerIsBetter={b.lowerIsBetter} neutral={b.key === "spend"} />
       <Compare label="เฉลี่ย 7 วัน" now={b.now} base={b.avg7} unit={b.unit} lowerIsBetter={b.lowerIsBetter} neutral={b.key === "spend"} />
       <div className="brief-note">{b.note}</div>
+      <div className="brief-split">
+        {platforms.map((p) => {
+          const v = seriesOf(p, b.key);
+          return <span key={p.key}><span className="swatch" style={{ background: PLATFORM_COLOR[p.key] }} />{p.label} {show(b.unit, v[v.length - 1])}</span>;
+        })}
+      </div>
     </div>
   );
 }
@@ -96,7 +106,18 @@ function Section({ s }: { s: BriefingSection }) {
       </div>
 
       {s.ads.ok
-        ? <div className="kpis num brief-bigs">{s.ads.big.map((b) => <Big key={b.key} b={b} />)}</div>
+        ? <>
+            <div className="kpis num brief-bigs">{s.ads.big.map((b) => <Big key={b.key} b={b} platforms={s.ads.ok ? s.ads.platforms : []} />)}</div>
+            <div className="brief-charts">
+              {s.ads.big.map((b) => (
+                <div key={b.key} className="card">
+                  <h3>{b.label.replace(/ \(.*\)$/, "")} · 8 วัน</h3>
+                  <PlatformChart days={s.ads.ok ? s.ads.days : []} unit={b.unit}
+                    lines={(s.ads.ok ? s.ads.platforms : []).map((p) => ({ key: p.key, label: p.label, values: seriesOf(p, b.key) }))} />
+                </div>
+              ))}
+            </div>
+          </>
         : <div className="card brief-miss">⚠ ตัวเลขโฆษณา: {s.ads.error}</div>}
 
       <h3 className="brief-sub">ดีสุดและแย่สุดของเมื่อวาน</h3>
