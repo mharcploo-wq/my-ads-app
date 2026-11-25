@@ -89,6 +89,7 @@ export default function Page() {
             <button role="tab" aria-selected={tab === "connect"} onClick={() => setTab("connect")}>เชื่อมต่อ API</button>
           </nav>
           <span className="spacer" />
+          <a className="btn" href="/briefing">☀ Daily Briefing</a>
           {data && (
             <span className={`pill ${connected ? "ok" : "warn"}`}>
               <span className="dot" style={{ background: connected ? "var(--good)" : "var(--warning)" }} />

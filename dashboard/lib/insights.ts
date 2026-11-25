@@ -69,7 +69,7 @@ const RESULT_NAMES: Record<string, [string, string, string]> = {
 };
 const PER_THOUSAND = new Set(["reach", "impressions"]);
 
-function resultName(indicator: string): [string, string, string, number] {
+export function resultName(indicator: string): [string, string, string, number] {
   const k = indicator.replace(/^actions:/, "");
   if (k === "reach") return ["การเข้าถึง", "คน", "เข้าถึง", 1000];
   if (k === "impressions") return ["การแสดงผล", "ครั้ง", "แสดงผล", 1000];
@@ -122,7 +122,7 @@ function placementLabel(platform: string, pos: string) {
   return PLACEMENT[pos] ?? `${PLATFORM[platform] ?? platform} · ${pos}`;
 }
 
-function amLink(act: string, level: Level, id: string) {
+export function amLink(act: string, level: Level, id: string) {
   const n = act.replace(/^act_/, "");
   const page = { campaign: "campaigns", adset: "adsets", ad: "ads" }[level];
   return `https://adsmanager.facebook.com/adsmanager/manage/${page}?act=${n}&selected_${level}_ids=${id}`;

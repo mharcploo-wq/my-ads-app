@@ -146,6 +146,24 @@ export async function portfolioTokens(): Promise<{ account: string; token: strin
   return [...out].map(([account, token]) => ({ account, token }));
 }
 
+/** หน้า Daily Briefing — ทุกพอร์ต (พอร์ตหลัก + พอร์ตเพิ่มเติม) ที่มี token + บัญชีโฆษณา + เพจ · ใช้ฝั่ง server เท่านั้น
+ *  บัญชีเดียวกันหลาย agent → เอาตัวแรกที่เจอ (เรียงตาม AGENT_IDS แล้วเลขพอร์ต) */
+export async function briefingSources(): Promise<{ account: string; page: string; token: string }[]> {
+  const out = new Map<string, { page: string; token: string }>();
+  const add = (token: string, account: string, page: string) => {
+    if (TOKEN_PATTERN.test(token) && /^act_\d+$/.test(account) && /^\d+$/.test(page) && !out.has(account)) out.set(account, { page, token });
+  };
+  for (const a of AGENT_IDS) {
+    const { text, exists } = await readText(a);
+    if (!exists) continue;
+    const m = parse(text);
+    const v = (k: string) => (m.get(k) ?? "").trim();
+    add(v("META_ACCESS_TOKEN"), v("META_AD_ACCOUNT_ID"), v("META_PAGE_ID"));
+    for (const n of EXTRA_SLOTS) add(v(pfKey(n, "TOKEN")), v(pfKey(n, "AD_ACCOUNT_ID")), v(pfKey(n, "PAGE_ID")));
+  }
+  return [...out].map(([account, s]) => ({ account, ...s }));
+}
+
 /** ตรวจพอร์ตเพิ่มเติม — คีย์ error: pf{slot}.{TOKEN|AD_ACCOUNT_ID|…} · saved = พอร์ตที่มี token ในไฟล์แล้ว */
 export function validatePortfolios(list: PortfolioInput[], saved: Set<number>): Record<string, string> {
   const e: Record<string, string> = {};
