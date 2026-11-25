@@ -91,7 +91,22 @@ function Stat({ s }: { s: PageStat }) {
   );
 }
 
-function Section({ s }: { s: BriefingSection }) {
+/** ช่องเลือกเพจของพอร์ต — รายการมาจาก token ของพอร์ตนั้น (server ส่งมา) · มีผลแค่หน้านี้ */
+function PagePicker({ s, busy, onPick }: { s: BriefingSection; busy: boolean; onPick: (account: string, page: string) => void }) {
+  if (!s.pageId || !s.pages?.length) return null; // snapshot รุ่นเก่า / อ่านรายการเพจไม่ได้
+  const list = s.pages.some((p) => p.id === s.pageId) ? s.pages : [{ id: s.pageId, name: s.page?.name ?? s.pageId }, ...s.pages];
+  return (
+    <label className="brief-page-pick">
+      เพจ
+      <select value={s.pageId} disabled={busy} onChange={(e) => onPick(s.account, e.target.value)} aria-label="เลือกเพจที่จะแสดง">
+        {list.map((p) => <option key={p.id} value={p.id}>{p.name}{p.id === s.defaultPage ? " (เพจประจำ Agent)" : ""}</option>)}
+      </select>
+      {busy && <span className="brief-page-busy">กำลังดึงข้อมูลเพจ…</span>}
+    </label>
+  );
+}
+
+function Section({ s, picking, pickErr, onPick }: { s: BriefingSection; picking: boolean; pickErr: string | null; onPick: (account: string, page: string) => void }) {
   return (
     <section className="brief-section">
       <div className="brief-head">
@@ -103,7 +118,10 @@ function Section({ s }: { s: BriefingSection }) {
           <h2>{s.page ? <a href={s.page.link} target="_blank" rel="noreferrer">{s.page.name}</a> : "อ่านชื่อเพจไม่ได้"}</h2>
           <div className="muted">บัญชีโฆษณา {s.accountName} · {s.account}</div>
         </div>
+        <PagePicker s={s} busy={picking} onPick={onPick} />
       </div>
+      {s.pageWarn && <div className="brief-page-warn">⚠ {s.pageWarn}</div>}
+      {pickErr && <div className="brief-page-warn">⚠ เปลี่ยนเพจไม่สำเร็จ — {pickErr}</div>}
 
       {s.ads.ok
         ? <>
@@ -214,6 +232,24 @@ export default function BriefingPage() {
   }, []);
   useEffect(() => { load(false); }, [load]);
 
+  const [picking, setPicking] = useState<string | null>(null);
+  const [pickErr, setPickErr] = useState<{ account: string; msg: string } | null>(null);
+  const pickPage = useCallback(async (account: string, page: string) => {
+    setPicking(account);
+    setPickErr(null);
+    try {
+      const r = (await (await fetch("/api/briefing/page", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ account, page }),
+      })).json()) as BriefingResult;
+      if (r.ok) setData(r);
+      else setPickErr({ account, msg: r.error });
+    } catch (e) {
+      setPickErr({ account, msg: (e as Error).message });
+    } finally {
+      setPicking(null);
+    }
+  }, []);
+
   const readSched = useCallback(async () => {
     try {
       const r = await (await fetch("/api/briefing/schedule", { cache: "no-store" })).json();
@@ -267,7 +303,9 @@ export default function BriefingPage() {
         {!data && <div className="empty">กำลังดึงข้อมูลเมื่อวานจาก Meta…</div>}
         {data && !data.ok && <div className="banner">⚠ {data.error}</div>}
         {data?.ok && data.stale && <div className="banner">⚠ ดึงใหม่ไม่ได้ — แสดงชุดเดิม: {data.stale}</div>}
-        {data?.ok && data.sections.map((s) => <Section key={s.account} s={s} />)}
+        {data?.ok && data.sections.map((s) => (
+          <Section key={s.account} s={s} picking={picking === s.account} pickErr={pickErr?.account === s.account ? pickErr.msg : null} onPick={pickPage} />
+        ))}
       </main>
     </>
   );

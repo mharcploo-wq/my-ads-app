@@ -4,7 +4,7 @@ import path from "path";
 import { briefingSources } from "./agentEnv";
 import { errMsg, get, getAll, Json, metaConfig } from "./meta";
 import { amLink, resultName } from "./insights";
-import type { BestWorst, BigNumber, Block, BriefingData, BriefingResult, BriefingSection, Fix, PageStat, Pick, PlatformKey, PlatformSeries } from "./briefingTypes";
+import type { BestWorst, BigNumber, Block, BriefingData, BriefingResult, BriefingSection, Fix, PageOption, PageStat, Pick, PlatformKey, PlatformSeries } from "./briefingTypes";
 
 /** หน้า Daily Briefing — ข้อมูล "เมื่อวาน" ของทุกพอร์ต อ่านอย่างเดียวจาก Meta (ads_read + เพจ + IG)
  *  กฎ: ใช้ตัวเลขจริงจาก Meta เท่านั้น · ดึงตัวไหนไม่ได้ → บอกว่าดึงไม่ได้ ห้ามเดา · token อยู่ฝั่ง server เท่านั้น
@@ -230,12 +230,36 @@ function fixesOf(s: BriefingSection, worstZero?: { name: string; spend: number }
 }
 
 // ---------- รวมต่อพอร์ต ----------
-async function pullSection(src: { account: string; page: string; token: string }, base: string): Promise<{ s: BriefingSection; y: string }> {
-  const { account, page, token } = src;
-  const [acc, pg] = await Promise.all([
+const PAGE_FIELDS = "name,link,picture{url},access_token,instagram_business_account{id,username}";
+
+/** เพจที่ token จัดการได้ (me/accounts · อ่านอย่างเดียว) — ใช้ทำช่องเลือกเพจ · paging ตามต่อฝั่ง server เท่านั้น */
+async function listPages(base: string, token: string): Promise<PageOption[] | null> {
+  const r = await getAll(`${base}/me/accounts?${qs({ fields: "id,name", limit: "100", access_token: token })}`, 5);
+  if (!r.ok) return null;
+  return r.rows.map((p) => ({ id: String(p.id), name: String(p.name ?? p.id) })).sort((a, b) => a.name.localeCompare(b.name, "th"));
+}
+
+async function pullSection(src: { account: string; page: string; token: string }, base: string, chosen?: string): Promise<{ s: BriefingSection; y: string }> {
+  const { account, token } = src;
+  const defaultPage = src.page;
+  const want = chosen && chosen !== defaultPage ? chosen : defaultPage;
+  const [acc, pages, first] = await Promise.all([
     get(`${base}/${account}?${qs({ fields: "name,timezone_name,business{name}", access_token: token })}`),
-    get(`${base}/${page}?${qs({ fields: "name,link,picture{url},access_token,instagram_business_account{id,username}", access_token: token })}`),
+    listPages(base, token),
+    get(`${base}/${want}?${qs({ fields: PAGE_FIELDS, access_token: token })}`),
   ]);
+  // เพจที่เลือกไว้ใช้ไม่ได้ (token ไม่มีสิทธิ์แล้ว / อ่านไม่ได้) → กลับมาใช้เพจประจำ Agent พร้อมบอกเหตุผล
+  let page = want, pg = first, pageWarn: string | null = null;
+  if (want !== defaultPage) {
+    const why = pages && !pages.some((p) => p.id === want) ? "token ของพอร์ตนี้ไม่ได้จัดการเพจนี้แล้ว"
+      : !first.ok ? `อ่านเพจไม่ได้: ${errMsg(first.body)}`
+      : !first.body.access_token ? "token ของพอร์ตนี้ไม่มีสิทธิ์จัดการเพจนี้" : null;
+    if (why) {
+      pageWarn = `เพจที่เลือกไว้ (${first.ok ? String(first.body.name ?? want) : want}) ใช้ไม่ได้ — ${why} · กลับมาแสดงเพจประจำ Agent`;
+      page = defaultPage;
+      pg = await get(`${base}/${page}?${qs({ fields: PAGE_FIELDS, access_token: token })}`);
+    }
+  }
   const tz = acc.ok && acc.body.timezone_name ? String(acc.body.timezone_name) : "Asia/Bangkok";
   const y = shiftDay(localDay(tz), -1);
   const pageToken = pg.ok ? String(pg.body.access_token ?? "") : "";
@@ -257,6 +281,7 @@ async function pullSection(src: { account: string; page: string; token: string }
     accountName: acc.ok ? String(acc.body.business?.name ?? acc.body.name ?? account) : account,
     page: pg.ok ? { name: String(pg.body.name ?? page), link: String(pg.body.link ?? `https://www.facebook.com/${page}`), picture: pg.body.picture?.data?.url ?? null } : null,
     ads: adsOut, adPicks: picksOut, posts, instagram: ig, pageStats: stats, fixes: [],
+    pageId: page, defaultPage, pages: pages ?? [], pageWarn,
   };
   s.fixes = fixesOf(s, picks.ok ? picks.worstZero : undefined);
   return { s, y };
@@ -297,12 +322,51 @@ export async function getBriefing(mode: "open" | "fresh" | "auto", keep = false)
   return gc.__adsBriefingPull;
 }
 
+// ---------- เพจที่เลือกไว้ต่อพอร์ต (มีผลแค่หน้านี้ · ไม่แตะเพจประจำ Agent ที่ใช้ยิงโฆษณา) ----------
+const PAGES_FILE = path.join(process.cwd(), "data", "briefing-pages.json");
+
+async function loadChoices(): Promise<Record<string, string>> {
+  try {
+    const m = JSON.parse(await fs.readFile(PAGES_FILE, "utf8")) as Record<string, unknown>;
+    return Object.fromEntries(Object.entries(m).filter(([a, p]) => /^act_\d+$/.test(a) && typeof p === "string" && /^\d+$/.test(p))) as Record<string, string>;
+  } catch {
+    return {};
+  }
+}
+
+/** เลือกเพจของพอร์ต → จำไว้ (รอบอัตโนมัติก็ใช้) แล้วดึงใหม่เฉพาะพอร์ตนั้น · เลือกเพจประจำ Agent = ลบค่าที่จำไว้ */
+export async function setBriefingPage(account: string, page: string): Promise<BriefingResult> {
+  if (!/^act_\d+$/.test(account) || !/^\d+$/.test(page)) return { ok: false, error: "เลือกเพจไม่ถูกต้อง" };
+  const src = (await briefingSources()).find((s) => s.account === account);
+  if (!src) return { ok: false, error: "ไม่พบพอร์ตนี้ในการตั้งค่า Agent แล้ว — กด ↻ ดึงใหม่" };
+  if (gc.__adsBriefingPull) await gc.__adsBriefingPull.catch(() => undefined); // รอรอบดึงทั้งหน้าที่ค้างอยู่ก่อน ไม่ทับกัน
+  const m = await loadChoices();
+  if (page === src.page) delete m[account];
+  else m[account] = page;
+  await fs.mkdir(path.dirname(PAGES_FILE), { recursive: true });
+  await fs.writeFile(PAGES_FILE + ".tmp", JSON.stringify(m, null, 2), "utf8");
+  await fs.rename(PAGES_FILE + ".tmp", PAGES_FILE);
+
+  const hit = await loadSnap();
+  const sameDay = hit && shiftDay(localDay("Asia/Bangkok"), -1) === hit.data.yesterday;
+  if (!hit || !sameDay || !hit.data.sections.some((s) => s.account === account)) return getBriefing("auto");
+  try {
+    const { s } = await pullSection(src, metaConfig().base, m[account]);
+    const data: BriefingData = { ...hit.data, sections: hit.data.sections.map((x) => (x.account === account ? s : x)) };
+    await saveSnap({ at: hit.at, data }); // อายุชุดข้อมูลนับจากรอบดึงทั้งหน้า (พอร์ตอื่นไม่ได้ดึงใหม่)
+    return data;
+  } catch (e) {
+    return { ok: false, error: friendly((e as Error).message) };
+  }
+}
+
 async function pull(hit: Snap | undefined): Promise<BriefingResult> {
   const list = await briefingSources();
   if (!list.length) return { ok: false, error: "ยังไม่มีพอร์ตที่ตั้งครบ (token + บัญชีโฆษณา + เพจ) — ตั้งได้ที่แท็บ ＋ สร้างโฆษณา → ตั้งค่า Agent" };
   const { base } = metaConfig();
+  const chosen = await loadChoices();
   try {
-    const parts = await Promise.all(list.map((src) => pullSection(src, base)));
+    const parts = await Promise.all(list.map((src) => pullSection(src, base, chosen[src.account])));
     const data: BriefingData = { ok: true, at: new Date().toISOString(), yesterday: parts[0].y, sections: parts.map((p) => p.s) };
     await saveSnap({ at: Date.now(), data });
     return data;

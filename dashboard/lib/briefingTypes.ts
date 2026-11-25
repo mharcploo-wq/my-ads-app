@@ -39,10 +39,20 @@ export interface PageStat { label: string; now: number | null; prev: number | nu
 
 export interface Fix { text: string; from: string }
 
+/** เพจที่ token ของพอร์ตจัดการได้ (ช่องเลือกเพจที่หัวการ์ด) */
+export interface PageOption { id: string; name: string }
+
 export interface BriefingSection {
   account: string;
   accountName: string;
   page: { name: string; link: string; picture: string | null } | null;
+  /** เพจที่เลือกได้ — ไม่มีใน snapshot รุ่นก่อน 1.0.14 จึงเป็น optional
+   *  pageId = เพจที่แสดงอยู่ · defaultPage = เพจประจำ Agent · pages ว่าง = อ่านรายการเพจไม่ได้
+   *  pageWarn = เพจที่เลือกไว้ใช้ไม่ได้ → กลับมาใช้เพจประจำ Agent พร้อมเหตุผล */
+  pageId?: string;
+  defaultPage?: string;
+  pages?: PageOption[];
+  pageWarn?: string | null;
   ads: Block<{ big: BigNumber[]; mix: string; days: string[]; platforms: PlatformSeries[] }>;
   adPicks: Block<BestWorst>;
   posts: Block<BestWorst & { count: number }>;

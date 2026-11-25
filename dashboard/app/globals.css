@@ -486,6 +486,12 @@ a.btn { text-decoration: none; color: var(--text-primary); }
 .brief-head img { border-radius: 10px; object-fit: cover; }
 .brief-head h2 { margin: 0; font-size: 19px; }
 .brief-head h2 a { color: var(--text-primary); text-decoration: none; }
+.brief-page-pick { margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-secondary); flex-wrap: wrap; justify-content: flex-end; }
+.brief-page-pick select { background: var(--surface-2); border: 1px solid var(--border); color: var(--text-primary); border-radius: 8px; padding: 6px 10px; font: inherit; font-size: 13px; color-scheme: dark; max-width: 300px; }
+.brief-page-pick select:disabled { opacity: .6; }
+.brief-page-busy { color: #e6c15a; font-size: 12px; }
+.brief-page-warn { margin-top: 8px; font-size: 12.5px; color: #e6c15a; }
+@media (max-width: 640px) { .brief-head { flex-wrap: wrap; } .brief-head > div:not(.logo) { flex: 1 1 0; min-width: 0; }.brief-page-pick { margin-left: 0; width: 100%; justify-content: flex-start; } .brief-page-pick select { flex: 1 1 0; min-width: 0; max-width: none; } }
 .brief-bigs { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .brief-big .value { font-size: 34px; }
 .brief-cmp { font-size: 12.5px; margin-top: 2px; }
