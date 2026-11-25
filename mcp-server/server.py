@@ -87,6 +87,8 @@ parser.add_argument("--portfolios", action="store_true",
                     help="(หน้าแอป) รายการพอร์ตโฟลิโอของ agent นี้ + สถานะ แล้วพิมพ์ผลเป็น JSON")
 parser.add_argument("--insights-summary-json", metavar="PATH", default=None,
                     help="(หน้าแอป) ปุ่ม ✨ หน้าวิเคราะห์โฆษณา: ตัวเลขสรุปจากไฟล์ → Claude สรุป+แนะนำ แล้วพิมพ์ผลเป็น JSON")
+parser.add_argument("--competitors-summary-json", metavar="PATH", default=None,
+                    help="(หน้าแอป) หน้าวิเคราะห์คู่แข่ง: ข้อความแอดคู่แข่งจากไฟล์ → Claude สรุป hook/offer + 3 มุมที่ยังไม่มีใครเล่น แล้วพิมพ์ผลเป็น JSON")
 parser.add_argument("--ai-poll-json", metavar="PATH", default=None,
                     help="(หน้าแอป · Manus) ถามผลงานคิดความสนใจที่สั่ง Manus ไว้ 1 ครั้ง แล้วพิมพ์ผลเป็น JSON")
 parser.add_argument("--ai-stop", metavar="TASK_ID", default=None,
@@ -2334,6 +2336,72 @@ def insights_summary(data: dict[str, Any]) -> dict[str, Any]:
     return res
 
 
+COMPETITORS_SYSTEM = (
+    "You analyse competitors' Facebook/Instagram ads for a Thai business owner. You get the owner's business "
+    "description and, for each competitor page, the ads that are running now in Thailand (full ad text, start date, "
+    "call-to-action). Write in Thai, short and concrete. Base every statement only on the ad texts given; never invent "
+    "ads, numbers, prices or claims that are not in the texts. "
+    "For each competitor that has ads, return: page_id (copy exactly), hooks (1-3 opening hooks or framings they repeat, "
+    "quote or closely paraphrase the actual wording), offer (what they actually offer in the ads: free consultation, "
+    "demo, package, price... or 'ไม่ระบุ' if the ads state no offer). Do not return rows for competitors without ads. "
+    "Then return exactly 3 angles that none of these ads use yet and that fit the owner's business: title (short) and "
+    "why (one sentence that cites what the competitors' ads do instead, e.g. how many ads mention it). Angles must "
+    "follow Meta advertising policies (no misleading claims, no personal-attribute targeting language). "
+    "note = one or two sentences on the overall pattern."
+)
+COMPETITORS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "rows": {"type": "array", "items": {
+            "type": "object",
+            "properties": {"page_id": {"type": "string"}, "hooks": {"type": "array", "items": {"type": "string"}},
+                           "offer": {"type": "string"}},
+            "required": ["page_id", "hooks", "offer"],
+            "additionalProperties": False,
+        }},
+        "angles": {"type": "array", "items": {
+            "type": "object",
+            "properties": {"title": {"type": "string"}, "why": {"type": "string"}},
+            "required": ["title", "why"],
+            "additionalProperties": False,
+        }},
+        "note": {"type": "string"},
+    },
+    "required": ["rows", "angles", "note"],
+    "additionalProperties": False,
+}
+
+
+def competitors_summary(data: dict[str, Any]) -> dict[str, Any]:
+    """(หน้าวิเคราะห์คู่แข่ง) ข้อความแอดคู่แข่งจาก Ad Library → Claude สรุป hook/offer ต่อเจ้า + 3 มุมที่ยังไม่มีใครเล่น
+    อ่านอย่างเดียว ไม่แตะ Meta · ข้อมูลมาจาก dashboard (ข้อความแอดสาธารณะ ไม่มี token)"""
+    info = ai_info()
+    if AI_PROVIDER != "anthropic":
+        return {"success": False, "error": "การสรุปคู่แข่งใช้ Claude ของ agent claude เท่านั้น"}
+    if not info["ready"]:
+        return {"success": False, "error": info["missing"]}
+    prompt = "Business and competitor ads (JSON):\n" + json.dumps(data, ensure_ascii=False)
+    text, err = _claude_text(COMPETITORS_SYSTEM, prompt, COMPETITORS_SCHEMA,
+                             "Claude ไม่สรุปแอดชุดนี้ให้ — ลองสแกนใหม่", max_tokens=4000)
+    if err:
+        log_action("competitors_summary", False, {"model": AI_MODEL, "error": err})
+        return {"success": False, "error": err}
+    try:
+        out = json.loads(text or "")
+        rows = [{"page_id": str(r.get("page_id") or "").strip(),
+                 "hooks": [str(h).strip() for h in (r.get("hooks") or []) if str(h).strip()][:3],
+                 "offer": str(r.get("offer") or "").strip()}
+                for r in out.get("rows") or [] if isinstance(r, dict)]
+        angles = [{"title": str(a.get("title") or "").strip(), "why": str(a.get("why") or "").strip()}
+                  for a in out.get("angles") or [] if isinstance(a, dict)]
+        res = {"success": True, "error": None, "model": AI_MODEL, "rows": [r for r in rows if r["page_id"]],
+               "angles": [a for a in angles if a["title"]][:3], "note": str(out.get("note") or "").strip()}
+    except (ValueError, AttributeError):
+        return {"success": False, "error": "Claude ตอบกลับในรูปแบบที่อ่านไม่ได้ — กดสรุปใหม่อีกครั้ง"}
+    log_action("competitors_summary", True, {"model": AI_MODEL, "rows": len(res["rows"])})
+    return res
+
+
 def suggest_interests(spec: dict[str, Any]) -> dict[str, Any]:
     """(ปุ่ม ✨ ในหน้าแอป) ข้อความโฆษณา → AI คิดคำค้น → ค้นคลังความสนใจของ Meta → ไม่เกิน 10 รายการ
     spec: texts[], titles[], link_url?"""
@@ -2703,7 +2771,7 @@ if __name__ == "__main__":
     if (ARGS.status or ARGS.create_json or ARGS.suggest_json or ARGS.search_json or ARGS.adset_json
             or ARGS.reach_json or ARGS.lives or ARGS.live_ad_json or ARGS.pages
             or ARGS.portfolios or ARGS.check_portfolio or ARGS.insights_summary_json
-            or ARGS.ai_poll_json or ARGS.ai_stop):
+            or ARGS.competitors_summary_json or ARGS.ai_poll_json or ARGS.ai_stop):
         if PORTFOLIO != 1 and (ARGS.status or ARGS.create_json):
             _auto_portfolio_ids()
         if ARGS.ai_poll_json:
@@ -2712,6 +2780,8 @@ if __name__ == "__main__":
             out = ai_stop(ARGS.ai_stop)
         elif ARGS.insights_summary_json:
             out = insights_summary(json.loads(Path(ARGS.insights_summary_json).read_text(encoding="utf-8")))
+        elif ARGS.competitors_summary_json:
+            out = competitors_summary(json.loads(Path(ARGS.competitors_summary_json).read_text(encoding="utf-8")))
         elif ARGS.check_portfolio:
             out = check_portfolio()
         elif ARGS.portfolios:
