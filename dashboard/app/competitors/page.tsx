@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { adLibraryPageUrl } from "@/lib/competitorsTypes";
 import type {
-  Competitor, CompetitorAd, CompetitorCopy, CompetitorScan, CompetitorsClaudeView, CompetitorsState, CopySet, PageCandidate, SummaryRow,
+  Competitor, CompetitorAd, CompetitorCopy, CompetitorScan, CompetitorsClaudeView, CompetitorsState, CopyImage, CopySet, PageCandidate, SummaryRow,
 } from "@/lib/competitorsTypes";
 import { loadDraft, patchDraft } from "@/lib/draft";
 import { fmtSize } from "@/components/InterestPicker";
@@ -237,6 +237,58 @@ const NUM = "①②③④⑤";
 const copyText = (x: CopySet) => [x.primary, "", `พาดหัว: ${x.headline}`, `คำอธิบาย: ${x.description}`, `ปุ่ม: ${x.ctaLabel}`].join("\n");
 const clip = (t: string, n: number) => (t.length > n ? t.slice(0, n) + "…" : t);
 
+/** คัดลอกลงคลิปบอร์ด — เบราว์เซอร์ไม่ให้สิทธิ์ → วิธีเก่า (เลือกข้อความในช่องซ่อนแล้วสั่งคัดลอก) */
+async function toClipboard(text: string): Promise<boolean> {
+  try { await navigator.clipboard.writeText(text); return true; } catch {
+    const t = document.createElement("textarea");
+    t.value = text; t.style.position = "fixed"; t.style.opacity = "0";
+    document.body.appendChild(t); t.select();
+    let ok = false;
+    try { ok = document.execCommand("copy"); } catch { ok = false; }
+    t.remove();
+    return ok;
+  }
+}
+const COPY_FAIL = "คัดลอกไม่ได้ — เบราว์เซอร์ไม่ให้สิทธิ์คลิปบอร์ด · เลือกข้อความแล้วกด Ctrl+C แทน";
+
+/** 🎨 ภาพประกอบของชุดนี้ — สลับ 1:1 / 9:16 · คัดลอก = prompt + "Avoid: …" (บางเครื่องมือไม่มีช่อง negative) */
+function ImagePrompt({ m }: { m: CopyImage | null | undefined }) {
+  const [size, setSize] = useState<"square" | "story">("square");
+  const [copied, setCopied] = useState(false);
+  const [err, setErr] = useState(false);
+  const prompt = m ? (size === "square" ? m.square : m.story) : "";
+  const copy = async () => {
+    const ok = await toClipboard(`${prompt}
+
+Avoid: ${m?.avoid ?? ""}`);
+    setErr(!ok);
+    if (ok) { setCopied(true); setTimeout(() => setCopied(false), 1500); }
+  };
+  return (
+    <div className="comp-img">
+      <div className="comp-img-head">
+        <b>🎨 ภาพประกอบ</b><span className="spacer" />
+        {m && (
+          <span className="comp-seg">
+            <button className={size === "square" ? "on" : ""} onClick={() => setSize("square")}>1:1 Feed</button>
+            <button className={size === "story" ? "on" : ""} onClick={() => setSize("story")}>9:16 Story</button>
+          </span>
+        )}
+      </div>
+      {!m ? <div className="muted comp-small">Claude ไม่ได้ส่ง prompt ของชุดนี้มา — กด &quot;🎨 คิด prompt ภาพใหม่&quot; ด้านบน</div> : (
+        <>
+          {m.scene && <div className="muted comp-small">ฉาก: {m.scene}</div>}
+          <div className="comp-img-prompt">{prompt}</div>
+          <div className="comp-img-avoid">ห้ามมี: {m.avoid}</div>
+          {(size === "square" ? m.spaceSquare : m.spaceStory) && <div className="comp-img-space">วางพาดหัว: {size === "square" ? m.spaceSquare : m.spaceStory}</div>}
+          <div><button className="btn comp-sm" disabled={!prompt} onClick={copy}>{copied ? "✓ คัดลอกแล้ว" : `📋 คัดลอก prompt ${size === "square" ? "1:1" : "9:16"}`}</button></div>
+          {err && <div className="comp-warn">⚠ {COPY_FAIL}</div>}
+        </>
+      )}
+    </div>
+  );
+}
+
 /** ร่างในฟอร์มสร้างโฆษณาที่จะถูกแทนที่ (null = ฟอร์มว่าง เขียนได้เลย) */
 function draftInUse(): { text: string; interests: number } | null {
   const d = loadDraft();
@@ -265,17 +317,8 @@ function CopyCard({ x, label, c }: { x: CopySet; label: string; c: CompetitorCop
   const [err, setErr] = useState<string | null>(null);
   const copy = async () => {
     setErr(null);
-    let ok = false;
-    try { await navigator.clipboard.writeText(copyText(x)); ok = true; } catch {
-      // เบราว์เซอร์ไม่ให้สิทธิ์คลิปบอร์ด → วิธีเก่า (เลือกข้อความในช่องซ่อนแล้วสั่งคัดลอก)
-      const t = document.createElement("textarea");
-      t.value = copyText(x); t.style.position = "fixed"; t.style.opacity = "0";
-      document.body.appendChild(t); t.select();
-      try { ok = document.execCommand("copy"); } catch { ok = false; }
-      t.remove();
-    }
-    if (ok) { setCopied(true); setTimeout(() => setCopied(false), 1500); }
-    else setErr("คัดลอกไม่ได้ — เบราว์เซอร์ไม่ให้สิทธิ์คลิปบอร์ด · เลือกข้อความแล้วกด Ctrl+C แทน");
+    if (await toClipboard(copyText(x))) { setCopied(true); setTimeout(() => setCopied(false), 1500); }
+    else setErr(COPY_FAIL);
   };
   const use = (force: boolean) => {
     setErr(null);
@@ -292,6 +335,7 @@ function CopyCard({ x, label, c }: { x: CopySet; label: string; c: CompetitorCop
       {x.description && <><div className="comp-copy-f">คำอธิบายสั้น</div><div>{x.description}</div></>}
       <div className="comp-copy-cta"><span className="comp-copy-f">ปุ่ม</span><span className="comp-copy-btn">{x.ctaLabel}</span></div>
       {x.why && <div className="muted comp-small">ทำไม: {x.why}</div>}
+      {c.imagesAt && <ImagePrompt m={x.image} />}
       {ask ? (
         <div className="c-confirm comp-copy-ask">
           <b>ฟอร์มสร้างโฆษณามีร่างค้างอยู่</b>
@@ -313,11 +357,12 @@ function CopyCard({ x, label, c }: { x: CopySet; label: string; c: CompetitorCop
   );
 }
 
-function CopyIdeas({ s, onRun }: { s: CompetitorsState; onRun: () => void }) {
+function CopyIdeas({ s, onRun, onImages }: { s: CompetitorsState; onRun: () => void; onImages: () => void }) {
   const c = s.copy;
   const hasAds = s.competitors.some((x) => s.scans[x.pageId]?.status === "ok");
   if (!hasAds && !c) return null;
   const busy = s.running?.kind === "copy";
+  const imgBusy = s.running?.kind === "image";
   let n = 0;
   return (
     <section className="card comp-card">
@@ -354,7 +399,19 @@ function CopyIdeas({ s, onRun }: { s: CompetitorsState; onRun: () => void }) {
               {c.missed.length > 0 && <>ไม่เจอในคลัง: {c.missed.map((m) => `"${m}"`).join(", ")}</>}
             </div>
           )}
-          <h3 className="comp-h3-gap">คำโฆษณา {c.sets.length} ชุด <span className="muted comp-small">· น้ำเสียงกันเองสุภาพ · ไม่มีราคา/คำอวดที่พิสูจน์ไม่ได้ · ตรวจก่อนใช้ทุกครั้ง</span></h3>
+          <div className="comp-copy-head comp-h3-gap">
+            <h3>คำโฆษณา {c.sets.length} ชุด <span className="muted comp-small">· น้ำเสียงกันเองสุภาพ · ไม่มีราคา/คำอวดที่พิสูจน์ไม่ได้ · ตรวจก่อนใช้ทุกครั้ง</span></h3>
+            <span className="spacer" />
+            <button className="btn primary" disabled={!!s.running || !c.sets.length} onClick={onImages}>
+              {imgBusy ? "Claude กำลังคิดภาพ…" : c.imagesAt ? "🎨 คิด prompt ภาพใหม่" : "🎨 คิด prompt ภาพให้ 5 ชุด"}
+            </button>
+          </div>
+          <p className="muted comp-small comp-copy-cost">
+            prompt ภาษาอังกฤษ ใช้ได้กับ ChatGPT / Gemini (Nano Banana) / Midjourney · ภาพถ่ายสมจริง ไม่มีตัวหนังสือ (ใส่พาดหัวเองทีหลัง)
+            · เสียค่า Claude 1 ครั้ง แอปไม่สร้างภาพเอง{c.imagesAt && ` · คิดเมื่อ ${when(c.imagesAt)} · ${c.imagesModel ?? ""}`}
+          </p>
+          {imgBusy && <div className="comp-busy">⏳ {s.running?.step} (ราว 1 นาที)</div>}
+          {c.imagesError && !imgBusy && <div className="comp-warn">⚠ Claude คิด prompt ภาพไม่ได้: {c.imagesError}</div>}
           <div className="comp-copy-grid">
             {c.sets.map((x, i) => (
               <CopyCard key={`${c.at}-${i}`} x={x} c={c}
@@ -502,7 +559,7 @@ export default function CompetitorsPage() {
             <Setup s={s} disabled={saving || s.running?.kind === "scan"} save={(p) => act("/api/competitors", p)} />
             <ScanBar s={s} claude={claude} onScan={() => act("/api/competitors/scan")} onSummary={() => act("/api/competitors/summary")} />
             <Summary s={s} />
-            <CopyIdeas s={s} onRun={() => act("/api/competitors/copy")} />
+            <CopyIdeas s={s} onRun={() => act("/api/competitors/copy")} onImages={() => act("/api/competitors/images")} />
             <PerCompetitor s={s} disabled={saving || s.running?.kind === "scan"} onState={setS} />
           </>
         )}

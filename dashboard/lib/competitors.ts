@@ -145,7 +145,7 @@ function begin(kind: NonNullable<Running>["kind"], step: string): boolean {
   return true;
 }
 const step = (t: string) => { if (gc.__adsCompetitorsRun) gc.__adsCompetitorsRun.step = t; };
-const BUSY = { scan: "กำลังสแกนอยู่", summary: "Claude กำลังสรุปอยู่", copy: "Claude กำลังคิดคำโฆษณาอยู่" } as const;
+const BUSY = { scan: "กำลังสแกนอยู่", summary: "Claude กำลังสรุปอยู่", copy: "Claude กำลังคิดคำโฆษณาอยู่", image: "Claude กำลังคิด prompt ภาพอยู่" } as const;
 const busyText = () => `${BUSY[gc.__adsCompetitorsRun?.kind ?? "scan"]} — รอให้เสร็จก่อน`;
 
 /** เทียบรอบก่อน: ใหม่ = id ที่รอบก่อนไม่มี · หายไป = id รอบก่อนที่รอบนี้ไม่มี (รอบก่อนต้องอ่านได้จริงถึงจะเทียบ) */
@@ -321,6 +321,47 @@ async function runCopy() {
     await update((x) => { x.copy = copy; x.copyError = null; });
   } catch (e) {
     await update((x) => { x.copyError = (e as Error).message; });
+  }
+}
+
+/* ---------------- 🎨 prompt ภาพประกอบ 5 ชุด (ไม่สร้างภาพ · ไม่แตะ Meta) ---------------- */
+
+export async function startImages(): Promise<{ ok: true; state: CompetitorsState } | { ok: false; error: string }> {
+  const s = await load();
+  if (!s.copy?.sets.length) return { ok: false, error: "ยังไม่มีคำโฆษณาให้คิดภาพ — กด ✨ คิดคำโฆษณาก่อน" };
+  if (!begin("image", "Claude กำลังคิด prompt ภาพ 5 ชุด…")) return { ok: false, error: busyText() };
+  void runImages().catch(() => {}).finally(() => { gc.__adsCompetitorsRun = null; });
+  return { ok: true, state: view(await load()) };
+}
+
+type ImageOut = {
+  success: boolean; error: string | null; model?: string;
+  images?: { scene: string; square: string; story: string; avoid: string; space_square: string; space_story: string }[];
+};
+
+async function runImages() {
+  const s = await load();
+  const c = s.copy;
+  if (!c) return;
+  const at = c.at;   // ผูกกับคำโฆษณารอบนี้ — ถ้าระหว่างรอมีรอบใหม่ ไม่เขียนทับ
+  const input = {
+    business: s.business,
+    sets: c.sets.map((x) => ({ kind: x.kind, angle: x.angle, primary: x.primary, headline: x.headline, description: x.description })),
+  };
+  try {
+    const r = await runWithFile<ImageOut>("--competitors-image-json", input, 240_000);
+    await update((x) => {
+      if (!x.copy || x.copy.at !== at) return;
+      if (!r.success) { x.copy.imagesError = r.error ?? "Claude คิด prompt ภาพไม่สำเร็จ"; return; }
+      const imgs = r.images ?? [];
+      x.copy.sets = x.copy.sets.map((set, i) => {
+        const m = imgs[i];
+        return m ? { ...set, image: { scene: m.scene, square: m.square, story: m.story, avoid: m.avoid, spaceSquare: m.space_square, spaceStory: m.space_story } } : { ...set, image: null };
+      });
+      x.copy.imagesAt = now(); x.copy.imagesModel = r.model ?? ""; x.copy.imagesError = null;
+    });
+  } catch (e) {
+    await update((x) => { if (x.copy && x.copy.at === at) x.copy.imagesError = (e as Error).message; });
   }
 }
 

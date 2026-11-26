@@ -84,6 +84,16 @@ export interface CopySet {
   cta: string;                // MESSAGE_PAGE / LEARN_MORE / …
   ctaLabel: string;           // ชื่อปุ่มภาษาไทย
   why: string;
+  image?: CopyImage | null;   // ปุ่ม 🎨 — prompt ภาพของชุดนี้ (ไม่มี = ยังไม่กด)
+}
+/** prompt ภาพประกอบ 1 ชุด (ภาษาอังกฤษ · ใช้กับ ChatGPT / Gemini / Midjourney) · แอปไม่สร้างภาพเอง */
+export interface CopyImage {
+  scene: string;              // ฉาก (ไทย)
+  square: string;             // prompt 1:1 Feed
+  story: string;              // prompt 9:16 Story / Reels
+  avoid: string;              // สิ่งที่ห้ามมีในภาพ (อังกฤษ คั่นด้วย ,) — ต่อท้าย prompt ตอนคัดลอก
+  spaceSquare: string;        // วางพาดหัวตรงไหน (1:1)
+  spaceStory: string;         // วางพาดหัวตรงไหน (9:16)
 }
 export interface CompetitorCopy {
   at: string;
@@ -95,6 +105,10 @@ export interface CompetitorCopy {
   reach: { lower: number; upper: number } | null;   // คนไทยที่สนใจอย่างน้อย 1 อย่าง
   searchError: string | null; // ค้นคลัง Meta ไม่ได้ (ยังได้คำโฆษณา)
   sets: CopySet[];
+  // ปุ่ม 🎨 — กด ✨ คิดคำโฆษณาใหม่ = ทั้งก้อนถูกแทนที่ prompt ภาพเดิมหายไปด้วย (ไม่ปนกับคำโฆษณาชุดใหม่)
+  imagesAt?: string | null;
+  imagesModel?: string | null;
+  imagesError?: string | null;
 }
 
 /** แอดที่รันนานสุดของแต่ละเจ้า (แอปคำนวณ ไม่ใช่ Claude) */
@@ -112,8 +126,8 @@ export interface CompetitorsState {
   summaryError: string | null;
   copy: CompetitorCopy | null;
   copyError: string | null;
-  /** กำลังทำงานอยู่ (สแกน / สรุป / คิดคำโฆษณา) — หน้าเว็บถามซ้ำทุก 3 วิ จนเป็น null */
-  running: { kind: "scan" | "summary" | "copy"; step: string; startedAt: string } | null;
+  /** กำลังทำงานอยู่ (สแกน / สรุป / คิดคำโฆษณา / คิด prompt ภาพ) — หน้าเว็บถามซ้ำทุก 3 วิ จนเป็น null */
+  running: { kind: "scan" | "summary" | "copy" | "image"; step: string; startedAt: string } | null;
 }
 
 /** ผลค้นชื่อเพจเพื่อเพิ่มคู่แข่ง */

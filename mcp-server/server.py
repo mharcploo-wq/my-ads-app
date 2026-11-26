@@ -91,6 +91,8 @@ parser.add_argument("--competitors-summary-json", metavar="PATH", default=None,
                     help="(หน้าแอป) หน้าวิเคราะห์คู่แข่ง: ข้อความแอดคู่แข่งจากไฟล์ → Claude สรุป hook/offer + 3 มุมที่ยังไม่มีใครเล่น แล้วพิมพ์ผลเป็น JSON")
 parser.add_argument("--competitors-copy-json", metavar="PATH", default=None,
                     help="(หน้าแอป) หน้าวิเคราะห์คู่แข่ง: แอดคู่แข่ง + ผลสรุปจากไฟล์ → Claude คิดความสนใจ (ค้นคลัง Meta) + คำโฆษณา 5 ชุด แล้วพิมพ์ผลเป็น JSON")
+parser.add_argument("--competitors-image-json", metavar="PATH", default=None,
+                    help="(หน้าแอป) หน้าวิเคราะห์คู่แข่ง: คำโฆษณา 5 ชุดจากไฟล์ → Claude คิด prompt ภาพประกอบ (1:1 + 9:16) แล้วพิมพ์ผลเป็น JSON")
 parser.add_argument("--competitors-claude-check", action="store_true",
                     help="(หน้าแอป) ทดสอบคีย์ Claude ของหน้าวิเคราะห์คู่แข่ง (ไม่เสียค่าโทเคน) แล้วพิมพ์ผลเป็น JSON")
 parser.add_argument("--ai-poll-json", metavar="PATH", default=None,
@@ -2574,6 +2576,99 @@ def competitors_copy(data: dict[str, Any]) -> dict[str, Any]:
             "ads": ads[:COPY_SETS]}
 
 
+# ปุ่ม 🎨 คิด prompt ภาพให้ 5 ชุด — prompt อังกฤษสำหรับ ChatGPT / Gemini (Nano Banana) / Midjourney · แอปไม่สร้างภาพเอง
+# สิ่งที่ห้ามมีในภาพทุกชุด (ผู้ใช้กำหนด 26/11) — ต่อท้าย "Avoid:" ของ Claude เสมอ แม้ Claude จะลืมใส่
+IMAGE_AVOID_BASE = ("text", "letters", "words", "logos", "brand names", "watermarks", "charts or graphs with numbers",
+                    "navy blue")
+COMPETITORS_IMAGE_SYSTEM = (
+    "You write image-generation prompts for a Thai business owner's Facebook/Instagram ads. You get the business "
+    "description and up to 5 ad copies in Thai (angle, primary text, headline, description). For EACH ad, in the "
+    "same order, write one illustration concept that fits that ad's angle, as: "
+    "scene = one short Thai sentence describing the scene for the owner; "
+    "square = an English prompt for a 1:1 square feed image; story = an English prompt for a 9:16 vertical "
+    "Story/Reels image of the same scene, reframed tall; "
+    "avoid = extra English things to keep out of that image (comma-separated, may be empty); "
+    "space_square / space_story = one short Thai phrase telling where to place the headline later in each size. "
+    "Each prompt is one paragraph of 60-110 words that works in ChatGPT, Gemini and Midjourney alike: start with "
+    "'Realistic photo, square 1:1.' or 'Realistic photo, vertical 9:16.', then subject, action, setting, lighting, "
+    "colour palette, mood and camera (lens, angle, depth of field). "
+    "Style for every image: realistic photography; Thai people, mainly Thai SME owners and their teams, natural and "
+    "candid (not posed stock smiles); settings are a Thai office or a small factory / workshop / warehouse, chosen "
+    "to fit the ad's angle and varied across the 5 ads; soft, polite colour palette (warm neutrals, beige, wood, "
+    "soft greens, muted earth tones) and never navy blue or dark blue. "
+    "Hard rules: absolutely no text, letters, numbers, signs or readable screens in the image; no logos, brand "
+    "names or recognisable products; no charts, graphs or figures that show results; no real or famous people; "
+    "do not show anything the ad does not claim. Every prompt must say to leave clean empty space for a headline "
+    "and where: square = an uncluttered band such as the top third; story = keep the top 20% and bottom 25% clear "
+    "for headline and Story buttons."
+)
+COMPETITORS_IMAGE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "images": {"type": "array", "items": {
+            "type": "object",
+            "properties": {"scene": {"type": "string"}, "square": {"type": "string"}, "story": {"type": "string"},
+                           "avoid": {"type": "string"}, "space_square": {"type": "string"},
+                           "space_story": {"type": "string"}},
+            "required": ["scene", "square", "story", "avoid", "space_square", "space_story"],
+            "additionalProperties": False,
+        }},
+    },
+    "required": ["images"],
+    "additionalProperties": False,
+}
+
+
+def _image_avoid(extra: str) -> str:
+    """รายการห้ามมีในภาพ = รายการบังคับ + ที่ Claude เพิ่ม (ตัดซ้ำ ไม่สนตัวพิมพ์)"""
+    out: list[str] = []
+    for w in [*IMAGE_AVOID_BASE, *extra.split(",")]:
+        w = w.strip().strip(".").strip()
+        if w and w.lower() not in {x.lower() for x in out}:
+            out.append(w[:60])
+    return ", ".join(out[:16])
+
+
+def competitors_image(data: dict[str, Any]) -> dict[str, Any]:
+    """(หน้าวิเคราะห์คู่แข่ง · ปุ่ม 🎨 คิด prompt ภาพให้ 5 ชุด)
+    คำโฆษณา 5 ชุดเดิม + คำอธิบายธุรกิจ → Claude คิด prompt ภาพ (1:1 + 9:16) ชุดละ 1 ฉาก
+    ไม่สร้างภาพ · ไม่แตะ Meta · คีย์ Claude ของหน้าคู่แข่ง"""
+    c = competitors_claude()
+    if c["error"]:
+        return {"success": False, "error": c["error"]}
+    sets = [s for s in data.get("sets") or [] if isinstance(s, dict)][:COPY_SETS]
+    if not sets:
+        return {"success": False, "error": "ยังไม่มีคำโฆษณาให้คิดภาพ — กด ✨ คิดคำโฆษณาก่อน"}
+    prompt = "Business and ad copies (JSON):\n" + json.dumps({"business": data.get("business") or "", "ads": sets},
+                                                              ensure_ascii=False)
+    text, err = _claude_text(COMPETITORS_IMAGE_SYSTEM, prompt, COMPETITORS_IMAGE_SCHEMA,
+                             "Claude ไม่คิด prompt ภาพจากคำโฆษณาชุดนี้ให้ — ลองคิดคำโฆษณาใหม่", max_tokens=8000,
+                             api_key=c["key"], workspace=c["workspace"], model=c["model"], where=COMPETITORS_WHERE)
+    if err:
+        log_action("competitors_image", False, {"model": c["model"], "using": c["using"], "error": err})
+        return {"success": False, "error": err}
+    try:
+        txt = lambda a, k: str(a.get(k) or "").strip()  # noqa: E731
+        images = []
+        for a in (json.loads(text or "").get("images") or [])[:len(sets)]:
+            a = a if isinstance(a, dict) else {}
+            square, story = txt(a, "square"), txt(a, "story")
+            # สัดส่วนต้องอยู่ใน prompt เสมอ (เครื่องมือที่ไม่มีปุ่มเลือกขนาดอ่านจากข้อความ)
+            if square and "1:1" not in square:
+                square = "Square 1:1 image. " + square
+            if story and "9:16" not in story:
+                story = "Vertical 9:16 image. " + story
+            images.append({"scene": txt(a, "scene"), "square": square, "story": story,
+                           "avoid": _image_avoid(txt(a, "avoid")), "space_square": txt(a, "space_square"),
+                           "space_story": txt(a, "space_story")})
+    except (ValueError, AttributeError):
+        return {"success": False, "error": "Claude ตอบกลับในรูปแบบที่อ่านไม่ได้ — กดใหม่อีกครั้ง"}
+    if not any(x["square"] or x["story"] for x in images):
+        return {"success": False, "error": "Claude ไม่ได้ส่ง prompt ภาพกลับมา — กดใหม่อีกครั้ง"}
+    log_action("competitors_image", True, {"model": c["model"], "using": c["using"], "images": len(images)})
+    return {"success": True, "error": None, "model": c["model"], "images": images}
+
+
 def suggest_interests(spec: dict[str, Any]) -> dict[str, Any]:
     """(ปุ่ม ✨ ในหน้าแอป) ข้อความโฆษณา → AI คิดคำค้น → ค้นคลังความสนใจของ Meta → ไม่เกิน 10 รายการ
     spec: texts[], titles[], link_url?"""
@@ -2943,7 +3038,7 @@ if __name__ == "__main__":
     if (ARGS.status or ARGS.create_json or ARGS.suggest_json or ARGS.search_json or ARGS.adset_json
             or ARGS.reach_json or ARGS.lives or ARGS.live_ad_json or ARGS.pages
             or ARGS.portfolios or ARGS.check_portfolio or ARGS.insights_summary_json
-            or ARGS.competitors_summary_json or ARGS.competitors_copy_json or ARGS.competitors_claude_check or ARGS.ai_poll_json or ARGS.ai_stop):
+            or ARGS.competitors_summary_json or ARGS.competitors_copy_json or ARGS.competitors_image_json or ARGS.competitors_claude_check or ARGS.ai_poll_json or ARGS.ai_stop):
         if PORTFOLIO != 1 and (ARGS.status or ARGS.create_json):
             _auto_portfolio_ids()
         if ARGS.ai_poll_json:
@@ -2956,6 +3051,8 @@ if __name__ == "__main__":
             out = competitors_summary(json.loads(Path(ARGS.competitors_summary_json).read_text(encoding="utf-8")))
         elif ARGS.competitors_copy_json:
             out = competitors_copy(json.loads(Path(ARGS.competitors_copy_json).read_text(encoding="utf-8")))
+        elif ARGS.competitors_image_json:
+            out = competitors_image(json.loads(Path(ARGS.competitors_image_json).read_text(encoding="utf-8")))
         elif ARGS.competitors_claude_check:
             out = competitors_claude_check()
         elif ARGS.check_portfolio:
