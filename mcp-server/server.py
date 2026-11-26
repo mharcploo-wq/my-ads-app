@@ -93,6 +93,8 @@ parser.add_argument("--competitors-copy-json", metavar="PATH", default=None,
                     help="(หน้าแอป) หน้าวิเคราะห์คู่แข่ง: แอดคู่แข่ง + ผลสรุปจากไฟล์ → Claude คิดความสนใจ (ค้นคลัง Meta) + คำโฆษณา 5 ชุด แล้วพิมพ์ผลเป็น JSON")
 parser.add_argument("--competitors-image-json", metavar="PATH", default=None,
                     help="(หน้าแอป) หน้าวิเคราะห์คู่แข่ง: คำโฆษณา 5 ชุดจากไฟล์ → Claude คิด prompt ภาพประกอบ (1:1 + 9:16) แล้วพิมพ์ผลเป็น JSON")
+parser.add_argument("--competitors-video-json", metavar="PATH", default=None,
+                    help="(หน้าแอป) หน้าวิเคราะห์คู่แข่ง: คำโฆษณา + ภาพ 9:16 จากไฟล์ → Claude คิด prompt คลิป 16 วิ (2 ช็อต) แล้วพิมพ์ผลเป็น JSON")
 parser.add_argument("--competitors-claude-check", action="store_true",
                     help="(หน้าแอป) ทดสอบคีย์ Claude ของหน้าวิเคราะห์คู่แข่ง (ไม่เสียค่าโทเคน) แล้วพิมพ์ผลเป็น JSON")
 parser.add_argument("--ai-poll-json", metavar="PATH", default=None,
@@ -2619,10 +2621,10 @@ COMPETITORS_IMAGE_SCHEMA = {
 }
 
 
-def _image_avoid(extra: str) -> str:
-    """รายการห้ามมีในภาพ = รายการบังคับ + ที่ Claude เพิ่ม (ตัดซ้ำ ไม่สนตัวพิมพ์)"""
+def _image_avoid(extra: str, base: tuple[str, ...] = IMAGE_AVOID_BASE) -> str:
+    """รายการห้ามมีในภาพ/คลิป = รายการบังคับ + ที่ Claude เพิ่ม (ตัดซ้ำ ไม่สนตัวพิมพ์)"""
     out: list[str] = []
-    for w in [*IMAGE_AVOID_BASE, *extra.split(",")]:
+    for w in [*base, *extra.split(",")]:
         w = w.strip().strip(".").strip()
         if w and w.lower() not in {x.lower() for x in out}:
             out.append(w[:60])
@@ -2667,6 +2669,106 @@ def competitors_image(data: dict[str, Any]) -> dict[str, Any]:
         return {"success": False, "error": "Claude ไม่ได้ส่ง prompt ภาพกลับมา — กดใหม่อีกครั้ง"}
     log_action("competitors_image", True, {"model": c["model"], "using": c["using"], "images": len(images)})
     return {"success": True, "error": None, "model": c["model"], "images": images}
+
+
+# ปุ่ม 🎬 คิด prompt คลิป 16 วิ ให้ 5 ชุด — Veo 3.1 / Omni 1.2 (Google Flow) สร้างได้ครั้งละ 8 วิ → 2 ช็อตไปต่อใน CapCut
+# ช็อต 1 ใช้ภาพ 9:16 จากปุ่ม 🎨 เป็นเฟรมแรก · ช็อต 2 ได้ prompt ภาพเฟรมแรกของตัวเอง (คนเดิม ฉากเดิม)
+# มาตรฐานวิดีโอ (BE docs/kb/series-visual-standard.md §5): กล้อง 1 แบบ · 1 การกระทำ · พูดจบก่อนช็อตจบ · ไม่มีตัวหนังสือ
+VIDEO_SHOTS = 2
+VIDEO_LINE_MAX = 80   # ตัวอักษรไทยที่พูดทันใน 8 วิ (หน้าเว็บขึ้นสีแดงถ้าเกิน — ไม่ตัดให้เอง)
+VIDEO_AVOID_BASE = ("subtitles", "captions", "on-screen text", "letters", "logos", "brand names", "watermarks",
+                    "background music", "extra people", "navy blue")
+COMPETITORS_VIDEO_SYSTEM = (
+    "You write prompts for a 16-second vertical 9:16 video ad for a Thai business owner, made in Google Flow with "
+    "Veo 3.1 or Omni 1.2 (one prompt must work in both). Each tool makes 8-second clips, so every ad is exactly 2 "
+    "shots of 8 seconds that the owner joins in CapCut. You get the business description and up to 5 ads, each with "
+    "its Thai ad copy and the approved 9:16 illustration (scene + image prompt). For EACH ad, in the same order: "
+    "story = one short Thai sentence summarising the 16 seconds. "
+    "shots = exactly 2 shots. Shot 1 (0-8s): the problem the angle speaks to, starting from the approved 9:16 image "
+    "as the first frame (same people, outfits and setting). Shot 2 (8-16s): the way out offered by the ad and a clear "
+    "invitation to message the page. For each shot: goal = short Thai label; "
+    "frame = shot 1: empty string; shot 2: an English image prompt (60-100 words) for its first frame that keeps "
+    "the SAME people (same age, gender, outfit), the same setting, light and colour palette as the approved image, "
+    "realistic photo, vertical 9:16, no text, leaving the top 20% and bottom 25% clear; "
+    "line = what the on-screen speaker says, natural polite Thai ending with ครับ (male speaker) or ค่ะ (female "
+    "speaker), at most 80 Thai characters so it is finished by second 7, no prices, numbers, guarantees or "
+    "superlatives, nothing the ad copy does not claim; "
+    "prompt = English video prompt, one paragraph: 'Use the attached image as the first frame.' then exactly one "
+    "action at moderate speed that starts in the first frame, who speaks and how (natural Thai, tone, pace), the "
+    "line itself inside double quotes, anyone else keeps their mouth closed, exactly one camera move (static, slow "
+    "push-in, slow pull-out or slow pan), 'Audio: clear voice, quiet room tone, no background music.', keep faces, "
+    "outfits and setting exactly as in the image, 'Vertical 9:16, 8 seconds, finish speaking by 7 seconds.', no "
+    "subtitles or on-screen text; "
+    "caption = a Thai on-screen text suggestion for the owner to add in CapCut, at most 25 characters. "
+    "avoid = extra English things to keep out (comma-separated, may be empty). "
+    "Style: realistic, Thai SME owners and staff, candid not posed, soft polite colours, never navy blue; no logos, "
+    "brand names, readable screens or number charts; no real or famous people; never name a competitor."
+)
+COMPETITORS_VIDEO_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "videos": {"type": "array", "items": {
+            "type": "object",
+            "properties": {
+                "story": {"type": "string"},
+                "shots": {"type": "array", "items": {
+                    "type": "object",
+                    "properties": {"goal": {"type": "string"}, "frame": {"type": "string"}, "line": {"type": "string"},
+                                   "prompt": {"type": "string"}, "caption": {"type": "string"}},
+                    "required": ["goal", "frame", "line", "prompt", "caption"],
+                    "additionalProperties": False,
+                }},
+                "avoid": {"type": "string"},
+            },
+            "required": ["story", "shots", "avoid"],
+            "additionalProperties": False,
+        }},
+    },
+    "required": ["videos"],
+    "additionalProperties": False,
+}
+
+
+def competitors_video(data: dict[str, Any]) -> dict[str, Any]:
+    """(หน้าวิเคราะห์คู่แข่ง · ปุ่ม 🎬 คิด prompt คลิป 16 วิ ให้ 5 ชุด)
+    คำโฆษณา + ภาพ 9:16 จากปุ่ม 🎨 → Claude คิดคลิป 2 ช็อต × 8 วิ ต่อชุด (บทพูดไทย + prompt คลิป + prompt ภาพเฟรมแรกช็อต 2)
+    ไม่สร้างคลิป · ไม่แตะ Meta · คีย์ Claude ของหน้าคู่แข่ง"""
+    c = competitors_claude()
+    if c["error"]:
+        return {"success": False, "error": c["error"]}
+    sets = [s for s in data.get("sets") or [] if isinstance(s, dict)][:COPY_SETS]
+    if not sets:
+        return {"success": False, "error": "ยังไม่มี prompt ภาพ 9:16 ให้ใช้เป็นเฟรมแรก — กด 🎨 ก่อน"}
+    prompt = "Business, ad copies and approved 9:16 images (JSON):\n" + json.dumps(
+        {"business": data.get("business") or "", "ads": sets}, ensure_ascii=False)
+    text, err = _claude_text(COMPETITORS_VIDEO_SYSTEM, prompt, COMPETITORS_VIDEO_SCHEMA,
+                             "Claude ไม่คิด prompt คลิปจากคำโฆษณาชุดนี้ให้ — ลองคิดคำโฆษณาใหม่", max_tokens=12000,
+                             api_key=c["key"], workspace=c["workspace"], model=c["model"], where=COMPETITORS_WHERE)
+    if err:
+        log_action("competitors_video", False, {"model": c["model"], "using": c["using"], "error": err})
+        return {"success": False, "error": err}
+    try:
+        txt = lambda a, k: str(a.get(k) or "").strip()  # noqa: E731
+        videos = []
+        for v in (json.loads(text or "").get("videos") or [])[:len(sets)]:
+            v = v if isinstance(v, dict) else {}
+            shots = []
+            for i, s in enumerate([s for s in v.get("shots") or [] if isinstance(s, dict)][:VIDEO_SHOTS]):
+                p, frame = txt(s, "prompt"), txt(s, "frame")
+                if p and "9:16" not in p:   # สัดส่วนต้องอยู่ใน prompt เสมอ
+                    p += " Vertical 9:16, 8 seconds."
+                if frame and "9:16" not in frame:
+                    frame = "Realistic photo, vertical 9:16. " + frame
+                shots.append({"goal": txt(s, "goal"), "frame": None if i == 0 else (frame or None),
+                              "line": txt(s, "line"), "prompt": p, "caption": txt(s, "caption")})
+            videos.append({"story": txt(v, "story"), "shots": shots,
+                           "avoid": _image_avoid(txt(v, "avoid"), VIDEO_AVOID_BASE)} if shots else None)
+    except (ValueError, AttributeError):
+        return {"success": False, "error": "Claude ตอบกลับในรูปแบบที่อ่านไม่ได้ — กดใหม่อีกครั้ง"}
+    if not any(videos):
+        return {"success": False, "error": "Claude ไม่ได้ส่ง prompt คลิปกลับมา — กดใหม่อีกครั้ง"}
+    log_action("competitors_video", True, {"model": c["model"], "using": c["using"], "videos": sum(1 for v in videos if v)})
+    return {"success": True, "error": None, "model": c["model"], "videos": videos}
 
 
 def suggest_interests(spec: dict[str, Any]) -> dict[str, Any]:
@@ -3038,7 +3140,7 @@ if __name__ == "__main__":
     if (ARGS.status or ARGS.create_json or ARGS.suggest_json or ARGS.search_json or ARGS.adset_json
             or ARGS.reach_json or ARGS.lives or ARGS.live_ad_json or ARGS.pages
             or ARGS.portfolios or ARGS.check_portfolio or ARGS.insights_summary_json
-            or ARGS.competitors_summary_json or ARGS.competitors_copy_json or ARGS.competitors_image_json or ARGS.competitors_claude_check or ARGS.ai_poll_json or ARGS.ai_stop):
+            or ARGS.competitors_summary_json or ARGS.competitors_copy_json or ARGS.competitors_image_json or ARGS.competitors_video_json or ARGS.competitors_claude_check or ARGS.ai_poll_json or ARGS.ai_stop):
         if PORTFOLIO != 1 and (ARGS.status or ARGS.create_json):
             _auto_portfolio_ids()
         if ARGS.ai_poll_json:
@@ -3053,6 +3155,8 @@ if __name__ == "__main__":
             out = competitors_copy(json.loads(Path(ARGS.competitors_copy_json).read_text(encoding="utf-8")))
         elif ARGS.competitors_image_json:
             out = competitors_image(json.loads(Path(ARGS.competitors_image_json).read_text(encoding="utf-8")))
+        elif ARGS.competitors_video_json:
+            out = competitors_video(json.loads(Path(ARGS.competitors_video_json).read_text(encoding="utf-8")))
         elif ARGS.competitors_claude_check:
             out = competitors_claude_check()
         elif ARGS.check_portfolio:

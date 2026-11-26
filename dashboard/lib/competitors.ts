@@ -145,7 +145,7 @@ function begin(kind: NonNullable<Running>["kind"], step: string): boolean {
   return true;
 }
 const step = (t: string) => { if (gc.__adsCompetitorsRun) gc.__adsCompetitorsRun.step = t; };
-const BUSY = { scan: "กำลังสแกนอยู่", summary: "Claude กำลังสรุปอยู่", copy: "Claude กำลังคิดคำโฆษณาอยู่", image: "Claude กำลังคิด prompt ภาพอยู่" } as const;
+const BUSY = { scan: "กำลังสแกนอยู่", summary: "Claude กำลังสรุปอยู่", copy: "Claude กำลังคิดคำโฆษณาอยู่", image: "Claude กำลังคิด prompt ภาพอยู่", video: "Claude กำลังคิด prompt คลิปอยู่" } as const;
 const busyText = () => `${BUSY[gc.__adsCompetitorsRun?.kind ?? "scan"]} — รอให้เสร็จก่อน`;
 
 /** เทียบรอบก่อน: ใหม่ = id ที่รอบก่อนไม่มี · หายไป = id รอบก่อนที่รอบนี้ไม่มี (รอบก่อนต้องอ่านได้จริงถึงจะเทียบ) */
@@ -356,12 +356,57 @@ async function runImages() {
       const imgs = r.images ?? [];
       x.copy.sets = x.copy.sets.map((set, i) => {
         const m = imgs[i];
-        return m ? { ...set, image: { scene: m.scene, square: m.square, story: m.story, avoid: m.avoid, spaceSquare: m.space_square, spaceStory: m.space_story } } : { ...set, image: null };
+        // ช็อต 1 ของคลิปใช้ภาพ 9:16 รอบเดิมเป็นเฟรมแรก → ภาพใหม่ = ล้าง prompt คลิปเดิม
+        return { ...set, video: null, image: m ? { scene: m.scene, square: m.square, story: m.story, avoid: m.avoid, spaceSquare: m.space_square, spaceStory: m.space_story } : null };
       });
       x.copy.imagesAt = now(); x.copy.imagesModel = r.model ?? ""; x.copy.imagesError = null;
+      x.copy.videosAt = null; x.copy.videosModel = null; x.copy.videosError = null;
     });
   } catch (e) {
     await update((x) => { if (x.copy && x.copy.at === at) x.copy.imagesError = (e as Error).message; });
+  }
+}
+
+/* ---------------- 🎬 prompt คลิป 16 วิ (2 ช็อต × 8 วิ · ไม่สร้างคลิป · ไม่แตะ Meta) ---------------- */
+
+export async function startVideos(): Promise<{ ok: true; state: CompetitorsState } | { ok: false; error: string }> {
+  const s = await load();
+  if (!s.copy?.sets.length) return { ok: false, error: "ยังไม่มีคำโฆษณา — กด ✨ คิดคำโฆษณาก่อน" };
+  if (!s.copy.imagesAt || !s.copy.sets.some((x) => x.image?.story)) return { ok: false, error: "กด 🎨 คิด prompt ภาพก่อน — ช็อต 1 ใช้ภาพ 9:16 นั้นเป็นเฟรมแรก" };
+  if (!begin("video", "Claude กำลังคิด prompt คลิป 16 วิ 5 ชุด…")) return { ok: false, error: busyText() };
+  void runVideos().catch(() => {}).finally(() => { gc.__adsCompetitorsRun = null; });
+  return { ok: true, state: view(await load()) };
+}
+
+type VideoOut = {
+  success: boolean; error: string | null; model?: string;
+  videos?: ({ story: string; shots: { goal: string; frame: string | null; line: string; prompt: string; caption: string }[]; avoid: string } | null)[];
+};
+
+async function runVideos() {
+  const s = await load();
+  const c = s.copy;
+  if (!c) return;
+  const at = c.at, imagesAt = c.imagesAt;   // ผูกกับคำโฆษณา + ภาพรอบนี้ — ระหว่างรอมีรอบใหม่ ไม่เขียนทับ
+  const input = {
+    business: s.business,
+    sets: c.sets.map((x) => ({
+      kind: x.kind, angle: x.angle, primary: x.primary, headline: x.headline, description: x.description,
+      image_9x16: x.image ? { scene: x.image.scene, prompt: x.image.story } : null,
+    })),
+  };
+  const same = (x: Stored) => !!x.copy && x.copy.at === at && x.copy.imagesAt === imagesAt;
+  try {
+    const r = await runWithFile<VideoOut>("--competitors-video-json", input, 300_000);
+    await update((x) => {
+      if (!same(x) || !x.copy) return;
+      if (!r.success) { x.copy.videosError = r.error ?? "Claude คิด prompt คลิปไม่สำเร็จ"; return; }
+      const vids = r.videos ?? [];
+      x.copy.sets = x.copy.sets.map((set, i) => ({ ...set, video: vids[i] ?? null }));
+      x.copy.videosAt = now(); x.copy.videosModel = r.model ?? ""; x.copy.videosError = null;
+    });
+  } catch (e) {
+    await update((x) => { if (same(x) && x.copy) x.copy.videosError = (e as Error).message; });
   }
 }
 

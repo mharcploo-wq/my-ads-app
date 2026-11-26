@@ -607,6 +607,13 @@ a.btn { text-decoration: none; color: var(--text-primary); }
 .comp-img-prompt { background: #101010; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font: 12px/1.55 ui-monospace, Consolas, monospace; color: #cfd6e0; max-height: 150px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; user-select: all; }
 .comp-img-avoid { font-size: 12px; color: #e6a0a0; }
 .comp-img-space { font-size: 12px; color: #9fd49f; }
+.comp-shot { border: 1px solid var(--border); border-radius: 8px; padding: 9px 10px; display: flex; flex-direction: column; gap: 5px; background: #131313; }
+.comp-shot-head { font-size: 12.5px; font-weight: 700; display: flex; gap: 8px; align-items: center; }
+.comp-shot-time { font-size: 11px; font-weight: 400; color: #ffd28a; background: #3a2e18; border-radius: 5px; padding: 0 7px; }
+.comp-shot-line { font-size: 13px; border-left: 3px solid #6fd46f; padding-left: 8px; overflow-wrap: anywhere; }
+.comp-shot-line span { font-size: 11px; margin-left: 4px; }
+.comp-shot-over { color: #ff8a8a; font-weight: 700; }
+.comp-shot-cap { font-size: 12px; color: #cdb4ff; }
 .comp-each { border-top: 1px solid var(--border); padding: 8px 0; }
 .comp-each:first-of-type { border-top: 0; }
 .comp-each summary { cursor: pointer; }

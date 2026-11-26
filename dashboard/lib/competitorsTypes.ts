@@ -85,7 +85,23 @@ export interface CopySet {
   ctaLabel: string;           // ชื่อปุ่มภาษาไทย
   why: string;
   image?: CopyImage | null;   // ปุ่ม 🎨 — prompt ภาพของชุดนี้ (ไม่มี = ยังไม่กด)
+  video?: CopyVideo | null;   // ปุ่ม 🎬 — prompt คลิป 16 วิ (กด 🎨 ใหม่ = ล้าง เพราะช็อต 1 ใช้ภาพ 9:16 รอบนั้น)
 }
+/** คลิปโฆษณา 16 วิ = 2 ช็อต × 8 วิ (Veo 3.1 / Omni 1.2 ใน Google Flow) ไปต่อกันใน CapCut · แอปไม่สร้างคลิปเอง */
+export interface CopyVideo {
+  story: string;              // เรื่องย่อทั้งคลิป (ไทย)
+  shots: VideoShot[];
+  avoid: string;              // สิ่งที่ห้ามมีในคลิป (อังกฤษ) — ต่อท้าย prompt ตอนคัดลอก
+}
+export interface VideoShot {
+  goal: string;               // "ปัญหา" / "ทางออก + ชวนทักแชต"
+  frame: string | null;       // prompt ภาพเฟรมแรก · null = ใช้ภาพ 9:16 จากปุ่ม 🎨 (ช็อต 1)
+  line: string;               // บทพูดไทย (ควร ≤ VIDEO_LINE_MAX ตัวอักษร)
+  prompt: string;             // prompt คลิป (อังกฤษ มีบทพูดในเครื่องหมายคำพูด)
+  caption: string;            // ข้อความขึ้นจอแนะนำ ใส่เองใน CapCut
+}
+/** ตัวอักษรไทยที่พูดทันใน 8 วิ — เกินแล้วหน้าเว็บขึ้นสีแดง (ไม่ตัดให้เอง) */
+export const VIDEO_LINE_MAX = 80;
 /** prompt ภาพประกอบ 1 ชุด (ภาษาอังกฤษ · ใช้กับ ChatGPT / Gemini / Midjourney) · แอปไม่สร้างภาพเอง */
 export interface CopyImage {
   scene: string;              // ฉาก (ไทย)
@@ -109,6 +125,9 @@ export interface CompetitorCopy {
   imagesAt?: string | null;
   imagesModel?: string | null;
   imagesError?: string | null;
+  videosAt?: string | null;
+  videosModel?: string | null;
+  videosError?: string | null;
 }
 
 /** แอดที่รันนานสุดของแต่ละเจ้า (แอปคำนวณ ไม่ใช่ Claude) */
@@ -127,7 +146,7 @@ export interface CompetitorsState {
   copy: CompetitorCopy | null;
   copyError: string | null;
   /** กำลังทำงานอยู่ (สแกน / สรุป / คิดคำโฆษณา / คิด prompt ภาพ) — หน้าเว็บถามซ้ำทุก 3 วิ จนเป็น null */
-  running: { kind: "scan" | "summary" | "copy" | "image"; step: string; startedAt: string } | null;
+  running: { kind: "scan" | "summary" | "copy" | "image" | "video"; step: string; startedAt: string } | null;
 }
 
 /** ผลค้นชื่อเพจเพื่อเพิ่มคู่แข่ง */

@@ -1,8 +1,8 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
-import { adLibraryPageUrl } from "@/lib/competitorsTypes";
+import { adLibraryPageUrl, VIDEO_LINE_MAX } from "@/lib/competitorsTypes";
 import type {
-  Competitor, CompetitorAd, CompetitorCopy, CompetitorScan, CompetitorsClaudeView, CompetitorsState, CopyImage, CopySet, PageCandidate, SummaryRow,
+  Competitor, CompetitorAd, CompetitorCopy, CompetitorScan, CompetitorsClaudeView, CompetitorsState, CopyImage, CopySet, CopyVideo, PageCandidate, SummaryRow,
 } from "@/lib/competitorsTypes";
 import { loadDraft, patchDraft } from "@/lib/draft";
 import { fmtSize } from "@/components/InterestPicker";
@@ -251,38 +251,80 @@ async function toClipboard(text: string): Promise<boolean> {
 }
 const COPY_FAIL = "คัดลอกไม่ได้ — เบราว์เซอร์ไม่ให้สิทธิ์คลิปบอร์ด · เลือกข้อความแล้วกด Ctrl+C แทน";
 
-/** 🎨 ภาพประกอบของชุดนี้ — สลับ 1:1 / 9:16 · คัดลอก = prompt + "Avoid: …" (บางเครื่องมือไม่มีช่อง negative) */
-function ImagePrompt({ m }: { m: CopyImage | null | undefined }) {
-  const [size, setSize] = useState<"square" | "story">("square");
+/** ปุ่มคัดลอกข้อความ 1 ก้อน — จำสถานะ "คัดลอกแล้ว" / คัดลอกไม่ได้ ของตัวเอง */
+function CopyBtn({ text, label }: { text: string; label: string }) {
   const [copied, setCopied] = useState(false);
   const [err, setErr] = useState(false);
-  const prompt = m ? (size === "square" ? m.square : m.story) : "";
   const copy = async () => {
-    const ok = await toClipboard(`${prompt}
-
-Avoid: ${m?.avoid ?? ""}`);
+    const ok = await toClipboard(text);
     setErr(!ok);
     if (ok) { setCopied(true); setTimeout(() => setCopied(false), 1500); }
   };
   return (
+    <>
+      <div><button className="btn comp-sm" disabled={!text} onClick={copy}>{copied ? "✓ คัดลอกแล้ว" : `📋 ${label}`}</button></div>
+      {err && <div className="comp-warn">⚠ {COPY_FAIL}</div>}
+    </>
+  );
+}
+/** คัดลอก = prompt + "Avoid: …" (บางเครื่องมือไม่มีช่อง negative) */
+const withAvoid = (prompt: string, avoid: string) => `${prompt}\n\nAvoid: ${avoid}`;
+
+/** 🎬 คลิป 16 วิ = 2 ช็อต × 8 วิ · ช็อต 1 ใช้ภาพ 9:16 ของแท็บข้าง ๆ เป็นเฟรมแรก */
+function VideoPrompt({ v, imageAvoid }: { v: CopyVideo; imageAvoid: string }) {
+  return (
+    <>
+      {v.story && <div className="muted comp-small">เรื่อง: {v.story}</div>}
+      {v.shots.map((sh, i) => {
+        const len = [...sh.line].length, over = len > VIDEO_LINE_MAX;
+        return (
+          <div key={i} className="comp-shot">
+            <div className="comp-shot-head">ช็อต {i + 1} <span className="comp-shot-time">{i * 8}–{i * 8 + 8} วิ</span> {sh.goal}</div>
+            {sh.frame ? (
+              <>
+                <div className="muted comp-small">เฟรมแรก: สร้างภาพนี้ก่อน (คนเดิม ฉากเดิม) แล้วแนบตอนสร้างคลิป ↓</div>
+                <div className="comp-img-prompt">{sh.frame}</div>
+                <CopyBtn text={withAvoid(sh.frame, imageAvoid)} label="คัดลอก prompt ภาพเฟรมแรก" />
+              </>
+            ) : <div className="muted comp-small">เฟรมแรก: ใช้ภาพจากแท็บ &quot;9:16 Story&quot;</div>}
+            <div className="comp-shot-line">“{sh.line}” <span className={over ? "comp-shot-over" : "muted"}>{over ? `${len}/${VIDEO_LINE_MAX} เกิน ${VIDEO_LINE_MAX} — ตัดคำก่อนใช้` : `${len}/${VIDEO_LINE_MAX} ตัวอักษร`}</span></div>
+            <div className="comp-img-prompt">{sh.prompt}</div>
+            {sh.caption && <div className="comp-shot-cap">ข้อความขึ้นจอ (ใส่เองใน CapCut): {sh.caption}</div>}
+            <CopyBtn text={withAvoid(sh.prompt, v.avoid)} label={`คัดลอก prompt ช็อต ${i + 1}`} />
+          </div>
+        );
+      })}
+      <div className="comp-img-avoid">ห้ามมีในคลิป: {v.avoid}</div>
+    </>
+  );
+}
+
+/** 🎨 ภาพประกอบของชุดนี้ — สลับ 1:1 / 9:16 / 🎬 คลิป 16 วิ (แท็บคลิปขึ้นเมื่อกด 🎬 แล้ว) */
+function ImagePrompt({ m, v, videos }: { m: CopyImage | null | undefined; v: CopyVideo | null | undefined; videos: boolean }) {
+  const [size, setSize] = useState<"square" | "story" | "video">("square");
+  const tab = size === "video" && !videos ? "square" : size;
+  const prompt = m ? (tab === "square" ? m.square : m.story) : "";
+  return (
     <div className="comp-img">
       <div className="comp-img-head">
-        <b>🎨 ภาพประกอบ</b><span className="spacer" />
-        {m && (
+        <b>{videos ? "🎨 ภาพและคลิป" : "🎨 ภาพประกอบ"}</b><span className="spacer" />
+        {(m || videos) && (
           <span className="comp-seg">
-            <button className={size === "square" ? "on" : ""} onClick={() => setSize("square")}>1:1 Feed</button>
-            <button className={size === "story" ? "on" : ""} onClick={() => setSize("story")}>9:16 Story</button>
+            <button className={tab === "square" ? "on" : ""} onClick={() => setSize("square")}>1:1 Feed</button>
+            <button className={tab === "story" ? "on" : ""} onClick={() => setSize("story")}>9:16 Story</button>
+            {videos && <button className={tab === "video" ? "on" : ""} onClick={() => setSize("video")}>🎬 คลิป 16 วิ</button>}
           </span>
         )}
       </div>
-      {!m ? <div className="muted comp-small">Claude ไม่ได้ส่ง prompt ของชุดนี้มา — กด &quot;🎨 คิด prompt ภาพใหม่&quot; ด้านบน</div> : (
+      {tab === "video" ? (
+        v ? <VideoPrompt v={v} imageAvoid={m?.avoid ?? ""} /> : <div className="muted comp-small">Claude ไม่ได้ส่ง prompt คลิปของชุดนี้มา — กด &quot;🎬 คิด prompt คลิปใหม่&quot; ด้านบน</div>
+      ) : !m ? <div className="muted comp-small">Claude ไม่ได้ส่ง prompt ของชุดนี้มา — กด &quot;🎨 คิด prompt ภาพใหม่&quot; ด้านบน</div> : (
         <>
           {m.scene && <div className="muted comp-small">ฉาก: {m.scene}</div>}
           <div className="comp-img-prompt">{prompt}</div>
           <div className="comp-img-avoid">ห้ามมี: {m.avoid}</div>
-          {(size === "square" ? m.spaceSquare : m.spaceStory) && <div className="comp-img-space">วางพาดหัว: {size === "square" ? m.spaceSquare : m.spaceStory}</div>}
-          <div><button className="btn comp-sm" disabled={!prompt} onClick={copy}>{copied ? "✓ คัดลอกแล้ว" : `📋 คัดลอก prompt ${size === "square" ? "1:1" : "9:16"}`}</button></div>
-          {err && <div className="comp-warn">⚠ {COPY_FAIL}</div>}
+          {(tab === "square" ? m.spaceSquare : m.spaceStory) && <div className="comp-img-space">วางพาดหัว: {tab === "square" ? m.spaceSquare : m.spaceStory}</div>}
+          <CopyBtn text={withAvoid(prompt, m.avoid)} label={`คัดลอก prompt ${tab === "square" ? "1:1" : "9:16"}`} />
         </>
       )}
     </div>
@@ -335,7 +377,7 @@ function CopyCard({ x, label, c }: { x: CopySet; label: string; c: CompetitorCop
       {x.description && <><div className="comp-copy-f">คำอธิบายสั้น</div><div>{x.description}</div></>}
       <div className="comp-copy-cta"><span className="comp-copy-f">ปุ่ม</span><span className="comp-copy-btn">{x.ctaLabel}</span></div>
       {x.why && <div className="muted comp-small">ทำไม: {x.why}</div>}
-      {c.imagesAt && <ImagePrompt m={x.image} />}
+      {c.imagesAt && <ImagePrompt m={x.image} v={x.video} videos={!!c.videosAt} />}
       {ask ? (
         <div className="c-confirm comp-copy-ask">
           <b>ฟอร์มสร้างโฆษณามีร่างค้างอยู่</b>
@@ -357,12 +399,13 @@ function CopyCard({ x, label, c }: { x: CopySet; label: string; c: CompetitorCop
   );
 }
 
-function CopyIdeas({ s, onRun, onImages }: { s: CompetitorsState; onRun: () => void; onImages: () => void }) {
+function CopyIdeas({ s, onRun, onImages, onVideos }: { s: CompetitorsState; onRun: () => void; onImages: () => void; onVideos: () => void }) {
   const c = s.copy;
   const hasAds = s.competitors.some((x) => s.scans[x.pageId]?.status === "ok");
   if (!hasAds && !c) return null;
   const busy = s.running?.kind === "copy";
   const imgBusy = s.running?.kind === "image";
+  const vidBusy = s.running?.kind === "video";
   let n = 0;
   return (
     <section className="card comp-card">
@@ -405,6 +448,10 @@ function CopyIdeas({ s, onRun, onImages }: { s: CompetitorsState; onRun: () => v
             <button className="btn primary" disabled={!!s.running || !c.sets.length} onClick={onImages}>
               {imgBusy ? "Claude กำลังคิดภาพ…" : c.imagesAt ? "🎨 คิด prompt ภาพใหม่" : "🎨 คิด prompt ภาพให้ 5 ชุด"}
             </button>
+            <button className="btn primary" disabled={!!s.running || !c.imagesAt} onClick={onVideos}
+              title={c.imagesAt ? undefined : "กด 🎨 ก่อน — ช็อต 1 ใช้ภาพ 9:16 นั้นเป็นเฟรมแรก"}>
+              {vidBusy ? "Claude กำลังคิดคลิป…" : c.videosAt ? "🎬 คิด prompt คลิปใหม่" : "🎬 คิด prompt คลิป 16 วิ ให้ 5 ชุด"}
+            </button>
           </div>
           <p className="muted comp-small comp-copy-cost">
             prompt ภาษาอังกฤษ ใช้ได้กับ ChatGPT / Gemini (Nano Banana) / Midjourney · ภาพถ่ายสมจริง ไม่มีตัวหนังสือ (ใส่พาดหัวเองทีหลัง)
@@ -412,6 +459,13 @@ function CopyIdeas({ s, onRun, onImages }: { s: CompetitorsState; onRun: () => v
           </p>
           {imgBusy && <div className="comp-busy">⏳ {s.running?.step} (ราว 1 นาที)</div>}
           {c.imagesError && !imgBusy && <div className="comp-warn">⚠ Claude คิด prompt ภาพไม่ได้: {c.imagesError}</div>}
+          <p className="muted comp-small comp-copy-cost">
+            🎬 คลิป 9:16 ยาว 16 วิ = 2 ช็อต × 8 วิ ไปต่อกันใน CapCut · คนในภาพพูดไทยเอง · prompt ชุดเดียวใช้ได้ทั้ง Veo 3.1 และ Omni 1.2 (Google Flow)
+            · ไม่มีตัวหนังสือในคลิป · เสียค่า Claude 1 ครั้ง แอปไม่สร้างคลิปเอง
+            {c.imagesAt ? (c.videosAt ? ` · คิดเมื่อ ${when(c.videosAt)} · ${c.videosModel ?? ""} · ดูในแท็บ "🎬 คลิป 16 วิ" ของแต่ละการ์ด` : "") : " · กด 🎨 ก่อน (ช็อต 1 ใช้ภาพ 9:16 เป็นเฟรมแรก)"}
+          </p>
+          {vidBusy && <div className="comp-busy">⏳ {s.running?.step} (ราว 1–2 นาที)</div>}
+          {c.videosError && !vidBusy && <div className="comp-warn">⚠ Claude คิด prompt คลิปไม่ได้: {c.videosError}</div>}
           <div className="comp-copy-grid">
             {c.sets.map((x, i) => (
               <CopyCard key={`${c.at}-${i}`} x={x} c={c}
@@ -559,7 +613,7 @@ export default function CompetitorsPage() {
             <Setup s={s} disabled={saving || s.running?.kind === "scan"} save={(p) => act("/api/competitors", p)} />
             <ScanBar s={s} claude={claude} onScan={() => act("/api/competitors/scan")} onSummary={() => act("/api/competitors/summary")} />
             <Summary s={s} />
-            <CopyIdeas s={s} onRun={() => act("/api/competitors/copy")} onImages={() => act("/api/competitors/images")} />
+            <CopyIdeas s={s} onRun={() => act("/api/competitors/copy")} onImages={() => act("/api/competitors/images")} onVideos={() => act("/api/competitors/videos")} />
             <PerCompetitor s={s} disabled={saving || s.running?.kind === "scan"} onState={setS} />
           </>
         )}
