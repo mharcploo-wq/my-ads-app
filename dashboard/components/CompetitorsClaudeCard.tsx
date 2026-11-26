@@ -16,9 +16,11 @@ export default function CompetitorsClaudeCard() {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<"" | "load" | "save" | "test" | "clear">("load");
   const [msg, setMsg] = useState<string | null>(null);
+  const [dirty, setDirty] = useState(false);   // แก้ช่องแล้วยังไม่บันทึก → ซ่อนผลทดสอบเก่า (เป็นของค่าก่อนแก้)
   const ref = useRef<HTMLDivElement>(null);
 
-  const apply = (c: CompetitorsClaudeView) => { setV(c); setWorkspace(c.workspace); setModel(c.model); };
+  const apply = (c: CompetitorsClaudeView) => { setV(c); setWorkspace(c.workspace); setModel(c.model); setDirty(false); };
+  const edit = <T,>(set: (x: T) => void) => (x: T) => { set(x); setDirty(true); setMsg(null); };
   const load = useCallback(async () => {
     setBusy("load");
     try {
@@ -68,29 +70,29 @@ export default function CompetitorsClaudeCard() {
               <span className={`pill ${v.own.set ? "ok" : ""}`}>{v.own.set ? `✓ ใส่แล้ว · ลงท้าย …${v.own.last4}` : "ยังไม่ได้ใส่ — ใช้คีย์ Agent Claude แทน"}</span>
             </label>
             <input id="cc-key" className={`input${errors.aiKey ? " invalid" : ""}`} type="password" autoComplete="off" value={aiKey}
-              onChange={(e) => setAiKey(e.target.value)} disabled={busy !== ""}
+              onChange={(e) => edit(setAiKey)(e.target.value)} disabled={busy !== ""}
               placeholder={v.own.set ? "เว้นว่าง = ใช้คีย์เดิม · วางใหม่เพื่อเปลี่ยน" : "วางคีย์ที่ขึ้นต้นด้วย sk-ant-…"} />
             {errors.aiKey
               ? <div className="err">{errors.aiKey}</div>
               : <div className="d">คีย์จะไม่ถูกส่งกลับมาแสดงบนหน้าจอ · สร้างคีย์ได้ที่ platform.claude.com → API Keys</div>}
           </div>
-          {(ownUserKey || errors.workspace) && (
+          {(ownUserKey || workspace || errors.workspace) && (
             <div className="field">
               <label htmlFor="cc-ws">
                 Workspace ID{" "}
-                {workspace ? <span className="pill ok">✓ ใส่แล้ว</span> : <span className="pill bad">✕ คีย์นี้ต้องใส่</span>}
+                {workspace ? <span className="pill ok">✓ ใส่แล้ว</span> : <span className="pill">ไม่บังคับ</span>}
               </label>
-              <input id="cc-ws" className={`input${errors.workspace ? " invalid" : ""}`} value={workspace} placeholder="wrkspc_…"
-                autoComplete="off" onChange={(e) => setWorkspace(e.target.value.trim())} disabled={busy !== ""} />
+              <input id="cc-ws" className={`input${errors.workspace ? " invalid" : ""}`} value={workspace} placeholder="เว้นว่างได้ · wrkspc_…"
+                autoComplete="off" onChange={(e) => edit(setWorkspace)(e.target.value.trim())} disabled={busy !== ""} />
               {errors.workspace
                 ? <div className="err">{errors.workspace}</div>
-                : <div className="d">คีย์ที่ขึ้นต้นด้วย sk-ant-usr- ต้องใส่ · หาได้ที่ platform.claude.com → Settings → Workspaces</div>}
+                : <div className="d">คีย์ขององค์กรส่วนตัวเว้นว่างได้ · ใส่เฉพาะเมื่อปุ่มทดสอบบอกว่าต้องใช้ · หาได้ที่ platform.claude.com → Settings → Workspaces</div>}
             </div>
           )}
           <div className="field">
             <label htmlFor="cc-model">รุ่น Claude</label>
             <select id="cc-model" className={`input${errors.model ? " invalid" : ""}`} style={{ maxWidth: 440 }} value={model}
-              onChange={(e) => setModel(e.target.value)} disabled={busy !== ""}>
+              onChange={(e) => edit(setModel)(e.target.value)} disabled={busy !== ""}>
               {COMPETITOR_MODELS.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
             </select>
             {errors.model && <div className="err">{errors.model}</div>}
@@ -101,10 +103,11 @@ export default function CompetitorsClaudeCard() {
             <button className="btn" onClick={() => post("clear")} disabled={busy !== "" || !v.own.set}>{busy === "clear" ? "กำลังล้าง…" : "ล้างคีย์ (กลับไปใช้ Agent Claude)"}</button>
           </div>
           {msg && <div className="msg no">✕ {msg}</div>}
-          {check && !msg && (
+          {dirty && !msg && <div className="hint" style={{ marginTop: 10 }}>มีค่าที่ยังไม่บันทึก — กด "บันทึก" แล้วระบบจะทดสอบให้</div>}
+          {check && !msg && !dirty && (
             <div className={`msg ${check.ok ? "ok" : "no"}`}>{check.ok ? "✓" : "✕"} {check.text} · ตรวจเมื่อ {when(check.at)}</div>
           )}
-          <p className="hint" style={{ marginBottom: 0 }}>ปุ่มทดสอบแค่ถามข้อมูลรุ่นจาก Anthropic (ไม่เสียค่าโทเคน) · กด ✨ สรุปในหน้าคู่แข่งถึงจะเสียค่า API ตามรุ่นที่เลือก</p>
+          <p className="hint" style={{ marginBottom: 0 }}>ปุ่มทดสอบถามข้อมูลรุ่น + นับโทเคนกับ Anthropic (ไม่เสียค่าโทเคน) · กด ✨ สรุปในหน้าคู่แข่งถึงจะเสียค่า API ตามรุ่นที่เลือก</p>
         </>
       )}
     </div>

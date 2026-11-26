@@ -2066,6 +2066,10 @@ def _claude_error(e: Exception, workspace: str, model: str, where: str) -> str:
         if "workspace" in why.lower():
             if not workspace:
                 return CLAUDE_NEEDS_WORKSPACE.replace("แท็บ \"เชื่อมต่อ API\"", where)
+            if "not found" in why.lower():
+                # องค์กรส่วนตัว (Individual Org) ไม่มี workspace ให้เลือก — คีย์ใช้ได้โดยไม่ต้องใส่
+                return (f"ไม่พบ Workspace ID \"{workspace}\" ในองค์กรของคีย์นี้ — ลบช่อง Workspace ID ให้ว่างแล้วกดบันทึก"
+                        f" (คีย์ขององค์กรส่วนตัวไม่ต้องใส่) หรือใส่ ID ของ workspace ที่สร้างคีย์นี้ · ที่{where}")
             return f"Workspace ID \"{workspace}\" ใช้กับคีย์นี้ไม่ได้ — ตรวจที่{where} (Claude: {why})"
         if isinstance(e, anthropic.NotFoundError):
             return f"ไม่พบรุ่น AI \"{model}\" — เลือกรุ่นอื่น หรือเว้นว่างเพื่อใช้ค่าเริ่มต้น"
@@ -2128,10 +2132,9 @@ def competitors_claude() -> dict[str, Any]:
     else:
         return {"key": "", "workspace": "", "model": model, "using": "none", "last4": None,
                 "error": f"ยังไม่ได้ใส่คีย์ Claude — ใส่ได้ที่{COMPETITORS_WHERE}"}
-    err = None
-    if key.startswith(USER_KEY_PREFIX) and not ws:
-        err = CLAUDE_NEEDS_WORKSPACE.replace("แท็บ \"เชื่อมต่อ API\"", COMPETITORS_WHERE)
-    return {"key": key, "workspace": ws, "model": model, "using": using, "last4": key[-4:], "error": err}
+    # คีย์ sk-ant-usr- ขององค์กรส่วนตัวใช้ได้โดยไม่ต้องมี workspace (ทดสอบจริง 26/11) — ไม่บังคับล่วงหน้า
+    # ถ้าองค์กรต้องการ workspace จริง Claude จะตอบ 400 แล้ว _claude_error บอกให้ใส่เอง
+    return {"key": key, "workspace": ws, "model": model, "using": using, "last4": key[-4:], "error": None}
 
 
 def competitors_claude_check() -> dict[str, Any]:
@@ -2145,6 +2148,8 @@ def competitors_claude_check() -> dict[str, Any]:
                                  default_headers={"anthropic-workspace-id": c["workspace"]} if c["workspace"] else None)
     try:
         m = client.models.retrieve(c["model"])
+        # นับโทเคน = ทางเดียวกับการสรุปจริง (ตรวจ workspace/สิทธิ์เรียก Messages) แต่ไม่เสียค่าโทเคน
+        client.messages.count_tokens(model=c["model"], messages=[{"role": "user", "content": "ping"}])
     except anthropic.APIError as e:
         return {**base, "ok": False, "text": _claude_error(e, c["workspace"], c["model"], COMPETITORS_WHERE)}
     who = "คีย์ของฟังก์ชันนี้" if c["using"] == "own" else "คีย์ของ Agent Claude"

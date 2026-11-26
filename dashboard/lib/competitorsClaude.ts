@@ -55,14 +55,13 @@ export async function getCompetitorsClaude(): Promise<CompetitorsClaudeView> {
 }
 
 /** ตรวจค่าที่ส่งมา → ข้อความผิดต่อช่อง (ภาษาไทย) */
-function validate(input: CompetitorsClaudeInput, currentKey: string): Record<string, string> {
+function validate(input: CompetitorsClaudeInput): Record<string, string> {
   const e: Record<string, string> = {};
   const key = (input.aiKey ?? "").trim();
   if (key && !KEY_PATTERN.test(key)) e.aiKey = "คีย์ Claude ต้องขึ้นต้นด้วย sk-ant- และไม่มีช่องว่าง";
   const ws = (input.workspace ?? "").trim();
   if (ws && !WORKSPACE_PATTERN.test(ws)) e.workspace = "ต้องขึ้นต้นด้วย wrkspc_ ตามด้วยตัวอักษร/ตัวเลข หรือเว้นว่าง";
-  const finalKey = input.clear ? "" : key || currentKey;
-  if (finalKey.startsWith(USER_KEY_PREFIX) && !ws) e.workspace = "คีย์ที่ขึ้นต้นด้วย sk-ant-usr- ต้องใส่ Workspace ID ด้วย";
+  // คีย์ sk-ant-usr- ขององค์กรส่วนตัวใช้ได้โดยไม่มี workspace → ไม่บังคับ (ปุ่มทดสอบจะบอกเองถ้าองค์กรต้องใช้)
   if (!MODEL_IDS.includes(input.model)) e.model = "เลือกรุ่นจากรายการ";
   return e;
 }
@@ -71,7 +70,7 @@ function validate(input: CompetitorsClaudeInput, currentKey: string): Record<str
 export async function saveCompetitorsClaude(input: CompetitorsClaudeInput): Promise<{ ok: boolean; errors: Record<string, string> }> {
   const m = await readEnv(FILE);
   const current = (m.get("ANTHROPIC_API_KEY") ?? "").trim();
-  const errors = validate(input, current);
+  const errors = validate(input);
   if (Object.keys(errors).length) return { ok: false, errors };
   const key = input.clear ? "" : (input.aiKey ?? "").trim() || current;
   const ws = input.clear ? "" : (input.workspace ?? "").trim();
