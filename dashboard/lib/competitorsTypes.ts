@@ -87,3 +87,25 @@ export interface CompetitorsState {
 
 /** ผลค้นชื่อเพจเพื่อเพิ่มคู่แข่ง */
 export interface PageCandidate { pageId: string; name: string; ads: number }
+
+/** การ์ด "Claude สำหรับวิเคราะห์คู่แข่ง" (แท็บเชื่อมต่อ API) — คีย์เก็บใน mcp-server/.env.competitors
+ *  ไม่ส่งคีย์เต็มออกมา · ช่องคีย์ว่าง = ใช้คีย์ของ Agent Claude แทน */
+export const COMPETITOR_MODELS = [
+  { id: "claude-sonnet-5-5", label: "claude-sonnet-5-5 · สมดุล วิเคราะห์ละเอียด (ค่าเริ่มต้น)" },
+  { id: "claude-haiku-5-5", label: "claude-haiku-5-5 · ถูก เร็ว สรุปตื้นกว่า" },
+  { id: "claude-opus-5-5", label: "claude-opus-5-5 · ละเอียดสุด แพงสุด" },
+] as const;
+export type CompetitorModel = (typeof COMPETITOR_MODELS)[number]["id"];
+
+export interface KeyInfo { set: boolean; last4: string | null }
+export interface CompetitorsClaudeView {
+  own: KeyInfo & { userKey: boolean };   // คีย์ของฟังก์ชันนี้
+  agent: KeyInfo;                         // คีย์ของ Agent Claude (ใช้แทนเมื่อ own ว่าง)
+  using: "own" | "agent" | "none";
+  last4: string | null;                   // คีย์ที่ใช้อยู่จริง
+  workspace: string;                      // wrkspc_… (ไม่ใช่ความลับ)
+  model: CompetitorModel;
+  check: CompetitorsClaudeCheck | null;   // ผลทดสอบล่าสุด (จำในหน่วยความจำ server)
+}
+export interface CompetitorsClaudeInput { aiKey?: string; workspace: string; model: string; clear?: boolean }
+export interface CompetitorsClaudeCheck { ok: boolean; text: string; at: string; using: string; last4: string | null; model: string }

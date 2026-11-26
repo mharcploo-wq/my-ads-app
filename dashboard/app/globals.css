@@ -606,3 +606,5 @@ a.btn { text-decoration: none; color: var(--text-primary); }
   .comp-inline { display: flex; width: 100%; }
   .comp-hit { flex-direction: column; align-items: flex-start; }
 }
+.comp-claude-line { font-size: 12.5px; color: var(--text-muted); text-align: right; margin-top: 2px; }
+.comp-claude-bad { color: #ff8a8a; }

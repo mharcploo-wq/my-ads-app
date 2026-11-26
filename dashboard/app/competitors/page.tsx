@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import { adLibraryPageUrl } from "@/lib/competitorsTypes";
-import type { Competitor, CompetitorAd, CompetitorScan, CompetitorsState, PageCandidate, SummaryRow } from "@/lib/competitorsTypes";
+import type { Competitor, CompetitorAd, CompetitorScan, CompetitorsClaudeView, CompetitorsState, PageCandidate, SummaryRow } from "@/lib/competitorsTypes";
 
 /** วิเคราะห์คู่แข่ง — แอดที่คู่แข่งรันอยู่ในไทยจาก Meta Ad Library + Claude สรุป hook/offer + 3 มุมที่ยังไม่มีใครเล่น
  *  หน้าเว็บแค่แสดงและส่งคำสั่ง (ดึง/เทียบ/สรุปที่ server) · ไม่มีแอด/ดึงไม่ได้ = บอกตรง ๆ ไม่เดา · ไม่แตะอะไรใน Meta */
@@ -143,7 +143,7 @@ function Setup({ s, disabled, save }: { s: CompetitorsState; disabled: boolean; 
 
 /* ---------------- แถบสแกน ---------------- */
 
-function ScanBar({ s, onScan, onSummary }: { s: CompetitorsState; onScan: () => void; onSummary: () => void }) {
+function ScanBar({ s, claude, onScan, onSummary }: { s: CompetitorsState; claude: CompetitorsClaudeView | null; onScan: () => void; onSummary: () => void }) {
   const scans = s.competitors.map((c) => s.scans[c.pageId]).filter((x): x is CompetitorScan => !!x);
   const ads = scans.reduce((n, x) => n + x.ads.length, 0);
   const fresh = scans.reduce((n, x) => n + x.newIds.length, 0);
@@ -165,6 +165,13 @@ function ScanBar({ s, onScan, onSummary }: { s: CompetitorsState; onScan: () => 
       <span className="spacer" />
       <button className="btn" disabled={!!s.running} onClick={onSummary}>{s.running?.kind === "summary" ? "Claude กำลังสรุป…" : "✨ ให้ Claude สรุปใหม่"}</button>
       {s.lastScan?.error && <div className="comp-warn comp-full">⚠ {s.lastScan.error}</div>}
+      {claude && (
+        <div className="comp-full comp-claude-line">
+          Claude: {claude.model} · {claude.using === "own" ? `คีย์ของฟังก์ชันนี้ …${claude.last4}` : claude.using === "agent" ? `คีย์ของ Agent Claude …${claude.last4}` : "ยังไม่มีคีย์"}
+          {claude.check && !claude.check.ok && <span className="comp-claude-bad"> · ✕ ทดสอบล่าสุดไม่ผ่าน</span>}
+          {" · "}<a href="/?tab=connect#competitors-claude">ตั้งค่าที่แท็บเชื่อมต่อ API</a>
+        </div>
+      )}
     </section>
   );
 }
@@ -302,12 +309,17 @@ export default function CompetitorsPage() {
   const [s, setS] = useState<CompetitorsState | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [claude, setClaude] = useState<CompetitorsClaudeView | null>(null);
 
   const load = useCallback(async () => {
     const r = await call("/api/competitors");
     if (r.ok) setS(r.state); else setErr(r.error);
   }, []);
   useEffect(() => { load(); }, [load]);
+  // คีย์/รุ่น Claude ที่ปุ่ม ✨ จะใช้ (แก้ที่การ์ดในแท็บเชื่อมต่อ API)
+  useEffect(() => {
+    fetch("/api/competitors/claude", { cache: "no-store" }).then((r) => r.json()).then((r) => { if (r.ok) setClaude(r.claude); }).catch(() => {});
+  }, []);
   // ระหว่างสแกน/สรุป ถามความคืบหน้าทุก 3 วิ
   const running = !!s?.running;
   useEffect(() => {
@@ -344,7 +356,7 @@ export default function CompetitorsPage() {
           <>
             <Business value={s.business} disabled={saving} onSave={(v) => act("/api/competitors", { business: v })} />
             <Setup s={s} disabled={saving || s.running?.kind === "scan"} save={(p) => act("/api/competitors", p)} />
-            <ScanBar s={s} onScan={() => act("/api/competitors/scan")} onSummary={() => act("/api/competitors/summary")} />
+            <ScanBar s={s} claude={claude} onScan={() => act("/api/competitors/scan")} onSummary={() => act("/api/competitors/summary")} />
             <Summary s={s} />
             <PerCompetitor s={s} disabled={saving || s.running?.kind === "scan"} onState={setS} />
           </>

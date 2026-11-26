@@ -89,6 +89,8 @@ parser.add_argument("--insights-summary-json", metavar="PATH", default=None,
                     help="(หน้าแอป) ปุ่ม ✨ หน้าวิเคราะห์โฆษณา: ตัวเลขสรุปจากไฟล์ → Claude สรุป+แนะนำ แล้วพิมพ์ผลเป็น JSON")
 parser.add_argument("--competitors-summary-json", metavar="PATH", default=None,
                     help="(หน้าแอป) หน้าวิเคราะห์คู่แข่ง: ข้อความแอดคู่แข่งจากไฟล์ → Claude สรุป hook/offer + 3 มุมที่ยังไม่มีใครเล่น แล้วพิมพ์ผลเป็น JSON")
+parser.add_argument("--competitors-claude-check", action="store_true",
+                    help="(หน้าแอป) ทดสอบคีย์ Claude ของหน้าวิเคราะห์คู่แข่ง (ไม่เสียค่าโทเคน) แล้วพิมพ์ผลเป็น JSON")
 parser.add_argument("--ai-poll-json", metavar="PATH", default=None,
                     help="(หน้าแอป · Manus) ถามผลงานคิดความสนใจที่สั่ง Manus ไว้ 1 ครั้ง แล้วพิมพ์ผลเป็น JSON")
 parser.add_argument("--ai-stop", metavar="TASK_ID", default=None,
@@ -2048,42 +2050,105 @@ def _audience_hint(raw: Any) -> dict[str, Any] | None:
             "reason": str(raw.get("reason") or "").strip()[:200]}
 
 
-def _claude_text(system: str, prompt: str, schema: dict[str, Any], refusal: str,
-                 max_tokens: int = 4000) -> tuple[str | None, str | None]:
-    """เรียก Claude ของ agent นี้ให้ตอบเป็น JSON ตาม schema → (ข้อความ JSON, ข้อผิดพลาดภาษาไทย)
-    ใช้ร่วมกัน: ปุ่ม ✨ คิดกลุ่มเป้าหมาย · ปุ่ม ✨ สรุปหน้าวิเคราะห์โฆษณา"""
-    import anthropic  # โหลดเฉพาะตอนใช้ปุ่ม ✨ — เครื่องมือ MCP อื่นไม่ต้องพึ่ง
-    client = anthropic.Anthropic(
-        api_key=ANTHROPIC_API_KEY, timeout=60.0, max_retries=2,
-        default_headers={"anthropic-workspace-id": ANTHROPIC_WORKSPACE_ID} if ANTHROPIC_WORKSPACE_ID else None)
-    try:
-        resp = client.messages.create(
-            model=AI_MODEL, max_tokens=max_tokens, system=system,
-            messages=[{"role": "user", "content": prompt}],
-            output_config={"effort": "low", "format": {"type": "json_schema", "schema": schema}},
-        )
-    except anthropic.AuthenticationError:
-        return None, "คีย์ Claude ไม่ถูกต้องหรือหมดอายุ — ตรวจ ANTHROPIC_API_KEY ที่แท็บ \"เชื่อมต่อ API\""
-    except anthropic.RateLimitError:
-        return None, "Claude ถูกใช้ถี่เกินไป — รอสักครู่แล้วกดใหม่"
-    except anthropic.APIStatusError as e:
+AGENT_CLAUDE_WHERE = "แท็บ \"เชื่อมต่อ API\""
+
+
+def _claude_error(e: Exception, workspace: str, model: str, where: str) -> str:
+    """ข้อผิดพลาดจาก Anthropic SDK → ข้อความภาษาไทย · where = บอกว่าแก้คีย์ได้ที่ไหน"""
+    import anthropic
+    if isinstance(e, anthropic.AuthenticationError):
+        return f"คีย์ Claude ไม่ถูกต้องหรือหมดอายุ — ตรวจคีย์ที่{where}"
+    if isinstance(e, anthropic.RateLimitError):
+        return "Claude ถูกใช้ถี่เกินไป — รอสักครู่แล้วกดใหม่"
+    if isinstance(e, anthropic.APIStatusError):
         why = _api_error_text(e.body)
         # 400 "not scoped to a workspace" / 403-404 workspace ผิด — แยกบอกเพราะแก้ที่ช่อง Workspace ID
         if "workspace" in why.lower():
-            if not ANTHROPIC_WORKSPACE_ID:
-                return None, CLAUDE_NEEDS_WORKSPACE
-            return None, (f"Workspace ID \"{ANTHROPIC_WORKSPACE_ID}\" ใช้กับคีย์นี้ไม่ได้ — ตรวจที่แท็บ \"เชื่อมต่อ API\" "
-                        f"(Claude: {why})")
+            if not workspace:
+                return CLAUDE_NEEDS_WORKSPACE.replace("แท็บ \"เชื่อมต่อ API\"", where)
+            return f"Workspace ID \"{workspace}\" ใช้กับคีย์นี้ไม่ได้ — ตรวจที่{where} (Claude: {why})"
         if isinstance(e, anthropic.NotFoundError):
-            return None, f"ไม่พบรุ่น AI \"{AI_MODEL}\" — แก้ AI_MODEL ใน .env หรือเว้นว่างเพื่อใช้ค่าเริ่มต้น"
+            return f"ไม่พบรุ่น AI \"{model}\" — เลือกรุ่นอื่น หรือเว้นว่างเพื่อใช้ค่าเริ่มต้น"
         if isinstance(e, anthropic.PermissionDeniedError):
-            return None, f"คีย์ Claude นี้ไม่มีสิทธิ์เรียกใช้ — ตรวจสิทธิ์ของคีย์ (Claude: {why or 'ไม่ระบุ'})"
-        return None, f"Claude ปฏิเสธคำขอ (HTTP {e.status_code}): {why or 'ไม่ระบุสาเหตุ'}"
-    except anthropic.APIConnectionError:
-        return None, "เชื่อมต่อ Claude ไม่ได้ — ตรวจอินเทอร์เน็ต"
+            return f"คีย์ Claude นี้ไม่มีสิทธิ์เรียกใช้ — ตรวจสิทธิ์ของคีย์ (Claude: {why or 'ไม่ระบุ'})"
+        return f"Claude ปฏิเสธคำขอ (HTTP {e.status_code}): {why or 'ไม่ระบุสาเหตุ'}"
+    if isinstance(e, anthropic.APIConnectionError):
+        return "เชื่อมต่อ Claude ไม่ได้ — ตรวจอินเทอร์เน็ต"
+    return f"เรียก Claude ไม่สำเร็จ: {type(e).__name__}"
+
+
+# รุ่นที่มี fallback ฝั่ง server ตอน Claude ปฏิเสธคำขอ (Haiku 5.5 ไม่มี)
+CLAUDE_FALLBACK_MODELS = ("claude-sonnet-5-5", "claude-opus-5-5")
+
+
+def _claude_text(system: str, prompt: str, schema: dict[str, Any], refusal: str,
+                 max_tokens: int = 4000, *, api_key: str | None = None, workspace: str | None = None,
+                 model: str | None = None, where: str = AGENT_CLAUDE_WHERE) -> tuple[str | None, str | None]:
+    """เรียก Claude ให้ตอบเป็น JSON ตาม schema → (ข้อความ JSON, ข้อผิดพลาดภาษาไทย)
+    ใช้ร่วมกัน: ปุ่ม ✨ คิดกลุ่มเป้าหมาย · ปุ่ม ✨ สรุปหน้าวิเคราะห์โฆษณา (คีย์ของ agent)
+    · ปุ่ม ✨ หน้าวิเคราะห์คู่แข่ง (ส่ง api_key/workspace/model ของฟังก์ชันนั้นมาเอง)"""
+    import anthropic  # โหลดเฉพาะตอนใช้ปุ่ม ✨ — เครื่องมือ MCP อื่นไม่ต้องพึ่ง
+    key = ANTHROPIC_API_KEY if api_key is None else api_key
+    ws = ANTHROPIC_WORKSPACE_ID if workspace is None else workspace
+    mdl = model or AI_MODEL
+    client = anthropic.Anthropic(api_key=key, timeout=120.0, max_retries=2,
+                                 default_headers={"anthropic-workspace-id": ws} if ws else None)
+    req = dict(model=mdl, max_tokens=max_tokens, system=system,
+               messages=[{"role": "user", "content": prompt}],
+               output_config={"effort": "low", "format": {"type": "json_schema", "schema": schema}})
+    try:
+        if mdl in CLAUDE_FALLBACK_MODELS:
+            # Sonnet/Opus 5.5: ถ้าตัวกรองความปลอดภัยปฏิเสธ ให้ server ส่งต่อรุ่นสำรองเองในคำขอเดียว
+            resp = client.beta.messages.create(**req, betas=["server-side-fallback-2026-07-01"], fallbacks="default")
+        else:
+            resp = client.messages.create(**req)
+    except anthropic.APIError as e:
+        return None, _claude_error(e, ws, mdl, where)
     if resp.stop_reason == "refusal":
         return None, refusal
     return next((b.text for b in resp.content if b.type == "text"), ""), None
+
+
+# ── Claude ของหน้าวิเคราะห์คู่แข่ง — คีย์/รุ่นแยกใน .env.competitors (ว่าง = ใช้คีย์ของ agent claude) ──
+COMPETITORS_ENV = BASE_DIR / ".env.competitors"
+COMPETITORS_MODELS = ("claude-sonnet-5-5", "claude-haiku-5-5", "claude-opus-5-5")
+COMPETITORS_WHERE = "การ์ด \"Claude สำหรับวิเคราะห์คู่แข่ง\" (แท็บ \"เชื่อมต่อ API\")"
+
+
+def competitors_claude() -> dict[str, Any]:
+    """คีย์/รุ่นที่หน้าคู่แข่งจะใช้ → {key, workspace, model, using: own|agent|none, last4, error}"""
+    vals = dotenv_values(COMPETITORS_ENV) if COMPETITORS_ENV.exists() else {}
+    own = (vals.get("ANTHROPIC_API_KEY") or "").strip()
+    model = (vals.get("AI_MODEL") or "").strip()
+    model = model if model in COMPETITORS_MODELS else COMPETITORS_MODELS[0]
+    if own:
+        key, ws, using = own, (vals.get("ANTHROPIC_WORKSPACE_ID") or "").strip(), "own"
+    elif AGENT == "claude" and ANTHROPIC_API_KEY:
+        key, ws, using = ANTHROPIC_API_KEY, ANTHROPIC_WORKSPACE_ID, "agent"
+    else:
+        return {"key": "", "workspace": "", "model": model, "using": "none", "last4": None,
+                "error": f"ยังไม่ได้ใส่คีย์ Claude — ใส่ได้ที่{COMPETITORS_WHERE}"}
+    err = None
+    if key.startswith(USER_KEY_PREFIX) and not ws:
+        err = CLAUDE_NEEDS_WORKSPACE.replace("แท็บ \"เชื่อมต่อ API\"", COMPETITORS_WHERE)
+    return {"key": key, "workspace": ws, "model": model, "using": using, "last4": key[-4:], "error": err}
+
+
+def competitors_claude_check() -> dict[str, Any]:
+    """ปุ่ม 🔌 ทดสอบการเชื่อมต่อ — ถามข้อมูลรุ่น (GET /v1/models/{id}) ไม่เสียค่าโทเคน · ไม่ส่งคีย์ออกไปในผล"""
+    c = competitors_claude()
+    base = {"using": c["using"], "last4": c["last4"], "model": c["model"]}
+    if c["error"]:
+        return {**base, "ok": False, "text": c["error"]}
+    import anthropic
+    client = anthropic.Anthropic(api_key=c["key"], timeout=20.0, max_retries=1,
+                                 default_headers={"anthropic-workspace-id": c["workspace"]} if c["workspace"] else None)
+    try:
+        m = client.models.retrieve(c["model"])
+    except anthropic.APIError as e:
+        return {**base, "ok": False, "text": _claude_error(e, c["workspace"], c["model"], COMPETITORS_WHERE)}
+    who = "คีย์ของฟังก์ชันนี้" if c["using"] == "own" else "คีย์ของ Agent Claude"
+    return {**base, "ok": True, "text": f"เชื่อมต่อ Claude ได้ · {who} …{c['last4']} · รุ่น {m.display_name or m.id} พร้อมใช้"}
 
 
 def _ai_keywords(copy: str) -> tuple[list[str], dict[str, Any] | None, str | None]:
@@ -2375,16 +2440,15 @@ COMPETITORS_SCHEMA = {
 def competitors_summary(data: dict[str, Any]) -> dict[str, Any]:
     """(หน้าวิเคราะห์คู่แข่ง) ข้อความแอดคู่แข่งจาก Ad Library → Claude สรุป hook/offer ต่อเจ้า + 3 มุมที่ยังไม่มีใครเล่น
     อ่านอย่างเดียว ไม่แตะ Meta · ข้อมูลมาจาก dashboard (ข้อความแอดสาธารณะ ไม่มี token)"""
-    info = ai_info()
-    if AI_PROVIDER != "anthropic":
-        return {"success": False, "error": "การสรุปคู่แข่งใช้ Claude ของ agent claude เท่านั้น"}
-    if not info["ready"]:
-        return {"success": False, "error": info["missing"]}
+    c = competitors_claude()
+    if c["error"]:
+        return {"success": False, "error": c["error"]}
     prompt = "Business and competitor ads (JSON):\n" + json.dumps(data, ensure_ascii=False)
     text, err = _claude_text(COMPETITORS_SYSTEM, prompt, COMPETITORS_SCHEMA,
-                             "Claude ไม่สรุปแอดชุดนี้ให้ — ลองสแกนใหม่", max_tokens=4000)
+                             "Claude ไม่สรุปแอดชุดนี้ให้ — ลองสแกนใหม่", max_tokens=8000,
+                             api_key=c["key"], workspace=c["workspace"], model=c["model"], where=COMPETITORS_WHERE)
     if err:
-        log_action("competitors_summary", False, {"model": AI_MODEL, "error": err})
+        log_action("competitors_summary", False, {"model": c["model"], "using": c["using"], "error": err})
         return {"success": False, "error": err}
     try:
         out = json.loads(text or "")
@@ -2394,11 +2458,11 @@ def competitors_summary(data: dict[str, Any]) -> dict[str, Any]:
                 for r in out.get("rows") or [] if isinstance(r, dict)]
         angles = [{"title": str(a.get("title") or "").strip(), "why": str(a.get("why") or "").strip()}
                   for a in out.get("angles") or [] if isinstance(a, dict)]
-        res = {"success": True, "error": None, "model": AI_MODEL, "rows": [r for r in rows if r["page_id"]],
+        res = {"success": True, "error": None, "model": c["model"], "rows": [r for r in rows if r["page_id"]],
                "angles": [a for a in angles if a["title"]][:3], "note": str(out.get("note") or "").strip()}
     except (ValueError, AttributeError):
         return {"success": False, "error": "Claude ตอบกลับในรูปแบบที่อ่านไม่ได้ — กดสรุปใหม่อีกครั้ง"}
-    log_action("competitors_summary", True, {"model": AI_MODEL, "rows": len(res["rows"])})
+    log_action("competitors_summary", True, {"model": c["model"], "using": c["using"], "rows": len(res["rows"])})
     return res
 
 
@@ -2771,7 +2835,7 @@ if __name__ == "__main__":
     if (ARGS.status or ARGS.create_json or ARGS.suggest_json or ARGS.search_json or ARGS.adset_json
             or ARGS.reach_json or ARGS.lives or ARGS.live_ad_json or ARGS.pages
             or ARGS.portfolios or ARGS.check_portfolio or ARGS.insights_summary_json
-            or ARGS.competitors_summary_json or ARGS.ai_poll_json or ARGS.ai_stop):
+            or ARGS.competitors_summary_json or ARGS.competitors_claude_check or ARGS.ai_poll_json or ARGS.ai_stop):
         if PORTFOLIO != 1 and (ARGS.status or ARGS.create_json):
             _auto_portfolio_ids()
         if ARGS.ai_poll_json:
@@ -2782,6 +2846,8 @@ if __name__ == "__main__":
             out = insights_summary(json.loads(Path(ARGS.insights_summary_json).read_text(encoding="utf-8")))
         elif ARGS.competitors_summary_json:
             out = competitors_summary(json.loads(Path(ARGS.competitors_summary_json).read_text(encoding="utf-8")))
+        elif ARGS.competitors_claude_check:
+            out = competitors_claude_check()
         elif ARGS.check_portfolio:
             out = check_portfolio()
         elif ARGS.portfolios:

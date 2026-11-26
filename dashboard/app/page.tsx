@@ -29,6 +29,11 @@ export default function Page() {
   const [data, setData] = useState<MetricsResponse | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("overview");
+  // ลิงก์จากหน้าอื่น เช่น /?tab=connect#competitors-claude (หน้าคู่แข่ง → การ์ดคีย์ Claude)
+  useEffect(() => {
+    const t = new URLSearchParams(location.search).get("tab");
+    if (t === "overview" || t === "insights" || t === "create" || t === "connect") setTab(t);
+  }, []);
   const [days, setDays] = useState(14);
   const [agent, setAgent] = useState<Prefix | "all">("all");
   const [metric, setMetric] = useState<Metric>("spend");

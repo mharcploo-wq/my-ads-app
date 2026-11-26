@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { fmt } from "@/lib/calc";
 import AgentEnvForm from "@/components/AgentEnvForm";
+import CompetitorsClaudeCard from "@/components/CompetitorsClaudeCard";
 import { AGENTS, MetricsResponse, PREFIXES } from "@/lib/types";
 
 type Check = { label: string; ok: boolean; detail: string };
@@ -127,6 +128,8 @@ export default function ConnectPanel({ data, onChanged }: { data: MetricsRespons
       </div>
 
       <AgentEnvForm />
+
+      <CompetitorsClaudeCard />
 
       <div className="card">
         <h3>กฎความปลอดภัยที่ MCP Server บังคับ</h3>

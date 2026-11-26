@@ -3,6 +3,7 @@ mcp-server/.env
 mcp-server/.env.claude
 mcp-server/.env.manus
 mcp-server/.env.chatgpt
+mcp-server/.env.competitors
 !mcp-server/.env.example
 dashboard/.env.local
 dashboard/data/
