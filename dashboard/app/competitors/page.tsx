@@ -1,7 +1,11 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import { adLibraryPageUrl } from "@/lib/competitorsTypes";
-import type { Competitor, CompetitorAd, CompetitorScan, CompetitorsClaudeView, CompetitorsState, PageCandidate, SummaryRow } from "@/lib/competitorsTypes";
+import type {
+  Competitor, CompetitorAd, CompetitorCopy, CompetitorScan, CompetitorsClaudeView, CompetitorsState, CopySet, PageCandidate, SummaryRow,
+} from "@/lib/competitorsTypes";
+import { loadDraft, patchDraft } from "@/lib/draft";
+import { fmtSize } from "@/components/InterestPicker";
 
 /** วิเคราะห์คู่แข่ง — แอดที่คู่แข่งรันอยู่ในไทยจาก Meta Ad Library + Claude สรุป hook/offer + 3 มุมที่ยังไม่มีใครเล่น
  *  หน้าเว็บแค่แสดงและส่งคำสั่ง (ดึง/เทียบ/สรุปที่ server) · ไม่มีแอด/ดึงไม่ได้ = บอกตรง ๆ ไม่เดา · ไม่แตะอะไรใน Meta */
@@ -227,6 +231,146 @@ function Summary({ s }: { s: CompetitorsState }) {
   );
 }
 
+/* ---------------- ✨ ความสนใจ + คำโฆษณา 5 ชุด ---------------- */
+
+const NUM = "①②③④⑤";
+const copyText = (x: CopySet) => [x.primary, "", `พาดหัว: ${x.headline}`, `คำอธิบาย: ${x.description}`, `ปุ่ม: ${x.ctaLabel}`].join("\n");
+const clip = (t: string, n: number) => (t.length > n ? t.slice(0, n) + "…" : t);
+
+/** ร่างในฟอร์มสร้างโฆษณาที่จะถูกแทนที่ (null = ฟอร์มว่าง เขียนได้เลย) */
+function draftInUse(): { text: string; interests: number } | null {
+  const d = loadDraft();
+  const text = (d?.text ?? "").trim() || (d?.texts ?? []).map((t) => t.trim()).find(Boolean) || "";
+  const interests = d?.interestsBy?.claude?.length ?? 0;
+  return text || interests ? { text, interests } : null;
+}
+
+/** "ใช้ชุดนี้" → เติมลงร่างของฟอร์มสร้างโฆษณา (Claude · ยิงข้อความ) แล้วเปิดแท็บนั้น · ไม่ยิง Meta */
+function applySet(x: CopySet, c: CompetitorCopy): boolean {
+  const d = loadDraft();
+  const interests = c.interests.map(({ id, name, size_lower, size_upper, th_lower, th_upper }) => ({ id, name, size_lower, size_upper, th_lower, th_upper }));
+  const ok = patchDraft({
+    agent: "claude", kind: "MESSENGER", text: x.primary, texts: [x.primary], titles: x.headline ? [x.headline] : [],
+    title: x.headline, desc: x.description,
+    interestsBy: { manus: [], chatgpt: [], ...(d?.interestsBy ?? {}), claude: interests },
+    aiRuns: { manus: null, chatgpt: null, ...(d?.aiRuns ?? {}), claude: null },
+  });
+  if (ok) window.location.href = "/?tab=create";
+  return ok;
+}
+
+function CopyCard({ x, label, c }: { x: CopySet; label: string; c: CompetitorCopy }) {
+  const [copied, setCopied] = useState(false);
+  const [ask, setAsk] = useState<{ text: string; interests: number } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const copy = async () => {
+    setErr(null);
+    let ok = false;
+    try { await navigator.clipboard.writeText(copyText(x)); ok = true; } catch {
+      // เบราว์เซอร์ไม่ให้สิทธิ์คลิปบอร์ด → วิธีเก่า (เลือกข้อความในช่องซ่อนแล้วสั่งคัดลอก)
+      const t = document.createElement("textarea");
+      t.value = copyText(x); t.style.position = "fixed"; t.style.opacity = "0";
+      document.body.appendChild(t); t.select();
+      try { ok = document.execCommand("copy"); } catch { ok = false; }
+      t.remove();
+    }
+    if (ok) { setCopied(true); setTimeout(() => setCopied(false), 1500); }
+    else setErr("คัดลอกไม่ได้ — เบราว์เซอร์ไม่ให้สิทธิ์คลิปบอร์ด · เลือกข้อความแล้วกด Ctrl+C แทน");
+  };
+  const use = (force: boolean) => {
+    setErr(null);
+    const old = force ? null : draftInUse();
+    if (old) { setAsk(old); return; }
+    if (!applySet(x, c)) setErr("เขียนร่างลงเบราว์เซอร์ไม่ได้ — คัดลอกไปวางเองแทน");
+  };
+  return (
+    <div className="comp-copy">
+      <span className={`comp-copy-tag${x.kind === "fix" ? " fix" : ""}`}>{label}</span>
+      <div className="comp-copy-f">ข้อความหลัก</div>
+      <div className="comp-copy-primary">{x.primary}</div>
+      {x.headline && <><div className="comp-copy-f">พาดหัว</div><b>{x.headline}</b></>}
+      {x.description && <><div className="comp-copy-f">คำอธิบายสั้น</div><div>{x.description}</div></>}
+      <div className="comp-copy-cta"><span className="comp-copy-f">ปุ่ม</span><span className="comp-copy-btn">{x.ctaLabel}</span></div>
+      {x.why && <div className="muted comp-small">ทำไม: {x.why}</div>}
+      {ask ? (
+        <div className="c-confirm comp-copy-ask">
+          <b>ฟอร์มสร้างโฆษณามีร่างค้างอยู่</b>
+          {ask.text && <>ข้อความ &quot;{clip(ask.text, 60)}&quot;</>}{ask.text && ask.interests > 0 && " · "}{ask.interests > 0 && `ความสนใจของ Claude ${ask.interests} รายการ`}
+          <div>ชุดนี้จะแทนที่ข้อความหลัก พาดหัว คำอธิบาย และความสนใจของ Claude (รูป งบ ชื่อแคมเปญ คงเดิม)</div>
+          <div className="comp-copy-acts">
+            <button className="btn comp-sm primary" onClick={() => use(true)}>แทนที่แล้วไปแท็บสร้างโฆษณา</button>
+            <button className="btn comp-sm" onClick={() => setAsk(null)}>ยกเลิก</button>
+          </div>
+        </div>
+      ) : (
+        <div className="comp-copy-acts">
+          <button className="btn comp-sm" onClick={copy}>{copied ? "✓ คัดลอกแล้ว" : "📋 คัดลอก"}</button>
+          <button className="btn comp-sm primary" onClick={() => use(false)}>ใช้ชุดนี้ในแท็บสร้างโฆษณา →</button>
+        </div>
+      )}
+      {err && <div className="comp-warn">⚠ {err}</div>}
+    </div>
+  );
+}
+
+function CopyIdeas({ s, onRun }: { s: CompetitorsState; onRun: () => void }) {
+  const c = s.copy;
+  const hasAds = s.competitors.some((x) => s.scans[x.pageId]?.status === "ok");
+  if (!hasAds && !c) return null;
+  const busy = s.running?.kind === "copy";
+  let n = 0;
+  return (
+    <section className="card comp-card">
+      <div className="comp-copy-head">
+        <h3>ความสนใจ + คำโฆษณาจาก Claude <span className="muted comp-small">
+          {c ? `อิงแอดคู่แข่ง ${c.adsUsed} แอด + "ธุรกิจของเรา" · คิดเมื่อ ${when(c.at)} · ${c.model}` : "ยังไม่เคยคิด"}
+        </span></h3>
+        <span className="spacer" />
+        <button className="btn primary" disabled={!!s.running || !hasAds} onClick={onRun}>
+          {busy ? "Claude กำลังคิด…" : c ? "✨ คิดใหม่" : "✨ คิดความสนใจ + คำโฆษณา 5 ชุด"}
+        </button>
+      </div>
+      <p className="muted comp-small comp-copy-cost">
+        กดแล้วเสียค่า API ตามรุ่นที่เลือก · ค้นคลังความสนใจของ Meta แบบอ่านอย่างเดียว ไม่สร้างอะไรบน Meta
+        {!s.summary && " · ยังไม่มีผลสรุป → Claude จะหามุมใหม่เองจากแอด"}
+      </p>
+      {busy && <div className="comp-busy">⏳ {s.running?.step} (ราว 1 นาที)</div>}
+      {s.copyError && !busy && <div className="comp-warn">⚠ Claude คิดไม่ได้: {s.copyError}</div>}
+      {c && (
+        <>
+          <div className="comp-copy-sub"><b>ความสนใจในคลังของ Meta</b> <span className="muted comp-small">(ค้นจริง · ใช้ตั้งกลุ่มเป้าหมายได้ทันที)</span></div>
+          {c.interests.length > 0 && (
+            <div className="comp-chips">
+              {c.interests.map((x) => (
+                <span key={x.id} className="comp-chip comp-int">{x.name}{fmtSize(x.th_lower, x.th_upper) && <span className="muted"> · ไทย {fmtSize(x.th_lower, x.th_upper)}</span>}</span>
+              ))}
+            </div>
+          )}
+          {c.reach && <div className="comp-reach">รวมคนไทยที่สนใจอย่างน้อย 1 อย่าง {fmtSize(c.reach.lower, c.reach.upper)}</div>}
+          {c.searchError && <div className="comp-warn">⚠ {c.searchError}</div>}
+          {(c.why || c.missed.length > 0) && (
+            <div className="muted comp-small comp-copy-why">
+              {c.why && <>ทำไม: {c.why}</>}{c.why && c.missed.length > 0 && " · "}
+              {c.missed.length > 0 && <>ไม่เจอในคลัง: {c.missed.map((m) => `"${m}"`).join(", ")}</>}
+            </div>
+          )}
+          <h3 className="comp-h3-gap">คำโฆษณา {c.sets.length} ชุด <span className="muted comp-small">· น้ำเสียงกันเองสุภาพ · ไม่มีราคา/คำอวดที่พิสูจน์ไม่ได้ · ตรวจก่อนใช้ทุกครั้ง</span></h3>
+          <div className="comp-copy-grid">
+            {c.sets.map((x, i) => (
+              <CopyCard key={`${c.at}-${i}`} x={x} c={c}
+                label={x.kind === "fix" ? `แก้จุดอ่อนคู่แข่ง · ${x.angle}` : `มุมใหม่ ${NUM[n++] ?? "•"} ${x.angle}`} />
+            ))}
+          </div>
+          <div className="muted comp-small comp-model">
+            ใช้ชุดนี้ → เปิดแท็บ &quot;＋ สร้างโฆษณา&quot; (Claude · ยิงข้อความ) เติมข้อความหลัก + พาดหัว + คำอธิบาย + ความสนใจด้านบนลงฟอร์ม
+            · ชนิดยิงข้อความใช้ปุ่ม &quot;ส่งข้อความ&quot; เสมอ · พาดหัวขึ้นในฟอร์มเมื่อเปิดชิ้นงานไดนามิก · ยังไม่ยิง Meta ต้องกดสร้างเองตามปกติ
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
 /* ---------------- แอดรายเจ้า + ช่องวางเอง ---------------- */
 
 function Ad({ a, isNew }: { a: CompetitorAd; isNew: boolean }) {
@@ -358,6 +502,7 @@ export default function CompetitorsPage() {
             <Setup s={s} disabled={saving || s.running?.kind === "scan"} save={(p) => act("/api/competitors", p)} />
             <ScanBar s={s} claude={claude} onScan={() => act("/api/competitors/scan")} onSummary={() => act("/api/competitors/summary")} />
             <Summary s={s} />
+            <CopyIdeas s={s} onRun={() => act("/api/competitors/copy")} />
             <PerCompetitor s={s} disabled={saving || s.running?.kind === "scan"} onState={setS} />
           </>
         )}

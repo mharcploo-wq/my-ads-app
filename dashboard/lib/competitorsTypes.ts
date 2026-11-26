@@ -68,6 +68,35 @@ export interface CompetitorSummary {
   note: string;               // ข้อสังเกตรวม 1–2 ประโยค
 }
 
+/** ปุ่ม ✨ คิดความสนใจ + คำโฆษณา 5 ชุด — ความสนใจค้นจากคลังจริงของ Meta (id ใช้ตั้งกลุ่มเป้าหมายได้) */
+export interface CopyInterest {
+  id: string; name: string; keyword?: string;
+  size_lower?: number | null; size_upper?: number | null;   // ทั่วโลก
+  th_lower?: number | null; th_upper?: number | null;       // คนไทยอายุ 20+
+}
+/** คำโฆษณา 1 ชุด · new = มุมที่ยังไม่มีใครเล่น · fix = แก้จุดอ่อนของแอดคู่แข่ง */
+export interface CopySet {
+  kind: "new" | "fix";
+  angle: string;
+  primary: string;            // ข้อความหลัก
+  headline: string;           // พาดหัว
+  description: string;        // คำอธิบายสั้น
+  cta: string;                // MESSAGE_PAGE / LEARN_MORE / …
+  ctaLabel: string;           // ชื่อปุ่มภาษาไทย
+  why: string;
+}
+export interface CompetitorCopy {
+  at: string;
+  model: string;
+  adsUsed: number;            // จำนวนแอดคู่แข่งที่ส่งให้ Claude
+  why: string;                // ทำไมเลือกความสนใจกลุ่มนี้
+  interests: CopyInterest[];
+  missed: string[];           // คำที่ Claude คิดแต่ไม่เจอในคลังของ Meta
+  reach: { lower: number; upper: number } | null;   // คนไทยที่สนใจอย่างน้อย 1 อย่าง
+  searchError: string | null; // ค้นคลัง Meta ไม่ได้ (ยังได้คำโฆษณา)
+  sets: CopySet[];
+}
+
 /** แอดที่รันนานสุดของแต่ละเจ้า (แอปคำนวณ ไม่ใช่ Claude) */
 export interface Longest { id: string; start: string; days: number; text: string }
 
@@ -81,8 +110,10 @@ export interface CompetitorsState {
   lastScan: { at: string; error: string | null } | null;
   summary: CompetitorSummary | null;
   summaryError: string | null;
-  /** กำลังทำงานอยู่ (สแกน / สรุป) — หน้าเว็บถามซ้ำทุก 3 วิ จนเป็น null */
-  running: { kind: "scan" | "summary"; step: string; startedAt: string } | null;
+  copy: CompetitorCopy | null;
+  copyError: string | null;
+  /** กำลังทำงานอยู่ (สแกน / สรุป / คิดคำโฆษณา) — หน้าเว็บถามซ้ำทุก 3 วิ จนเป็น null */
+  running: { kind: "scan" | "summary" | "copy"; step: string; startedAt: string } | null;
 }
 
 /** ผลค้นชื่อเพจเพื่อเพิ่มคู่แข่ง */

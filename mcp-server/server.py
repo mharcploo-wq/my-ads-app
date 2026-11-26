@@ -89,6 +89,8 @@ parser.add_argument("--insights-summary-json", metavar="PATH", default=None,
                     help="(หน้าแอป) ปุ่ม ✨ หน้าวิเคราะห์โฆษณา: ตัวเลขสรุปจากไฟล์ → Claude สรุป+แนะนำ แล้วพิมพ์ผลเป็น JSON")
 parser.add_argument("--competitors-summary-json", metavar="PATH", default=None,
                     help="(หน้าแอป) หน้าวิเคราะห์คู่แข่ง: ข้อความแอดคู่แข่งจากไฟล์ → Claude สรุป hook/offer + 3 มุมที่ยังไม่มีใครเล่น แล้วพิมพ์ผลเป็น JSON")
+parser.add_argument("--competitors-copy-json", metavar="PATH", default=None,
+                    help="(หน้าแอป) หน้าวิเคราะห์คู่แข่ง: แอดคู่แข่ง + ผลสรุปจากไฟล์ → Claude คิดความสนใจ (ค้นคลัง Meta) + คำโฆษณา 5 ชุด แล้วพิมพ์ผลเป็น JSON")
 parser.add_argument("--competitors-claude-check", action="store_true",
                     help="(หน้าแอป) ทดสอบคีย์ Claude ของหน้าวิเคราะห์คู่แข่ง (ไม่เสียค่าโทเคน) แล้วพิมพ์ผลเป็น JSON")
 parser.add_argument("--ai-poll-json", metavar="PATH", default=None,
@@ -2471,6 +2473,107 @@ def competitors_summary(data: dict[str, Any]) -> dict[str, Any]:
     return res
 
 
+# ปุ่ม ✨ คิดความสนใจ + คำโฆษณา 5 ชุด — ปุ่มที่ Claude เลือกได้ (แสดงคู่กับคำโฆษณา · ชนิดยิงข้อความใช้ "ส่งข้อความ" เสมอ)
+COPY_CTAS: dict[str, str] = {
+    "MESSAGE_PAGE": "ส่งข้อความ", "LEARN_MORE": "ดูเพิ่มเติม", "CONTACT_US": "ติดต่อเรา",
+    "GET_QUOTE": "รับใบเสนอราคา", "SIGN_UP": "สมัคร", "BOOK_TRAVEL": "จองเลย",
+}
+COPY_SETS = 5   # 3 มุมใหม่ + 2 แก้จุดอ่อนคู่แข่ง
+
+COMPETITORS_COPY_SYSTEM = (
+    "You plan Facebook/Instagram ads for a Thai business owner, using what their competitors' running ads do. "
+    "You get the owner's business description, the competitors' ads (full text) and, when available, an earlier "
+    "summary with angles nobody uses yet. "
+    "1) keywords: 6-8 short English search terms for Meta's detailed-targeting interest library: industries, job "
+    "roles, business topics and software categories the likely buyers follow (e.g. 'Small business', "
+    "'Enterprise resource planning', 'Entrepreneurship'). Use common category names that exist on Facebook; no Thai, "
+    "no competitor brand names, no demographics or sensitive attributes. keywords_why: one Thai sentence on who these "
+    "people are and why, citing what the competitors' ads target. "
+    "2) ads: exactly 5 ad copies in Thai. The first 3 have kind 'new', one per angle nobody uses yet (use the given "
+    "angles in the given order when provided, otherwise find 3 yourself from the ads). The last 2 have kind 'fix': "
+    "each fixes a weakness you see across the competitors' ads (something buyers want to know that their ads leave "
+    "out or handle poorly). angle = short Thai label of that angle or weakness. why = one Thai sentence citing what "
+    "the competitors' ads do instead. "
+    "Voice: polite but friendly Thai ending with ครับ, speaking to SME owners and executives, plain everyday words, "
+    "2-5 short lines, at most 2 emoji. primary = the main text, ending with a clear invitation to message the page. "
+    "headline at most 40 characters. description at most 30 characters. cta = the button that fits best. "
+    "Hard rules: no prices, discounts, counts of customers/projects/years, percentages, rankings or superlatives that "
+    "cannot be proven (e.g. 'อันดับ 1', 'ดีที่สุด', 'ถูกที่สุด', 'การันตี'); do not invent facts about the owner's "
+    "business beyond its description; never name or attack a competitor; follow Meta advertising policies: no "
+    "misleading claims and do not assert or imply the reader's personal attributes."
+)
+COMPETITORS_COPY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "keywords": {"type": "array", "items": {"type": "string"}},
+        "keywords_why": {"type": "string"},
+        "ads": {"type": "array", "items": {
+            "type": "object",
+            "properties": {"kind": {"type": "string", "enum": ["new", "fix"]}, "angle": {"type": "string"},
+                           "primary": {"type": "string"}, "headline": {"type": "string"},
+                           "description": {"type": "string"}, "cta": {"type": "string", "enum": list(COPY_CTAS)},
+                           "why": {"type": "string"}},
+            "required": ["kind", "angle", "primary", "headline", "description", "cta", "why"],
+            "additionalProperties": False,
+        }},
+    },
+    "required": ["keywords", "keywords_why", "ads"],
+    "additionalProperties": False,
+}
+
+
+def competitors_copy(data: dict[str, Any]) -> dict[str, Any]:
+    """(หน้าวิเคราะห์คู่แข่ง · ปุ่ม ✨ คิดความสนใจ + คำโฆษณา 5 ชุด)
+    แอดคู่แข่ง + ผลสรุปเดิม → Claude คิดคำค้นความสนใจ + คำโฆษณา 5 ชุด → ค้นคลังความสนใจของ Meta (อ่านอย่างเดียว)
+    ไม่สร้าง/ไม่แก้อะไรบน Meta · คีย์ Claude ของหน้าคู่แข่ง · token Meta ของ agent (ใช้ค้นคลังความสนใจ + ขนาดกลุ่ม)"""
+    c = competitors_claude()
+    if c["error"]:
+        return {"success": False, "error": c["error"]}
+    prompt = "Business, competitor ads and earlier summary (JSON):\n" + json.dumps(data, ensure_ascii=False)
+    text, err = _claude_text(COMPETITORS_COPY_SYSTEM, prompt, COMPETITORS_COPY_SCHEMA,
+                             "Claude ไม่คิดคำโฆษณาจากแอดชุดนี้ให้ — ลองสแกนใหม่", max_tokens=8000,
+                             api_key=c["key"], workspace=c["workspace"], model=c["model"], where=COMPETITORS_WHERE)
+    if err:
+        log_action("competitors_copy", False, {"model": c["model"], "using": c["using"], "error": err})
+        return {"success": False, "error": err}
+    try:
+        out = json.loads(text or "")
+        words = list(dict.fromkeys(str(w).strip()[:60] for w in out.get("keywords") or [] if str(w).strip()))
+        txt = lambda a, k: str(a.get(k) or "").strip()  # noqa: E731
+        ads = []
+        for a in out.get("ads") or []:
+            if not isinstance(a, dict) or not txt(a, "primary"):
+                continue
+            cta = txt(a, "cta").upper()
+            cta = cta if cta in COPY_CTAS else "MESSAGE_PAGE"
+            ads.append({"kind": "fix" if a.get("kind") == "fix" else "new", "angle": txt(a, "angle"),
+                        "primary": txt(a, "primary"), "headline": txt(a, "headline"),
+                        "description": txt(a, "description"), "cta": cta, "cta_label": COPY_CTAS[cta],
+                        "why": txt(a, "why")})
+        why = str(out.get("keywords_why") or "").strip()
+    except (ValueError, AttributeError):
+        return {"success": False, "error": "Claude ตอบกลับในรูปแบบที่อ่านไม่ได้ — กดใหม่อีกครั้ง"}
+    if not ads:
+        return {"success": False, "error": "Claude ไม่ได้ส่งคำโฆษณากลับมา — กดใหม่อีกครั้ง"}
+    # ค้นคลังจริงของ Meta (ได้ id + ขนาดกลุ่ม) — ค้นไม่ได้ก็ยังคืนคำโฆษณา แล้วบอกเหตุผลแทน
+    interests: list[dict[str, Any]] = []
+    missed, reach, search_error = words[:MAX_INTERESTS], None, None
+    if not (META_ACCESS_TOKEN and META_AD_ACCOUNT_ID):
+        search_error = "Agent Claude ยังไม่มี Token/บัญชีโฆษณา — ค้นคลังความสนใจของ Meta ไม่ได้"
+    elif words:
+        interests, missed = _search_interests(words)
+        size = _th_reach([x["id"] for x in interests]) if interests else None
+        reach = {"lower": size[0], "upper": size[1]} if size else None
+        if not interests:
+            search_error = "ไม่เจอคำที่ Claude คิดในคลังความสนใจของ Meta — กดคิดใหม่อีกครั้ง"
+    log_action("competitors_copy", True, {"model": c["model"], "using": c["using"], "ads": len(ads),
+                                          "words": words, "interests": [x["name"] for x in interests],
+                                          "missed": missed})
+    return {"success": True, "error": None, "model": c["model"], "why": why, "words": words,
+            "interests": interests, "missed": missed, "reach": reach, "search_error": search_error,
+            "ads": ads[:COPY_SETS]}
+
+
 def suggest_interests(spec: dict[str, Any]) -> dict[str, Any]:
     """(ปุ่ม ✨ ในหน้าแอป) ข้อความโฆษณา → AI คิดคำค้น → ค้นคลังความสนใจของ Meta → ไม่เกิน 10 รายการ
     spec: texts[], titles[], link_url?"""
@@ -2840,7 +2943,7 @@ if __name__ == "__main__":
     if (ARGS.status or ARGS.create_json or ARGS.suggest_json or ARGS.search_json or ARGS.adset_json
             or ARGS.reach_json or ARGS.lives or ARGS.live_ad_json or ARGS.pages
             or ARGS.portfolios or ARGS.check_portfolio or ARGS.insights_summary_json
-            or ARGS.competitors_summary_json or ARGS.competitors_claude_check or ARGS.ai_poll_json or ARGS.ai_stop):
+            or ARGS.competitors_summary_json or ARGS.competitors_copy_json or ARGS.competitors_claude_check or ARGS.ai_poll_json or ARGS.ai_stop):
         if PORTFOLIO != 1 and (ARGS.status or ARGS.create_json):
             _auto_portfolio_ids()
         if ARGS.ai_poll_json:
@@ -2851,6 +2954,8 @@ if __name__ == "__main__":
             out = insights_summary(json.loads(Path(ARGS.insights_summary_json).read_text(encoding="utf-8")))
         elif ARGS.competitors_summary_json:
             out = competitors_summary(json.loads(Path(ARGS.competitors_summary_json).read_text(encoding="utf-8")))
+        elif ARGS.competitors_copy_json:
+            out = competitors_copy(json.loads(Path(ARGS.competitors_copy_json).read_text(encoding="utf-8")))
         elif ARGS.competitors_claude_check:
             out = competitors_claude_check()
         elif ARGS.check_portfolio:

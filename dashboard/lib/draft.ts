@@ -52,6 +52,16 @@ export function saveDraft(d: FormDraft): boolean {
   }
 }
 
+/** แก้บางช่องของร่างจากหน้าอื่น (เช่น หน้าคู่แข่ง "ใช้ชุดนี้") — ช่องอื่นคงเดิม · ฟอร์มอ่านค่าใหม่ตอนเปิดแท็บสร้างโฆษณา */
+export function patchDraft(p: Partial<FormDraft>): boolean {
+  try {
+    window.localStorage.setItem(KEY, JSON.stringify({ ...(loadDraft() ?? {}), ...p, savedAt: Date.now() }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB, 1);

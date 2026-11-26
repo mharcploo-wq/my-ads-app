@@ -6,8 +6,8 @@ import { randomUUID } from "crypto";
 import { findPages, keywordAds, openBrowser, pageAds, parsePasted } from "./adLibrary";
 import { runCreator } from "./creator";
 import type {
-  Angle, Competitor, CompetitorAd, CompetitorScan, CompetitorsState, CompetitorSummary, KeywordHit, KeywordScan,
-  Longest, PageCandidate, SummaryRow,
+  Angle, Competitor, CompetitorAd, CompetitorCopy, CompetitorScan, CompetitorsState, CompetitorSummary, CopyInterest,
+  KeywordHit, KeywordScan, Longest, PageCandidate, SummaryRow,
 } from "./competitorsTypes";
 
 /** หน้าวิเคราะห์คู่แข่ง — เก็บค่าตั้ง + ผลสแกนรอบล่าสุดใน data/competitors.json (ข้อมูลสาธารณะจาก Ad Library ไม่มี token)
@@ -37,6 +37,8 @@ const DEFAULTS: Stored = {
   lastScan: null,
   summary: null,
   summaryError: null,
+  copy: null,
+  copyError: null,
 };
 
 const gc = globalThis as unknown as { __adsCompetitorsRun?: Running };
@@ -137,13 +139,14 @@ export async function saveConfig(input: ConfigInput): Promise<{ ok: true; state:
 
 /* ---------------- งานเบื้องหลัง (สแกน / สรุป) — ทีละงาน ---------------- */
 
-function begin(kind: "scan" | "summary", step: string): boolean {
+function begin(kind: NonNullable<Running>["kind"], step: string): boolean {
   if (gc.__adsCompetitorsRun) return false;
   gc.__adsCompetitorsRun = { kind, step, startedAt: now() };
   return true;
 }
 const step = (t: string) => { if (gc.__adsCompetitorsRun) gc.__adsCompetitorsRun.step = t; };
-const busyText = () => (gc.__adsCompetitorsRun?.kind === "scan" ? "กำลังสแกนอยู่ — รอให้เสร็จก่อน" : "Claude กำลังสรุปอยู่ — รอให้เสร็จก่อน");
+const BUSY = { scan: "กำลังสแกนอยู่", summary: "Claude กำลังสรุปอยู่", copy: "Claude กำลังคิดคำโฆษณาอยู่" } as const;
+const busyText = () => `${BUSY[gc.__adsCompetitorsRun?.kind ?? "scan"]} — รอให้เสร็จก่อน`;
 
 /** เทียบรอบก่อน: ใหม่ = id ที่รอบก่อนไม่มี · หายไป = id รอบก่อนที่รอบนี้ไม่มี (รอบก่อนต้องอ่านได้จริงถึงจะเทียบ) */
 function diff(prev: CompetitorScan | undefined, ads: CompetitorAd[]) {
@@ -229,28 +232,43 @@ export async function startSummary(): Promise<{ ok: true; state: CompetitorsStat
 
 const clip = (t: string, n: number) => (t.length > n ? t.slice(0, n) + "…" : t);
 
-async function runSummary() {
-  const s = await load();
-  const withAds = s.competitors.map((c) => s.scans[c.pageId]).filter((x): x is CompetitorScan => !!x && x.status === "ok" && x.ads.length > 0);
-  if (!withAds.length) {
-    await update((x) => { x.summary = null; x.summaryError = "ยังไม่มีแอดคู่แข่งให้สรุป — สแกนก่อน หรือวางข้อความเอง"; });
-    return;
-  }
-  const input = {
-    business: s.business,
-    competitors: withAds.map((c) => ({
-      page_id: c.pageId, name: c.name, active_ads: c.total ?? c.ads.length,
-      ads: c.ads.slice(0, 15).map((a) => ({ start: a.start, text: clip(a.body, 900), title: a.title, cta: a.cta, copies: a.copies })),
-    })),
-    competitors_without_ads: s.competitors.filter((c) => s.scans[c.pageId]?.status === "none").map((c) => c.name),
-  };
+const ADS_PER_COMPETITOR = 15;
+const withAdsOf = (s: Stored) =>
+  s.competitors.map((c) => s.scans[c.pageId]).filter((x): x is CompetitorScan => !!x && x.status === "ok" && x.ads.length > 0);
+
+/** แอดคู่แข่งที่ส่งให้ Claude (ทั้งปุ่มสรุปและปุ่มคิดคำโฆษณา) */
+const adsInput = (s: Stored, withAds: CompetitorScan[]) => ({
+  business: s.business,
+  competitors: withAds.map((c) => ({
+    page_id: c.pageId, name: c.name, active_ads: c.total ?? c.ads.length,
+    ads: c.ads.slice(0, ADS_PER_COMPETITOR).map((a) => ({ start: a.start, text: clip(a.body, 900), title: a.title, cta: a.cta, copies: a.copies })),
+  })),
+  competitors_without_ads: s.competitors.filter((c) => s.scans[c.pageId]?.status === "none").map((c) => c.name),
+});
+
+/** เขียนข้อมูลลงไฟล์ชั่วคราว → เรียก server.py → ลบไฟล์ */
+async function runWithFile<T>(flag: string, input: unknown, timeout: number): Promise<T> {
   const tmp = path.join(os.tmpdir(), `ads-competitors-${randomUUID()}`);
   await fs.mkdir(tmp, { recursive: true });
   try {
     const file = path.join(tmp, "competitors.json");
     await fs.writeFile(file, JSON.stringify(input), "utf8");
-    const r = await runCreator<{ success: boolean; error: string | null; model?: string; rows?: { page_id: string; hooks: string[]; offer: string }[]; angles?: Angle[]; note?: string }>(
-      "claude", ["--competitors-summary-json", file], 150_000);
+    return await runCreator<T>("claude", [flag, file], timeout);
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function runSummary() {
+  const s = await load();
+  const withAds = withAdsOf(s);
+  if (!withAds.length) {
+    await update((x) => { x.summary = null; x.summaryError = "ยังไม่มีแอดคู่แข่งให้สรุป — สแกนก่อน หรือวางข้อความเอง"; });
+    return;
+  }
+  try {
+    const r = await runWithFile<{ success: boolean; error: string | null; model?: string; rows?: { page_id: string; hooks: string[]; offer: string }[]; angles?: Angle[]; note?: string }>(
+      "--competitors-summary-json", adsInput(s, withAds), 150_000);
     if (!r.success) {
       await update((x) => { x.summaryError = r.error ?? "Claude สรุปไม่สำเร็จ"; });
       return;
@@ -261,8 +279,48 @@ async function runSummary() {
     await update((x) => { x.summary = summary; x.summaryError = null; });
   } catch (e) {
     await update((x) => { x.summaryError = (e as Error).message; });
-  } finally {
-    await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+/* ---------------- ✨ คิดความสนใจ + คำโฆษณา 5 ชุด ---------------- */
+
+export async function startCopy(): Promise<{ ok: true; state: CompetitorsState } | { ok: false; error: string }> {
+  const s = await load();
+  if (!withAdsOf(s).length) return { ok: false, error: "ยังไม่มีแอดคู่แข่งให้ Claude อ่าน — สแกนก่อน หรือวางข้อความเอง" };
+  if (!begin("copy", "Claude กำลังคิดความสนใจ + คำโฆษณา…")) return { ok: false, error: busyText() };
+  void runCopy().catch(() => {}).finally(() => { gc.__adsCompetitorsRun = null; });
+  return { ok: true, state: view(await load()) };
+}
+
+type CopyOut = {
+  success: boolean; error: string | null; model?: string; why?: string; interests?: CopyInterest[]; missed?: string[];
+  reach?: { lower: number; upper: number } | null; search_error?: string | null;
+  ads?: { kind: string; angle: string; primary: string; headline: string; description: string; cta: string; cta_label: string; why: string }[];
+};
+
+async function runCopy() {
+  const s = await load();
+  const withAds = withAdsOf(s);
+  // มุมจากผลสรุปเดิม (ถ้ามี) → 3 ชุดแรกเล่นตามมุมเหล่านี้ · ไม่มีก็ให้ Claude หามุมเอง
+  const input = { ...adsInput(s, withAds), earlier_summary: s.summary ? { angles: s.summary.angles, note: s.summary.note } : null };
+  try {
+    const r = await runWithFile<CopyOut>("--competitors-copy-json", input, 240_000);
+    if (!r.success) {
+      await update((x) => { x.copyError = r.error ?? "Claude คิดคำโฆษณาไม่สำเร็จ"; });
+      return;
+    }
+    const copy: CompetitorCopy = {
+      at: now(), model: r.model ?? "", why: r.why ?? "",
+      adsUsed: withAds.reduce((n, c) => n + Math.min(c.ads.length, ADS_PER_COMPETITOR), 0),
+      interests: r.interests ?? [], missed: r.missed ?? [], reach: r.reach ?? null, searchError: r.search_error ?? null,
+      sets: (r.ads ?? []).map((a) => ({
+        kind: a.kind === "fix" ? "fix" : "new", angle: a.angle, primary: a.primary, headline: a.headline,
+        description: a.description, cta: a.cta, ctaLabel: a.cta_label, why: a.why,
+      })),
+    };
+    await update((x) => { x.copy = copy; x.copyError = null; });
+  } catch (e) {
+    await update((x) => { x.copyError = (e as Error).message; });
   }
 }
 
