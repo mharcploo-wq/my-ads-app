@@ -137,6 +137,24 @@ export async function saveConfig(input: ConfigInput): Promise<{ ok: true; state:
   return { ok: true, state: view(s) };
 }
 
+/* ---------------- 🗑 ล้างผลลัพธ์ ---------------- */
+
+/** ล้างผลทั้งหมด (สแกน · คำค้น · สรุป · คำโฆษณา/ภาพ/คลิป) · เก็บธุรกิจ คู่แข่ง คำค้นไว้ · ห้ามระหว่างมีงานเบื้องหลัง */
+export async function clearResults(): Promise<{ ok: true; state: CompetitorsState } | { ok: false; error: string }> {
+  if (gc.__adsCompetitorsRun) return { ok: false, error: busyText() };
+  const s = await update((s) => {
+    s.scans = {};
+    s.keywordScans = [];
+    s.hits = [];
+    s.lastScan = null;
+    s.summary = null;
+    s.summaryError = null;
+    s.copy = null;
+    s.copyError = null;
+  });
+  return { ok: true, state: view(s) };
+}
+
 /* ---------------- งานเบื้องหลัง (สแกน / สรุป) — ทีละงาน ---------------- */
 
 function begin(kind: NonNullable<Running>["kind"], step: string): boolean {

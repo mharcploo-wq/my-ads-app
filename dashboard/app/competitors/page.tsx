@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { adLibraryPageUrl, VIDEO_LINE_MAX } from "@/lib/competitorsTypes";
 import type {
   Competitor, CompetitorAd, CompetitorCopy, CompetitorScan, CompetitorsClaudeView, CompetitorsState, CopyImage, CopySet, CopyVideo, PageCandidate, SummaryRow,
@@ -558,6 +559,73 @@ function PerCompetitor({ s, disabled, onState }: { s: CompetitorsState; disabled
   );
 }
 
+/* ---------------- หัวหน้า: 🔄 รีเฟรช + 🗑 ล้างข้อมูล ---------------- */
+
+/** มีผลลัพธ์อะไรค้างอยู่บ้าง — ใช้ทั้งเปิด/ปิดปุ่มล้าง และบอกในกล่องยืนยัน */
+function resultsOf(s: CompetitorsState) {
+  const scans = Object.values(s.scans);
+  const parts = [
+    scans.length ? `ผลสแกนแอด ${scans.length} เจ้า (${scans.reduce((n, x) => n + x.ads.length, 0)} แอด · รวมที่วางเอง)` : "",
+    s.hits.length || s.keywordScans.length ? `ผลค้นคำค้น (${s.hits.length} เพจที่ยังไม่ได้เป็นคู่แข่ง)` : "",
+    s.summary || s.summaryError ? "สรุปจาก Claude" : "",
+    s.copy || s.copyError ? `ความสนใจ + คำโฆษณา${s.copy?.sets.length ? ` ${s.copy.sets.length} ชุด` : ""}${s.copy?.imagesAt ? " + prompt ภาพ" : ""}${s.copy?.videosAt ? " + prompt คลิป" : ""}` : "",
+    s.lastScan && !scans.length ? "เวลาสแกนล่าสุด" : "",
+  ];
+  return parts.filter(Boolean);
+}
+
+function TopTools({ s, saving, onRefresh, onClear }: { s: CompetitorsState | null; saving: boolean; onRefresh: () => void; onClear: () => Promise<boolean> }) {
+  const [ask, setAsk] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const items = s ? resultsOf(s) : [];
+  const off = !s || !!s.running || saving;
+  const why = s?.running ? `${s.running.step} — รอให้เสร็จก่อน` : undefined;
+  const clear = async () => {
+    setBusy(true);
+    const ok = await onClear();
+    setBusy(false);
+    if (ok) setAsk(false);
+  };
+  return (
+    <>
+      <button className="btn" disabled={off || (!s?.competitors.length && !s?.keywords.length)} onClick={onRefresh}
+        title={why ?? "สแกน Ad Library ใหม่ทุกเจ้า + ค้นคำค้นใหม่ แล้วให้ Claude สรุปใหม่ (เสียค่า Claude 1 ครั้ง)"}>
+        {s?.running?.kind === "scan" ? "⏳ กำลังรีเฟรช…" : "🔄 รีเฟรชข้อมูล"}
+      </button>
+      <button className="btn danger" disabled={off || !items.length} onClick={() => setAsk(true)}
+        title={why ?? (items.length ? "ล้างผลลัพธ์ทั้งหมด · เก็บธุรกิจ คู่แข่ง คำค้นไว้" : "ยังไม่มีผลลัพธ์ให้ล้าง")}>
+        🗑 ล้างข้อมูล
+      </button>
+      {ask && s && createPortal(
+        <div className="modal-bg" onClick={(e) => { if (e.target === e.currentTarget && !busy) setAsk(false); }}>
+          <div className="card modal comp-clear" role="dialog" aria-modal="true" aria-label="ล้างข้อมูล">
+            <div className="modal-h">
+              <h3>🗑 ล้างข้อมูลหน้าวิเคราะห์คู่แข่ง?</h3>
+              <button className="btn" onClick={() => setAsk(false)} disabled={busy} aria-label="ปิด">✕</button>
+            </div>
+            <div className="comp-clear-list">
+              <b>จะลบ</b>
+              <ul>{items.map((t) => <li key={t}>{t}</li>)}</ul>
+              <b>เก็บไว้เหมือนเดิม</b>
+              <ul>
+                <li>ธุรกิจของเรา</li>
+                <li>รายชื่อคู่แข่ง {s.competitors.length} เจ้า</li>
+                <li>คำค้น {s.keywords.length} คำ</li>
+              </ul>
+            </div>
+            <div className="comp-warn">⚠ ล้างแล้วกู้คืนไม่ได้ — ต้องกด 🔄 รีเฟรชข้อมูล และกด ✨ คิดคำโฆษณาใหม่ (เสียค่า Claude อีกครั้ง)</div>
+            <div className="comp-clear-btns">
+              <button className="btn" onClick={() => setAsk(false)} disabled={busy}>ยกเลิก</button>
+              <button className="btn primary comp-clear-go" onClick={clear} disabled={busy}>{busy ? "กำลังล้าง…" : "ยืนยัน ล้างข้อมูล"}</button>
+            </div>
+          </div>
+        </div>,
+        document.body,   // แถบหัว (sticky + backdrop-filter) ตัดกล่องที่อยู่ข้างใน → วาดที่ body แทน
+      )}
+    </>
+  );
+}
+
 /* ---------------- หน้า ---------------- */
 
 export default function CompetitorsPage() {
@@ -589,6 +657,7 @@ export default function CompetitorsPage() {
     const r = await call(url, body ?? {});
     setSaving(false);
     if (r.ok) setS(r.state); else setErr(r.error);
+    return r.ok;
   };
 
   return (
@@ -601,7 +670,10 @@ export default function CompetitorsPage() {
             <p>ดึงจาก Meta Ad Library (ไทย · แอดที่รันอยู่) · ไม่ล็อกอิน Facebook · ไม่แตะอะไรในบัญชีโฆษณา</p>
           </div>
           <span className="spacer" />
-          <a className="btn" href="/">กลับ Ads Control</a>
+          <div className="comp-top-tools">
+            <TopTools s={s} saving={saving} onRefresh={() => act("/api/competitors/scan")} onClear={() => act("/api/competitors/clear")} />
+            <a className="btn" href="/">กลับ Ads Control</a>
+          </div>
         </div>
       </header>
       <main className="wrap comp-main">
