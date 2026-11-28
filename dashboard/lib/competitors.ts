@@ -3,7 +3,7 @@ import { promises as fs } from "fs";
 import os from "os";
 import path from "path";
 import { randomUUID } from "crypto";
-import { findPages, keywordAds, openBrowser, pageAds, parsePasted } from "./adLibrary";
+import { findPages, keywordAds, keywordLooseAds, openBrowser, pageAds, parsePasted } from "./adLibrary";
 import { runCreator } from "./creator";
 import type {
   Angle, Competitor, CompetitorAd, CompetitorCopy, CompetitorScan, CompetitorsState, CompetitorSummary, CopyInterest,
@@ -41,6 +41,8 @@ const DEFAULTS: Stored = {
   copyError: null,
   keywordIdeas: null,
   keywordIdeasError: null,
+  hitsJudge: null,
+  hitsJudgeError: null,
 };
 
 const gc = globalThis as unknown as { __adsCompetitorsRun?: Running };
@@ -155,6 +157,8 @@ export async function clearResults(): Promise<{ ok: true; state: CompetitorsStat
     s.copyError = null;
     s.keywordIdeas = null;
     s.keywordIdeasError = null;
+    s.hitsJudge = null;
+    s.hitsJudgeError = null;
   });
   return { ok: true, state: view(s) };
 }
@@ -167,7 +171,7 @@ function begin(kind: NonNullable<Running>["kind"], step: string): boolean {
   return true;
 }
 const step = (t: string) => { if (gc.__adsCompetitorsRun) gc.__adsCompetitorsRun.step = t; };
-const BUSY = { scan: "กำลังสแกนอยู่", summary: "Claude กำลังสรุปอยู่", copy: "Claude กำลังคิดคำโฆษณาอยู่", image: "Claude กำลังคิด prompt ภาพอยู่", video: "Claude กำลังคิด prompt คลิปอยู่", keywords: "Claude กำลังคิดคำค้นอยู่" } as const;
+const BUSY = { scan: "กำลังสแกนอยู่", summary: "Claude กำลังสรุปอยู่", copy: "Claude กำลังคิดคำโฆษณาอยู่", image: "Claude กำลังคิด prompt ภาพอยู่", video: "Claude กำลังคิด prompt คลิปอยู่", keywords: "Claude กำลังคิดคำค้นอยู่", find: "กำลังหาคู่แข่งจากคำค้นอยู่" } as const;
 const busyText = () => `${BUSY[gc.__adsCompetitorsRun?.kind ?? "scan"]} — รอให้เสร็จก่อน`;
 
 /** เทียบรอบก่อน: ใหม่ = id ที่รอบก่อนไม่มี · หายไป = id รอบก่อนที่รอบนี้ไม่มี (รอบก่อนต้องอ่านได้จริงถึงจะเทียบ) */
@@ -215,25 +219,8 @@ async function runScan() {
       await sleep(PAUSE_MS);
     }
 
-    const hits = new Map<string, KeywordHit>();
-    const kwScans: KeywordScan[] = [];
-    const mine = new Set(cfg.competitors.map((c) => c.pageId));
-    for (const [i, k] of cfg.keywords.entries()) {
-      step(`ค้นคำ "${k}" (${i + 1}/${cfg.keywords.length})`);
-      const r = await keywordAds(browser, k);
-      kwScans.push({ keyword: k, at: now(), total: r.ok ? r.total : null, error: r.ok ? null : r.error });
-      if (r.ok) for (const a of r.ads) {
-        if (!a.pageId || mine.has(a.pageId)) continue;
-        const h = hits.get(a.pageId) ?? { pageId: a.pageId, name: a.pageName, ads: 0, keyword: k, sample: a.body.split("\n")[0].slice(0, 140) };
-        h.ads++;
-        hits.set(a.pageId, h);
-      }
-      await sleep(PAUSE_MS);
-    }
+    await searchKeywords(browser, cfg);
     await update((s) => {
-      const keep = new Set(s.competitors.map((c) => c.pageId));
-      s.keywordScans = kwScans;
-      s.hits = [...hits.values()].filter((h) => !keep.has(h.pageId)).sort((a, b) => b.ads - a.ads);
       s.lastScan = {
         at: now(),
         error: failed && failed === cfg.competitors.length ? "ดึงไม่ได้ทุกเจ้า — ดูเหตุผลที่แต่ละเจ้า แล้วใช้ช่องวางเอง" : null,
@@ -244,6 +231,106 @@ async function runScan() {
   }
   step("Claude กำลังสรุป…");
   await runSummary();
+}
+
+/** ค้นทุกคำค้นใน Ad Library → เพจที่ยังไม่ได้เป็นคู่แข่ง (ใช้ทั้ง 🔄 รีเฟรช และ 🔍 หาคู่แข่งจากคำค้น)
+ *  ผลใหม่ = ป้ายที่ Claude คัดรอบก่อนหายไปด้วย (เพจชุดใหม่ ยังไม่ได้คัด) */
+async function searchKeywords(browser: Awaited<ReturnType<typeof openBrowser>>, cfg: Stored): Promise<number> {
+  const hits = new Map<string, KeywordHit>();
+  const kwScans: KeywordScan[] = [];
+  const mine = new Set(cfg.competitors.map((c) => c.pageId));
+  for (const [i, k] of cfg.keywords.entries()) {
+    step(`ค้นคำ "${k}" (${i + 1}/${cfg.keywords.length})`);
+    let r = await keywordAds(browser, k);
+    let loose = false;
+    if (r.ok && !r.ads.length) {   // วลีตรงตัวไม่เจอ → ค้นแบบมีครบทุกคำ
+      await sleep(PAUSE_MS);
+      step(`ค้นคำ "${k}" แบบหลวม (${i + 1}/${cfg.keywords.length})`);
+      const r2 = await keywordLooseAds(browser, k);
+      if (r2.ok) { r = r2; loose = true; }
+    }
+    kwScans.push({ keyword: k, at: now(), total: r.ok ? r.total : null, error: r.ok ? null : r.error, ...(loose ? { loose } : {}) });
+    if (r.ok) for (const a of r.ads) {
+      if (!a.pageId || mine.has(a.pageId)) continue;
+      const h = hits.get(a.pageId) ?? { pageId: a.pageId, name: a.pageName, ads: 0, keyword: k, sample: a.body.split("\n")[0].slice(0, 140) };
+      h.ads++;
+      hits.set(a.pageId, h);
+    }
+    await sleep(PAUSE_MS);
+  }
+  const s = await update((s) => {
+    const keep = new Set(s.competitors.map((c) => c.pageId));
+    s.keywordScans = kwScans;
+    s.hits = [...hits.values()].filter((h) => !keep.has(h.pageId)).sort((a, b) => b.ads - a.ads);
+    s.hitsJudge = null;
+    s.hitsJudgeError = null;
+  });
+  return s.hits.length;
+}
+
+/* ---------------- 🔍 หาคู่แข่งจากคำค้น (ค้นคำค้นอย่างเดียว → Claude คัดเพจ) ---------------- */
+
+const HITS_FOR_JUDGE = 200;   // ค้นแบบหลวม 8 คำเจอได้ ~180 เพจ (28/11) — คัดให้ครบ ไม่ทิ้งคู่แข่งจริงที่มีแอดน้อยไว้ท้าย
+
+export async function startFind(): Promise<{ ok: true; state: CompetitorsState } | { ok: false; error: string }> {
+  const s = await load();
+  if (!s.keywords.length) return { ok: false, error: "ยังไม่มีคำค้น — เพิ่มคำค้น หรือกด ✨ ให้ Claude คิดคำค้น ก่อน" };
+  if (!begin("find", "กำลังเปิด Chrome…")) return { ok: false, error: busyText() };
+  void runFind().catch(() => {}).finally(() => { gc.__adsCompetitorsRun = null; });
+  return { ok: true, state: view(s) };
+}
+
+async function runFind() {
+  const cfg = await load();
+  let browser;
+  try {
+    browser = await openBrowser();
+  } catch (e) {
+    await update((s) => { s.hitsJudgeError = (e as Error).message; });
+    return;
+  }
+  let found = 0;
+  try {
+    found = await searchKeywords(browser, cfg);
+  } catch (e) {
+    await update((s) => { s.hitsJudgeError = `ค้นคำค้นไม่จบ: ${(e as Error).message}`; });
+    return;
+  } finally {
+    await browser.close().catch(() => {});
+  }
+  if (!found) return;
+  step(`Claude กำลังคัด ${Math.min(found, HITS_FOR_JUDGE)} เพจ…`);
+  await runJudge();
+}
+
+/** Claude คัดเพจที่เจอ — ไม่เปลี่ยนรายการเพจ แค่ติดป้าย yes/no + เหตุผล (คัดไม่ได้ = รายการเดิมยังอยู่) */
+async function runJudge() {
+  const s = await load();
+  const pages = s.hits.slice(0, HITS_FOR_JUDGE);
+  const input = {
+    business: s.business,
+    competitors: s.competitors.map((c) => c.name),
+    pages: pages.map((h) => ({ page_id: h.pageId, page: h.name, keyword: h.keyword, ads: h.ads, first_line: h.sample })),
+  };
+  try {
+    const r = await runWithFile<{ success: boolean; error: string | null; model?: string; pages?: { page_id: string; competitor: boolean; why: string }[] }>(
+      "--competitors-judge-json", input, 300_000);
+    if (!r.success) {
+      await update((x) => { x.hitsJudgeError = r.error ?? "Claude คัดเพจไม่สำเร็จ"; });
+      return;
+    }
+    const got = new Map((r.pages ?? []).map((p) => [p.page_id, p]));
+    await update((x) => {
+      x.hits = x.hits.map((h) => {
+        const p = got.get(h.pageId);
+        return p ? { ...h, verdict: p.competitor ? "yes" : "no", why: p.why } : h;
+      });
+      x.hitsJudge = { at: now(), model: r.model ?? "" };
+      x.hitsJudgeError = null;
+    });
+  } catch (e) {
+    await update((x) => { x.hitsJudgeError = (e as Error).message; });
+  }
 }
 
 export async function startSummary(): Promise<{ ok: true; state: CompetitorsState } | { ok: false; error: string }> {
@@ -322,7 +409,7 @@ async function runKeywordIdeas() {
     business: s.business,
     competitors: s.competitors.map((c) => c.name),
     keywords: s.keywords,
-    found_last_time: s.hits.slice(0, HITS_FOR_KEYWORDS).map((h) => ({ page: h.name, keyword: h.keyword, ads: h.ads, first_line: h.sample })),
+    found_last_time: s.hits.slice(0, HITS_FOR_KEYWORDS).map((h) => ({ page: h.name, keyword: h.keyword, ads: h.ads, first_line: h.sample, ...(h.verdict ? { claude_said_competitor: h.verdict === "yes" } : {}) })),
   };
   try {
     const r = await runWithFile<{ success: boolean; error: string | null; model?: string; keywords?: { keyword: string; why: string }[]; noise?: string }>(

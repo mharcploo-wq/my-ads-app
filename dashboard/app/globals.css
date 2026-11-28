@@ -657,3 +657,10 @@ a.btn { text-decoration: none; color: var(--text-primary); }
 .comp-kwi-row input { margin-top: 4px; }
 .comp-kwi-row.added { opacity: .65; cursor: default; }
 .comp-kwi-foot { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding-top: 4px; }
+.comp-hitrow { align-items: flex-start; }
+.comp-hitrow-main { flex: 1; min-width: 0; }
+.comp-hitrow.no { opacity: .8; }
+.comp-hitrow > a { flex: none; padding-top: 2px; }
+.comp-why { color: #c9c2f0; }
+.comp-hits-no { margin-top: 4px; }
+.comp-hits-no summary { cursor: pointer; font-size: 13px; padding: 6px 0; color: var(--muted, #9aa); }

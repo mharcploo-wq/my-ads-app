@@ -146,6 +146,12 @@ export function keywordAds(browser: Browser, q: string): Promise<FetchResult> {
   return grab(browser, keywordUrl(q), 60);
 }
 
+/** ค้นแบบหลวม (มีครบทุกคำ ไม่สนลำดับ) — ใช้เมื่อวลีตรงตัวไม่เจอเลย
+ *  วลีไทยหลายคำค้นตรงตัวมักได้ 0 (เช่น "รับทำระบบ ERP" ตรงตัว 0 · หลวม 433 แอด · 28/11) → ผลปนมากขึ้น ให้ Claude คัดต่อ */
+export function keywordLooseAds(browser: Browser, q: string): Promise<FetchResult> {
+  return grab(browser, looseUrl(q), 60);
+}
+
 /** หาเพจจากชื่อ: ค้นคำนี้ → เพจที่มีแอดรันอยู่ เรียงให้ชื่อที่ตรงขึ้นก่อน */
 export async function findPages(browser: Browser, name: string): Promise<{ ok: true; pages: PageCandidate[] } | { ok: false; error: string }> {
   const r = await grab(browser, looseUrl(name), 40);

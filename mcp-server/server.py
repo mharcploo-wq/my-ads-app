@@ -97,6 +97,8 @@ parser.add_argument("--competitors-video-json", metavar="PATH", default=None,
                     help="(หน้าแอป) หน้าวิเคราะห์คู่แข่ง: คำโฆษณา + ภาพ 9:16 จากไฟล์ → Claude คิด prompt คลิป 16 วิ (2 ช็อต) แล้วพิมพ์ผลเป็น JSON")
 parser.add_argument("--competitors-keywords-json", metavar="PATH", default=None,
                     help="(หน้าแอป) หน้าวิเคราะห์คู่แข่ง: ธุรกิจ + คู่แข่ง + คำค้นเดิมจากไฟล์ → Claude คิดคำค้น Ad Library 8 คำ แล้วพิมพ์ผลเป็น JSON")
+parser.add_argument("--competitors-judge-json", metavar="PATH", default=None,
+                    help="(หน้าแอป) หน้าวิเคราะห์คู่แข่ง: ธุรกิจ + เพจที่เจอจากคำค้นจากไฟล์ → Claude คัดว่าเพจไหนน่าจะเป็นคู่แข่ง แล้วพิมพ์ผลเป็น JSON")
 parser.add_argument("--competitors-claude-check", action="store_true",
                     help="(หน้าแอป) ทดสอบคีย์ Claude ของหน้าวิเคราะห์คู่แข่ง (ไม่เสียค่าโทเคน) แล้วพิมพ์ผลเป็น JSON")
 parser.add_argument("--ai-poll-json", metavar="PATH", default=None,
@@ -2095,7 +2097,8 @@ CLAUDE_FALLBACK_MODELS = ("claude-sonnet-5-5", "claude-opus-5-5")
 
 def _claude_text(system: str, prompt: str, schema: dict[str, Any], refusal: str,
                  max_tokens: int = 4000, *, api_key: str | None = None, workspace: str | None = None,
-                 model: str | None = None, where: str = AGENT_CLAUDE_WHERE) -> tuple[str | None, str | None]:
+                 model: str | None = None, where: str = AGENT_CLAUDE_WHERE,
+                 timeout: float = 120.0) -> tuple[str | None, str | None]:
     """เรียก Claude ให้ตอบเป็น JSON ตาม schema → (ข้อความ JSON, ข้อผิดพลาดภาษาไทย)
     ใช้ร่วมกัน: ปุ่ม ✨ คิดกลุ่มเป้าหมาย · ปุ่ม ✨ สรุปหน้าวิเคราะห์โฆษณา (คีย์ของ agent)
     · ปุ่ม ✨ หน้าวิเคราะห์คู่แข่ง (ส่ง api_key/workspace/model ของฟังก์ชันนั้นมาเอง)"""
@@ -2103,7 +2106,7 @@ def _claude_text(system: str, prompt: str, schema: dict[str, Any], refusal: str,
     key = ANTHROPIC_API_KEY if api_key is None else api_key
     ws = ANTHROPIC_WORKSPACE_ID if workspace is None else workspace
     mdl = model or AI_MODEL
-    client = anthropic.Anthropic(api_key=key, timeout=120.0, max_retries=2,
+    client = anthropic.Anthropic(api_key=key, timeout=timeout, max_retries=2,
                                  default_headers={"anthropic-workspace-id": ws} if ws else None)
     req = dict(model=mdl, max_tokens=max_tokens, system=system,
                messages=[{"role": "user", "content": prompt}],
@@ -2545,6 +2548,68 @@ def competitors_keywords(data: dict[str, Any]) -> dict[str, Any]:
         return {"success": False, "error": "Claude ไม่ได้เสนอคำใหม่ที่ใช้ได้ (ซ้ำของเดิมหรือยาวเกิน) — กดใหม่อีกครั้ง"}
     log_action("competitors_keywords", True, {"model": c["model"], "using": c["using"], "keywords": len(res["keywords"])})
     return res
+
+
+# ปุ่ม 🔍 หาคู่แข่งจากคำค้น — ค้นเสร็จแล้ว Claude คัดเพจที่เจอ (น่าจะคู่แข่ง / ไม่เกี่ยว)
+COMPETITORS_JUDGE_SYSTEM = (
+    "You screen Facebook pages found in the Meta Ad Library (Thailand) for a Thai business owner. "
+    "You get the owner's business description, the competitors already tracked, and pages whose ads contained one of "
+    "the owner's search phrases (page name, which phrase, number of ads, first line of one ad). "
+    "For EVERY page decide competitor=true only if the page sells the same kind of service/product to the same kind of "
+    "customer as the owner (a business a customer could hire/buy from instead of the owner). "
+    "competitor=false for job boards and job posts, marketplaces, courses/training/universities, media, government, "
+    "customers who merely use such a product, and unrelated shops. When the ad text is too short to tell, judge by the "
+    "page name and phrase and lean to false. "
+    "why = one short Thai sentence, at most ~15 words (what the page sells / why it is or is not a competitor). "
+    "Return one item per input page, same page_id."
+)
+COMPETITORS_JUDGE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "pages": {"type": "array", "items": {
+            "type": "object",
+            "properties": {"page_id": {"type": "string"}, "competitor": {"type": "boolean"}, "why": {"type": "string"}},
+            "required": ["page_id", "competitor", "why"], "additionalProperties": False}},
+    },
+    "required": ["pages"],
+    "additionalProperties": False,
+}
+
+
+def competitors_judge(data: dict[str, Any]) -> dict[str, Any]:
+    """(หน้าวิเคราะห์คู่แข่ง) เพจที่เจอจากคำค้น → Claude บอกว่าเพจไหนน่าจะเป็นคู่แข่ง พร้อมเหตุผล
+    อ่านอย่างเดียว ไม่แตะ Meta · ผู้ใช้ติ๊กเลือกเพิ่มเป็นคู่แข่งเอง"""
+    c = competitors_claude()
+    if c["error"]:
+        return {"success": False, "error": c["error"]}
+    asked = {str(p.get("page_id")) for p in data.get("pages") or [] if isinstance(p, dict)}
+    if not asked:
+        return {"success": False, "error": "ไม่มีเพจให้คัด"}
+    prompt = "Business, tracked competitors and pages found by the search phrases (JSON):\n" + json.dumps(data, ensure_ascii=False)
+    text, err = _claude_text(COMPETITORS_JUDGE_SYSTEM, prompt, COMPETITORS_JUDGE_SCHEMA,
+                             "Claude ไม่คัดเพจให้ — กดหาคู่แข่งใหม่อีกครั้ง", max_tokens=20000,
+                             api_key=c["key"], workspace=c["workspace"], model=c["model"], where=COMPETITORS_WHERE,
+                             timeout=240.0)   # ~200 เพจ ตอบยาว ~1–2 นาที
+    if err:
+        log_action("competitors_judge", False, {"model": c["model"], "using": c["using"], "error": err})
+        return {"success": False, "error": err}
+    try:
+        out = json.loads(text or "")
+        pages: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for x in out.get("pages") or []:
+            pid = str(x.get("page_id") or "") if isinstance(x, dict) else ""
+            if pid not in asked or pid in seen:
+                continue
+            seen.add(pid)
+            pages.append({"page_id": pid, "competitor": bool(x.get("competitor")), "why": str(x.get("why") or "").strip()})
+    except (ValueError, AttributeError):
+        return {"success": False, "error": "Claude ตอบกลับในรูปแบบที่อ่านไม่ได้ — กดหาคู่แข่งใหม่อีกครั้ง"}
+    if not pages:
+        return {"success": False, "error": "Claude ไม่ได้คัดเพจไหนเลย — กดหาคู่แข่งใหม่อีกครั้ง"}
+    log_action("competitors_judge", True, {"model": c["model"], "using": c["using"], "pages": len(pages),
+                                           "yes": sum(1 for p in pages if p["competitor"])})
+    return {"success": True, "error": None, "model": c["model"], "pages": pages}
 
 
 # ปุ่ม ✨ คิดความสนใจ + คำโฆษณา 5 ชุด — ปุ่มที่ Claude เลือกได้ (แสดงคู่กับคำโฆษณา · ชนิดยิงข้อความใช้ "ส่งข้อความ" เสมอ)
@@ -3210,7 +3275,7 @@ if __name__ == "__main__":
     if (ARGS.status or ARGS.create_json or ARGS.suggest_json or ARGS.search_json or ARGS.adset_json
             or ARGS.reach_json or ARGS.lives or ARGS.live_ad_json or ARGS.pages
             or ARGS.portfolios or ARGS.check_portfolio or ARGS.insights_summary_json
-            or ARGS.competitors_summary_json or ARGS.competitors_copy_json or ARGS.competitors_image_json or ARGS.competitors_video_json or ARGS.competitors_keywords_json or ARGS.competitors_claude_check or ARGS.ai_poll_json or ARGS.ai_stop):
+            or ARGS.competitors_summary_json or ARGS.competitors_copy_json or ARGS.competitors_image_json or ARGS.competitors_video_json or ARGS.competitors_keywords_json or ARGS.competitors_judge_json or ARGS.competitors_claude_check or ARGS.ai_poll_json or ARGS.ai_stop):
         if PORTFOLIO != 1 and (ARGS.status or ARGS.create_json):
             _auto_portfolio_ids()
         if ARGS.ai_poll_json:
@@ -3229,6 +3294,8 @@ if __name__ == "__main__":
             out = competitors_video(json.loads(Path(ARGS.competitors_video_json).read_text(encoding="utf-8")))
         elif ARGS.competitors_keywords_json:
             out = competitors_keywords(json.loads(Path(ARGS.competitors_keywords_json).read_text(encoding="utf-8")))
+        elif ARGS.competitors_judge_json:
+            out = competitors_judge(json.loads(Path(ARGS.competitors_judge_json).read_text(encoding="utf-8")))
         elif ARGS.competitors_claude_check:
             out = competitors_claude_check()
         elif ARGS.check_portfolio:

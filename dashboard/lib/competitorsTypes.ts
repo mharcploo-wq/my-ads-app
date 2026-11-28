@@ -48,9 +48,13 @@ export interface KeywordHit {
   ads: number;                // จำนวนแอดของเพจนี้ในผลค้นรอบนั้น
   keyword: string;
   sample: string;             // ข้อความต้น ๆ ของแอด 1 ตัว
+  /** ปุ่ม 🔍 หาคู่แข่งจากคำค้น — Claude คัด: yes = น่าจะคู่แข่ง · no = ไม่เกี่ยว · ไม่มี = ยังไม่ได้คัด (เช่น เจอจาก 🔄 รีเฟรช) */
+  verdict?: "yes" | "no";
+  why?: string;
 }
 
-export interface KeywordScan { keyword: string; at: string; total: number | null; error: string | null }
+/** loose = วลีตรงตัวไม่เจอเลย เลยค้นแบบมีครบทุกคำแทน (ผลปนมากกว่า) */
+export interface KeywordScan { keyword: string; at: string; total: number | null; error: string | null; loose?: boolean }
 
 /** แถวในตารางสรุป — hook/offer จาก Claude · รันนานสุด แอปคำนวณจากวันเริ่มจริง */
 export interface SummaryRow {
@@ -148,8 +152,11 @@ export interface CompetitorsState {
   /** ปุ่ม ✨ ให้ Claude คิดคำค้น — คำแนะนำล่าสุด (ผู้ใช้ติ๊กเลือกเพิ่มเอง · ไม่แตะคำค้นเดิม) */
   keywordIdeas?: KeywordIdeas | null;
   keywordIdeasError?: string | null;
-  /** กำลังทำงานอยู่ (สแกน / สรุป / คิดคำโฆษณา / คิด prompt ภาพ) — หน้าเว็บถามซ้ำทุก 3 วิ จนเป็น null */
-  running: { kind: "scan" | "summary" | "copy" | "image" | "video" | "keywords"; step: string; startedAt: string } | null;
+  /** ปุ่ม 🔍 หาคู่แข่งจากคำค้น — รอบที่ Claude คัดเพจล่าสุด (ป้ายอยู่ใน hits[].verdict) · คัดไม่ได้ = Error (ยังเห็นรายการเพจ) */
+  hitsJudge?: { at: string; model: string } | null;
+  hitsJudgeError?: string | null;
+  /** กำลังทำงานอยู่ (สแกน / สรุป / คิดคำโฆษณา / คิด prompt ภาพ / หาคู่แข่งจากคำค้น) — หน้าเว็บถามซ้ำทุก 3 วิ จนเป็น null */
+  running: { kind: "scan" | "summary" | "copy" | "image" | "video" | "keywords" | "find"; step: string; startedAt: string } | null;
 }
 
 export interface KeywordIdea { keyword: string; why: string }

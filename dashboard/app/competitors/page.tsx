@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { adLibraryPageUrl, VIDEO_LINE_MAX } from "@/lib/competitorsTypes";
 import type {
-  Competitor, CompetitorAd, CompetitorCopy, CompetitorScan, CompetitorsClaudeView, CompetitorsState, CopyImage, CopySet, CopyVideo, PageCandidate, SummaryRow,
+  Competitor, CompetitorAd, CompetitorCopy, CompetitorScan, CompetitorsClaudeView, CompetitorsState, CopyImage, CopySet, CopyVideo, KeywordHit, PageCandidate, SummaryRow,
 } from "@/lib/competitorsTypes";
 import { loadDraft, patchDraft } from "@/lib/draft";
 import { fmtSize } from "@/components/InterestPicker";
@@ -126,23 +126,106 @@ function KeywordIdeasBox({ s, disabled, onAdd }: { s: CompetitorsState; disabled
           ＋ เพิ่มคำที่เลือก{pick.length ? ` (${pick.length})` : ""}
         </button>
         <span className="muted comp-small">
-          {room <= 0 ? `คำค้นเต็ม ${MAX_KEYWORDS} คำแล้ว — ลบคำเดิมก่อน` : `เพิ่มได้อีก ${room} คำ (สูงสุด ${MAX_KEYWORDS})`} · ผลจริงรู้ตอนกด 🔄 รีเฟรชข้อมูล
+          {room <= 0 ? `คำค้นเต็ม ${MAX_KEYWORDS} คำแล้ว — ลบคำเดิมก่อน` : `เพิ่มได้อีก ${room} คำ (สูงสุด ${MAX_KEYWORDS})`} · เพิ่มแล้วกด 🔍 หาคู่แข่งจากคำค้น
         </span>
       </div>
     </div>
   );
 }
 
-function Setup({ s, disabled, save, onIdeas }: { s: CompetitorsState; disabled: boolean; save: (p: Partial<Pick<CompetitorsState, "competitors" | "keywords">>) => void; onIdeas: () => void }) {
+const MAX_COMPETITORS = 15;   // ตรงกับ saveConfig ใน lib/competitors.ts
+
+/** แถวเพจที่เจอจากคำค้น — ติ๊กเลือกได้ · ป้าย/เหตุผลจาก Claude (ถ้าคัดแล้ว) */
+function HitRow({ h, on, lock, onToggle }: { h: KeywordHit; on: boolean; lock: boolean; onToggle: () => void }) {
+  return (
+    <label className={`comp-kwi-row comp-hitrow${h.verdict === "no" ? " no" : ""}`}>
+      <input type="checkbox" checked={on} disabled={lock} onChange={onToggle} />
+      <span className="comp-hitrow-main">
+        <b>{h.name}</b>
+        {h.verdict === "yes" && <span className="pill ok comp-pill">✅ น่าจะคู่แข่ง</span>}
+        {h.verdict === "no" && <span className="pill comp-pill">⚪ ไม่เกี่ยว</span>}
+        <span className="muted comp-small"> · {h.ads} แอด · จาก &quot;{h.keyword}&quot;</span>
+        {h.why && <span className="comp-sample comp-why">Claude: {h.why}</span>}
+        {h.sample && <span className="comp-sample">{h.sample}</span>}
+      </span>
+      <a className="comp-small" href={adLibraryPageUrl(h.pageId)} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>ดู ↗</a>
+    </label>
+  );
+}
+
+/** 🔍 หาคู่แข่งจากคำค้น — เพจที่เจอ (Claude คัดแล้ว: น่าจะคู่แข่งอยู่บน ติ๊กไว้ให้ · ไม่เกี่ยวพับไว้ท้าย) → ติ๊กแล้วเพิ่มทีเดียว */
+function HitsBox({ s, disabled, onAdd }: { s: CompetitorsState; disabled: boolean; onAdd: (c: Competitor[]) => void }) {
+  const room = MAX_COMPETITORS - s.competitors.length;
+  const yes = s.hits.filter((h) => h.verdict === "yes");
+  const unjudged = s.hits.filter((h) => !h.verdict);
+  const no = s.hits.filter((h) => h.verdict === "no");
+  const [pick, setPick] = useState<string[]>([]);
+  const [all, setAll] = useState(false);
+  // คัดรอบใหม่ = ติ๊กเพจที่ Claude ว่าน่าจะคู่แข่งไว้ให้ (ไม่เกินที่ว่าง)
+  useEffect(() => setPick(yes.slice(0, Math.max(0, room)).map((h) => h.pageId)), [s.hitsJudge?.at]);
+  const busy = s.running?.kind === "find";
+  const warn = s.keywordScans.filter((k) => k.error);
+  const toggle = (id: string) => setPick((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
+  const live = pick.filter((id) => s.hits.some((h) => h.pageId === id));   // เพจที่ยังอยู่ในรายการ
+  const row = (h: KeywordHit) => {
+    const on = live.includes(h.pageId);
+    return <HitRow key={h.pageId} h={h} on={on} lock={disabled || (!on && live.length >= room)} onToggle={() => toggle(h.pageId)} />;
+  };
+  const shown = all ? unjudged : unjudged.slice(0, Math.max(0, 8 - yes.length));
+  const add = () => {
+    const chosen = s.hits.filter((h) => live.includes(h.pageId)).map((h) => ({ pageId: h.pageId, name: h.name }));
+    if (chosen.length) onAdd(chosen);
+    setPick([]);
+  };
+  return (
+    <>
+      {busy && <div className="comp-busy">⏳ {s.running?.step} (ค้นราว 1–3 นาที แล้ว Claude คัดอีกราว 30 วิ)</div>}
+      {warn.length > 0 && <div className="comp-warn">⚠ {warn.map((k) => `"${k.keyword}": ${k.error}`).join(" · ")}</div>}
+      {s.hitsJudgeError && <div className="comp-warn">⚠ Claude คัดเพจไม่ได้: {s.hitsJudgeError} — รายการด้านล่างยังไม่ได้คัด ดูเองแล้วติ๊กได้</div>}
+      {!busy && !s.hits.length && s.keywordScans.length > 0 && !warn.length && (
+        <div className="muted comp-small comp-hits">ค้นรอบล่าสุดไม่เจอเพจใหม่ที่ยังไม่ได้เป็นคู่แข่ง — ลองกด ✨ ให้ Claude คิดคำค้นใหม่</div>
+      )}
+      {s.hits.length > 0 && (
+        <div className="comp-kwi comp-hits">
+          <div className="comp-kwi-head">
+            <b>เจอจากคำค้นรอบล่าสุด — ยังไม่ได้เป็นคู่แข่ง ({s.hits.length})</b>
+            {s.hitsJudge
+              ? <span className="muted comp-small"> · Claude คัด: ✅ {yes.length} น่าจะคู่แข่ง · ⚪ {no.length} ไม่เกี่ยว{unjudged.length ? ` · ${unjudged.length} ยังไม่ได้คัด` : ""} · {when(s.hitsJudge.at)} · {s.hitsJudge.model}</span>
+              : <span className="muted comp-small"> · ยังไม่ได้ให้ Claude คัด (กด 🔍 หาคู่แข่งจากคำค้น)</span>}
+          </div>
+          {s.keywordScans.length > 0 && <div className="muted comp-small">{s.keywordScans.map((k) => `"${k.keyword}" ~${k.total ?? "?"} แอด${k.loose ? " (หลวม)" : ""}`).join(" · ")}{s.keywordScans.some((k) => k.loose) && " · (หลวม) = วลีตรงตัวไม่เจอ เลยค้นแบบมีครบทุกคำ ผลปนมากกว่า"}</div>}
+          {yes.map(row)}
+          {shown.map(row)}
+          {unjudged.length > shown.length && <button className="btn comp-sm comp-more" onClick={() => setAll(true)}>ดูทั้งหมด {unjudged.length} เพจ</button>}
+          {all && unjudged.length > 8 && <button className="btn comp-sm comp-more" onClick={() => setAll(false)}>ย่อ</button>}
+          {no.length > 0 && (
+            <details className="comp-hits-no">
+              <summary>⚪ ไม่เกี่ยว ({no.length} เพจ) — ถ้า Claude คัดผิด เปิดแล้วติ๊กเองได้</summary>
+              {no.map(row)}
+            </details>
+          )}
+          <div className="comp-kwi-foot">
+            <button className="btn primary comp-sm" disabled={disabled || !live.length} onClick={add}>
+              ＋ เพิ่มที่เลือกเป็นคู่แข่ง{live.length ? ` (${live.length})` : ""}
+            </button>
+            <span className="muted comp-small">
+              {room <= 0 ? `คู่แข่งเต็ม ${MAX_COMPETITORS} เจ้าแล้ว — เอาเจ้าเดิมออกก่อน` : `เพิ่มได้อีก ${room} เจ้า (สูงสุด ${MAX_COMPETITORS})`} · ดึงแอดของคู่แข่งใหม่: กด 🔄 รีเฟรชข้อมูล
+            </span>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+function Setup({ s, disabled, save, onIdeas, onFind }: { s: CompetitorsState; disabled: boolean; save: (p: Partial<Pick<CompetitorsState, "competitors" | "keywords">>) => void; onIdeas: () => void; onFind: () => void }) {
   const [kw, setKw] = useState("");
-  const [allHits, setAllHits] = useState(false);
   const has = new Set(s.competitors.map((c) => c.pageId));
   const remove = (c: Competitor) => {
     if (window.confirm(`เอา "${c.name}" ออกจากรายชื่อคู่แข่ง? (ผลสแกนของเจ้านี้จะหายไปด้วย)`))
       save({ competitors: s.competitors.filter((x) => x.pageId !== c.pageId) });
   };
   const add = (c: Competitor) => { if (!has.has(c.pageId)) save({ competitors: [...s.competitors, c] }); };
-  const hits = allHits ? s.hits : s.hits.slice(0, 8);
   return (
     <section className="card comp-card">
       <h3>คู่แข่ง {s.competitors.length} เจ้า</h3>
@@ -152,16 +235,20 @@ function Setup({ s, disabled, save, onIdeas }: { s: CompetitorsState; disabled: 
             {c.name}<button aria-label={`เอา ${c.name} ออก`} disabled={disabled} onClick={() => remove(c)}>✕</button>
           </span>
         ))}
-        {!s.competitors.length && <span className="muted">ยังไม่มี — ค้นชื่อเพจด้านล่าง หรือกด ＋ จากผลค้นคำ</span>}
+        {!s.competitors.length && <span className="muted">ยังไม่มี — ค้นชื่อเพจด้านล่าง หรือกด 🔍 หาคู่แข่งจากคำค้น</span>}
       </div>
       <AddCompetitor disabled={disabled} onAdd={add} />
 
       <div className="comp-kw-title">
-        <h3 className="comp-h3-gap">คำค้นหาผู้ลงโฆษณารายใหม่ <span className="muted comp-small">(ค้นแบบวลีตรงตัวในข้อความแอด)</span></h3>
+        <h3 className="comp-h3-gap">คำค้นหาผู้ลงโฆษณารายใหม่ <span className="muted comp-small">(ค้นวลีตรงตัวในข้อความแอด · ไม่เจอเลยค้นแบบมีครบทุกคำแทน)</span></h3>
         <span className="spacer" />
         <button className="btn comp-sm" disabled={!!s.running || disabled || !s.business.trim()} onClick={onIdeas}
           title={s.running ? `${s.running.step} — รอให้เสร็จก่อน` : !s.business.trim() ? "ใส่และบันทึก \"ธุรกิจของเรา\" ก่อน" : "Claude อ่านธุรกิจของเรา + คู่แข่ง + คำค้นเดิม แล้วเสนอ 8 คำ (เสียค่า Claude 1 ครั้ง)"}>
           {s.running?.kind === "keywords" ? "Claude กำลังคิด…" : s.keywordIdeas ? "✨ ให้ Claude คิดคำค้นใหม่" : "✨ ให้ Claude คิดคำค้น"}
+        </button>
+        <button className="btn primary comp-sm" disabled={!!s.running || disabled || !s.keywords.length} onClick={onFind}
+          title={s.running ? `${s.running.step} — รอให้เสร็จก่อน` : !s.keywords.length ? "เพิ่มคำค้นก่อน (พิมพ์เอง หรือกด ✨ ให้ Claude คิดคำค้น)" : `ค้นทั้ง ${s.keywords.length} คำใน Ad Library (ราว 1–3 นาที) แล้ว Claude คัดเพจที่เจอ (เสียค่า Claude 1 ครั้ง) · ไม่สแกนแอดคู่แข่งเดิม`}>
+          {s.running?.kind === "find" ? "กำลังหา…" : "🔍 หาคู่แข่งจากคำค้น"}
         </button>
       </div>
       <div className="comp-chips">
@@ -174,27 +261,7 @@ function Setup({ s, disabled, save, onIdeas }: { s: CompetitorsState; disabled: 
         </form>
       </div>
       <KeywordIdeasBox s={s} disabled={disabled} onAdd={(k) => save({ keywords: [...s.keywords, ...k] })} />
-      {s.keywordScans.some((k) => k.error) && (
-        <div className="comp-warn">⚠ {s.keywordScans.filter((k) => k.error).map((k) => `"${k.keyword}": ${k.error}`).join(" · ")}</div>
-      )}
-      {s.hits.length > 0 && (
-        <details className="comp-hits" open>
-          <summary>เจอจากคำค้นรอบล่าสุด — ยังไม่ได้เป็นคู่แข่ง ({s.hits.length})
-            {s.keywordScans.length > 0 && <span className="muted comp-small"> · {s.keywordScans.map((k) => `"${k.keyword}" ~${k.total ?? "?"} แอด`).join(" · ")}</span>}
-          </summary>
-          {hits.map((h) => (
-            <div key={h.pageId} className="comp-hit">
-              <span><b>{h.name}</b> <span className="muted">· {h.ads} แอด · จาก &quot;{h.keyword}&quot;</span>
-                {h.sample && <span className="comp-sample">{h.sample}</span>}</span>
-              <span className="comp-hit-act">
-                <a className="comp-small" href={adLibraryPageUrl(h.pageId)} target="_blank" rel="noreferrer">ดู ↗</a>
-                <button className="btn comp-sm" disabled={disabled} onClick={() => add({ pageId: h.pageId, name: h.name })}>＋ เพิ่มเป็นคู่แข่ง</button>
-              </span>
-            </div>
-          ))}
-          {s.hits.length > 8 && <button className="btn comp-sm comp-more" onClick={() => setAllHits(!allHits)}>{allHits ? "ย่อ" : `ดูทั้งหมด ${s.hits.length} เพจ`}</button>}
-        </details>
-      )}
+      <HitsBox s={s} disabled={disabled} onAdd={(c) => save({ competitors: [...s.competitors, ...c.filter((x) => !has.has(x.pageId))] })} />
     </section>
   );
 }
@@ -736,7 +803,7 @@ export default function CompetitorsPage() {
         {s && (
           <>
             <Business value={s.business} disabled={saving} onSave={(v) => act("/api/competitors", { business: v })} />
-            <Setup s={s} disabled={saving || s.running?.kind === "scan"} save={(p) => act("/api/competitors", p)} onIdeas={() => act("/api/competitors/keywords")} />
+            <Setup s={s} disabled={saving || s.running?.kind === "scan" || s.running?.kind === "find"} save={(p) => act("/api/competitors", p)} onIdeas={() => act("/api/competitors/keywords")} onFind={() => act("/api/competitors/find")} />
             <ScanBar s={s} claude={claude} onScan={() => act("/api/competitors/scan")} onSummary={() => act("/api/competitors/summary")} />
             <Summary s={s} />
             <CopyIdeas s={s} onRun={() => act("/api/competitors/copy")} onImages={() => act("/api/competitors/images")} onVideos={() => act("/api/competitors/videos")} />
