@@ -145,8 +145,19 @@ export interface CompetitorsState {
   summaryError: string | null;
   copy: CompetitorCopy | null;
   copyError: string | null;
+  /** ปุ่ม ✨ ให้ Claude คิดคำค้น — คำแนะนำล่าสุด (ผู้ใช้ติ๊กเลือกเพิ่มเอง · ไม่แตะคำค้นเดิม) */
+  keywordIdeas?: KeywordIdeas | null;
+  keywordIdeasError?: string | null;
   /** กำลังทำงานอยู่ (สแกน / สรุป / คิดคำโฆษณา / คิด prompt ภาพ) — หน้าเว็บถามซ้ำทุก 3 วิ จนเป็น null */
-  running: { kind: "scan" | "summary" | "copy" | "image" | "video"; step: string; startedAt: string } | null;
+  running: { kind: "scan" | "summary" | "copy" | "image" | "video" | "keywords"; step: string; startedAt: string } | null;
+}
+
+export interface KeywordIdea { keyword: string; why: string }
+export interface KeywordIdeas {
+  at: string;
+  model: string;
+  items: KeywordIdea[];       // เรียงจากเจาะจงที่สุด → กว้างสุด
+  noise: string;              // เพจที่คำค้นเดิมจับมาแต่ไม่ใช่คู่แข่ง (Claude บอก · ว่างได้)
 }
 
 /** ผลค้นชื่อเพจเพื่อเพิ่มคู่แข่ง */

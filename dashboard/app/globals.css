@@ -651,3 +651,9 @@ a.btn { text-decoration: none; color: var(--text-primary); }
   .comp-top-tools { width: 100%; justify-content: flex-start; gap: 6px; }
   .comp-top-tools .btn { padding: 6px 10px; font-size: 13px; }
 }
+.comp-kw-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.comp-kwi { border: 1px solid #3b3263; background: #17152a; border-radius: 10px; padding: 10px 12px; margin-top: 10px; display: grid; gap: 6px; }
+.comp-kwi-row { display: flex; gap: 8px; align-items: flex-start; padding: 5px 0; border-top: 1px solid #2a2547; cursor: pointer; }
+.comp-kwi-row input { margin-top: 4px; }
+.comp-kwi-row.added { opacity: .65; cursor: default; }
+.comp-kwi-foot { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding-top: 4px; }

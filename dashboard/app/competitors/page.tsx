@@ -88,7 +88,52 @@ function AddCompetitor({ disabled, onAdd }: { disabled: boolean; onAdd: (c: Comp
   );
 }
 
-function Setup({ s, disabled, save }: { s: CompetitorsState; disabled: boolean; save: (p: Partial<Pick<CompetitorsState, "competitors" | "keywords">>) => void }) {
+const MAX_KEYWORDS = 8;   // ตรงกับ saveConfig ใน lib/competitors.ts
+
+/** ✨ ให้ Claude คิดคำค้น — คำแนะนำ 8 คำ ติ๊กเลือกแล้วเพิ่ม (คำเดิมยังอยู่) */
+function KeywordIdeasBox({ s, disabled, onAdd }: { s: CompetitorsState; disabled: boolean; onAdd: (k: string[]) => void }) {
+  const ideas = s.keywordIdeas;
+  const [pick, setPick] = useState<string[]>([]);
+  useEffect(() => setPick([]), [ideas?.at]);
+  const busy = s.running?.kind === "keywords";
+  if (busy) return <div className="comp-busy">⏳ {s.running?.step} (ราว 20 วิ)</div>;
+  if (s.keywordIdeasError) return <div className="comp-warn">⚠ Claude คิดคำค้นไม่ได้: {s.keywordIdeasError}</div>;
+  if (!ideas?.items.length) return null;
+  const have = new Set(s.keywords.map((k) => k.toLowerCase()));
+  const room = MAX_KEYWORDS - s.keywords.length;
+  const toggle = (k: string) => setPick((p) => (p.includes(k) ? p.filter((x) => x !== k) : [...p, k]));
+  return (
+    <div className="comp-kwi">
+      <div className="comp-kwi-head">
+        <b>✨ คำค้นที่ Claude แนะนำ</b>
+        <span className="muted comp-small"> · เรียงจากเจาะจงที่สุด → กว้างสุด · {when(ideas.at)} · {ideas.model}</span>
+      </div>
+      {ideas.noise && <div className="muted comp-small">คำค้นเดิมจับเพจที่ไม่ใช่คู่แข่งมาด้วย: {ideas.noise}</div>}
+      {ideas.items.map((it) => {
+        const added = have.has(it.keyword.toLowerCase());
+        const on = pick.includes(it.keyword);
+        const full = !on && pick.length >= room;
+        return (
+          <label key={it.keyword} className={`comp-kwi-row${added ? " added" : ""}`}>
+            <input type="checkbox" checked={added || on} disabled={disabled || added || full} onChange={() => toggle(it.keyword)} />
+            <span><b>&quot;{it.keyword}&quot;</b>{added && <span className="pill ok comp-pill">เพิ่มแล้ว</span>}
+              {it.why && <span className="comp-sample">{it.why}</span>}</span>
+          </label>
+        );
+      })}
+      <div className="comp-kwi-foot">
+        <button className="btn primary comp-sm" disabled={disabled || !pick.length} onClick={() => { onAdd(pick); setPick([]); }}>
+          ＋ เพิ่มคำที่เลือก{pick.length ? ` (${pick.length})` : ""}
+        </button>
+        <span className="muted comp-small">
+          {room <= 0 ? `คำค้นเต็ม ${MAX_KEYWORDS} คำแล้ว — ลบคำเดิมก่อน` : `เพิ่มได้อีก ${room} คำ (สูงสุด ${MAX_KEYWORDS})`} · ผลจริงรู้ตอนกด 🔄 รีเฟรชข้อมูล
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function Setup({ s, disabled, save, onIdeas }: { s: CompetitorsState; disabled: boolean; save: (p: Partial<Pick<CompetitorsState, "competitors" | "keywords">>) => void; onIdeas: () => void }) {
   const [kw, setKw] = useState("");
   const [allHits, setAllHits] = useState(false);
   const has = new Set(s.competitors.map((c) => c.pageId));
@@ -111,7 +156,14 @@ function Setup({ s, disabled, save }: { s: CompetitorsState; disabled: boolean; 
       </div>
       <AddCompetitor disabled={disabled} onAdd={add} />
 
-      <h3 className="comp-h3-gap">คำค้นหาผู้ลงโฆษณารายใหม่ <span className="muted comp-small">(ค้นแบบวลีตรงตัวในข้อความแอด)</span></h3>
+      <div className="comp-kw-title">
+        <h3 className="comp-h3-gap">คำค้นหาผู้ลงโฆษณารายใหม่ <span className="muted comp-small">(ค้นแบบวลีตรงตัวในข้อความแอด)</span></h3>
+        <span className="spacer" />
+        <button className="btn comp-sm" disabled={!!s.running || disabled || !s.business.trim()} onClick={onIdeas}
+          title={s.running ? `${s.running.step} — รอให้เสร็จก่อน` : !s.business.trim() ? "ใส่และบันทึก \"ธุรกิจของเรา\" ก่อน" : "Claude อ่านธุรกิจของเรา + คู่แข่ง + คำค้นเดิม แล้วเสนอ 8 คำ (เสียค่า Claude 1 ครั้ง)"}>
+          {s.running?.kind === "keywords" ? "Claude กำลังคิด…" : s.keywordIdeas ? "✨ ให้ Claude คิดคำค้นใหม่" : "✨ ให้ Claude คิดคำค้น"}
+        </button>
+      </div>
       <div className="comp-chips">
         {s.keywords.map((k) => (
           <span key={k} className="comp-chip">&quot;{k}&quot;<button aria-label={`ลบคำค้น ${k}`} disabled={disabled} onClick={() => save({ keywords: s.keywords.filter((x) => x !== k) })}>✕</button></span>
@@ -121,6 +173,7 @@ function Setup({ s, disabled, save }: { s: CompetitorsState; disabled: boolean; 
           {kw.trim() && <button className="btn comp-sm" disabled={disabled}>เพิ่ม</button>}
         </form>
       </div>
+      <KeywordIdeasBox s={s} disabled={disabled} onAdd={(k) => save({ keywords: [...s.keywords, ...k] })} />
       {s.keywordScans.some((k) => k.error) && (
         <div className="comp-warn">⚠ {s.keywordScans.filter((k) => k.error).map((k) => `"${k.keyword}": ${k.error}`).join(" · ")}</div>
       )}
@@ -568,6 +621,7 @@ function resultsOf(s: CompetitorsState) {
     scans.length ? `ผลสแกนแอด ${scans.length} เจ้า (${scans.reduce((n, x) => n + x.ads.length, 0)} แอด · รวมที่วางเอง)` : "",
     s.hits.length || s.keywordScans.length ? `ผลค้นคำค้น (${s.hits.length} เพจที่ยังไม่ได้เป็นคู่แข่ง)` : "",
     s.summary || s.summaryError ? "สรุปจาก Claude" : "",
+    s.keywordIdeas || s.keywordIdeasError ? "คำค้นที่ Claude แนะนำ" : "",
     s.copy || s.copyError ? `ความสนใจ + คำโฆษณา${s.copy?.sets.length ? ` ${s.copy.sets.length} ชุด` : ""}${s.copy?.imagesAt ? " + prompt ภาพ" : ""}${s.copy?.videosAt ? " + prompt คลิป" : ""}` : "",
     s.lastScan && !scans.length ? "เวลาสแกนล่าสุด" : "",
   ];
@@ -682,7 +736,7 @@ export default function CompetitorsPage() {
         {s && (
           <>
             <Business value={s.business} disabled={saving} onSave={(v) => act("/api/competitors", { business: v })} />
-            <Setup s={s} disabled={saving || s.running?.kind === "scan"} save={(p) => act("/api/competitors", p)} />
+            <Setup s={s} disabled={saving || s.running?.kind === "scan"} save={(p) => act("/api/competitors", p)} onIdeas={() => act("/api/competitors/keywords")} />
             <ScanBar s={s} claude={claude} onScan={() => act("/api/competitors/scan")} onSummary={() => act("/api/competitors/summary")} />
             <Summary s={s} />
             <CopyIdeas s={s} onRun={() => act("/api/competitors/copy")} onImages={() => act("/api/competitors/images")} onVideos={() => act("/api/competitors/videos")} />

@@ -7,7 +7,7 @@ import { findPages, keywordAds, openBrowser, pageAds, parsePasted } from "./adLi
 import { runCreator } from "./creator";
 import type {
   Angle, Competitor, CompetitorAd, CompetitorCopy, CompetitorScan, CompetitorsState, CompetitorSummary, CopyInterest,
-  KeywordHit, KeywordScan, Longest, PageCandidate, SummaryRow,
+  KeywordHit, KeywordIdeas, KeywordScan, Longest, PageCandidate, SummaryRow,
 } from "./competitorsTypes";
 
 /** หน้าวิเคราะห์คู่แข่ง — เก็บค่าตั้ง + ผลสแกนรอบล่าสุดใน data/competitors.json (ข้อมูลสาธารณะจาก Ad Library ไม่มี token)
@@ -39,6 +39,8 @@ const DEFAULTS: Stored = {
   summaryError: null,
   copy: null,
   copyError: null,
+  keywordIdeas: null,
+  keywordIdeasError: null,
 };
 
 const gc = globalThis as unknown as { __adsCompetitorsRun?: Running };
@@ -151,6 +153,8 @@ export async function clearResults(): Promise<{ ok: true; state: CompetitorsStat
     s.summaryError = null;
     s.copy = null;
     s.copyError = null;
+    s.keywordIdeas = null;
+    s.keywordIdeasError = null;
   });
   return { ok: true, state: view(s) };
 }
@@ -163,7 +167,7 @@ function begin(kind: NonNullable<Running>["kind"], step: string): boolean {
   return true;
 }
 const step = (t: string) => { if (gc.__adsCompetitorsRun) gc.__adsCompetitorsRun.step = t; };
-const BUSY = { scan: "กำลังสแกนอยู่", summary: "Claude กำลังสรุปอยู่", copy: "Claude กำลังคิดคำโฆษณาอยู่", image: "Claude กำลังคิด prompt ภาพอยู่", video: "Claude กำลังคิด prompt คลิปอยู่" } as const;
+const BUSY = { scan: "กำลังสแกนอยู่", summary: "Claude กำลังสรุปอยู่", copy: "Claude กำลังคิดคำโฆษณาอยู่", image: "Claude กำลังคิด prompt ภาพอยู่", video: "Claude กำลังคิด prompt คลิปอยู่", keywords: "Claude กำลังคิดคำค้นอยู่" } as const;
 const busyText = () => `${BUSY[gc.__adsCompetitorsRun?.kind ?? "scan"]} — รอให้เสร็จก่อน`;
 
 /** เทียบรอบก่อน: ใหม่ = id ที่รอบก่อนไม่มี · หายไป = id รอบก่อนที่รอบนี้ไม่มี (รอบก่อนต้องอ่านได้จริงถึงจะเทียบ) */
@@ -297,6 +301,40 @@ async function runSummary() {
     await update((x) => { x.summary = summary; x.summaryError = null; });
   } catch (e) {
     await update((x) => { x.summaryError = (e as Error).message; });
+  }
+}
+
+/* ---------------- ✨ ให้ Claude คิดคำค้น ---------------- */
+
+const HITS_FOR_KEYWORDS = 40;
+
+export async function startKeywordIdeas(): Promise<{ ok: true; state: CompetitorsState } | { ok: false; error: string }> {
+  const s = await load();
+  if (!s.business.trim()) return { ok: false, error: "ใส่คำอธิบาย \"ธุรกิจของเรา\" ก่อน — Claude ใช้คิดคำค้น" };
+  if (!begin("keywords", "Claude กำลังคิดคำค้น…")) return { ok: false, error: busyText() };
+  void runKeywordIdeas().catch(() => {}).finally(() => { gc.__adsCompetitorsRun = null; });
+  return { ok: true, state: view(await load()) };
+}
+
+async function runKeywordIdeas() {
+  const s = await load();
+  const input = {
+    business: s.business,
+    competitors: s.competitors.map((c) => c.name),
+    keywords: s.keywords,
+    found_last_time: s.hits.slice(0, HITS_FOR_KEYWORDS).map((h) => ({ page: h.name, keyword: h.keyword, ads: h.ads, first_line: h.sample })),
+  };
+  try {
+    const r = await runWithFile<{ success: boolean; error: string | null; model?: string; keywords?: { keyword: string; why: string }[]; noise?: string }>(
+      "--competitors-keywords-json", input, 120_000);
+    if (!r.success) {
+      await update((x) => { x.keywordIdeasError = r.error ?? "Claude คิดคำค้นไม่สำเร็จ"; });
+      return;
+    }
+    const ideas: KeywordIdeas = { at: now(), model: r.model ?? "", items: r.keywords ?? [], noise: r.noise ?? "" };
+    await update((x) => { x.keywordIdeas = ideas; x.keywordIdeasError = null; });
+  } catch (e) {
+    await update((x) => { x.keywordIdeasError = (e as Error).message; });
   }
 }
 

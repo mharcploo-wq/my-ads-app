@@ -95,6 +95,8 @@ parser.add_argument("--competitors-image-json", metavar="PATH", default=None,
                     help="(หน้าแอป) หน้าวิเคราะห์คู่แข่ง: คำโฆษณา 5 ชุดจากไฟล์ → Claude คิด prompt ภาพประกอบ (1:1 + 9:16) แล้วพิมพ์ผลเป็น JSON")
 parser.add_argument("--competitors-video-json", metavar="PATH", default=None,
                     help="(หน้าแอป) หน้าวิเคราะห์คู่แข่ง: คำโฆษณา + ภาพ 9:16 จากไฟล์ → Claude คิด prompt คลิป 16 วิ (2 ช็อต) แล้วพิมพ์ผลเป็น JSON")
+parser.add_argument("--competitors-keywords-json", metavar="PATH", default=None,
+                    help="(หน้าแอป) หน้าวิเคราะห์คู่แข่ง: ธุรกิจ + คู่แข่ง + คำค้นเดิมจากไฟล์ → Claude คิดคำค้น Ad Library 8 คำ แล้วพิมพ์ผลเป็น JSON")
 parser.add_argument("--competitors-claude-check", action="store_true",
                     help="(หน้าแอป) ทดสอบคีย์ Claude ของหน้าวิเคราะห์คู่แข่ง (ไม่เสียค่าโทเคน) แล้วพิมพ์ผลเป็น JSON")
 parser.add_argument("--ai-poll-json", metavar="PATH", default=None,
@@ -2477,6 +2479,74 @@ def competitors_summary(data: dict[str, Any]) -> dict[str, Any]:
     return res
 
 
+# ปุ่ม ✨ ให้ Claude คิดคำค้น — วลีที่ใช้ค้นข้อความแอดใน Ad Library (ค้นแบบวลีตรงตัว · ประเทศไทย)
+KEYWORD_IDEAS = 8
+KEYWORD_MIN, KEYWORD_MAX = 2, 60   # ตรงกับ saveConfig ใน dashboard/lib/competitors.ts
+
+COMPETITORS_KEYWORDS_SYSTEM = (
+    "You help a Thai business owner find NEW competitors in the Meta Ad Library (Thailand). The library is searched "
+    "with an exact phrase that must appear word-for-word in the ad text, so each keyword must be a phrase that "
+    "competing advertisers would actually write in their Thai ads (Thai, or English terms Thai ads commonly use such "
+    "as 'ERP' or 'POS' inside a Thai phrase). "
+    "You get the owner's business description, the competitors already tracked, the current keywords and the pages "
+    "the current keywords found last time (name, which keyword, first line of one ad). "
+    "Give exactly 8 keywords ordered from most specific to broadest. Prefer 2-4 word phrases that only a seller of the "
+    "same kind of service would write (e.g. 'รับทำระบบ ERP', 'รับเขียนโปรแกรมโรงงาน'), not single generic words. "
+    "Look at the pages found last time: decide which ones are clearly NOT competitors (job boards, marketplaces, "
+    "courses, unrelated shops) and avoid keywords that would match their ads again. "
+    "Do not repeat a current keyword, do not use competitor brand names, no quotation marks, 2-40 characters each. "
+    "why = one short Thai sentence: who writes this phrase in their ads and why it fits. "
+    "noise = Thai, at most one sentence naming the unrelated pages the current keywords caught (empty if none or no data)."
+)
+COMPETITORS_KEYWORDS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "keywords": {"type": "array", "items": {
+            "type": "object",
+            "properties": {"keyword": {"type": "string"}, "why": {"type": "string"}},
+            "required": ["keyword", "why"], "additionalProperties": False}},
+        "noise": {"type": "string"},
+    },
+    "required": ["keywords", "noise"],
+    "additionalProperties": False,
+}
+
+
+def competitors_keywords(data: dict[str, Any]) -> dict[str, Any]:
+    """(หน้าวิเคราะห์คู่แข่ง) ธุรกิจ + คู่แข่ง + คำค้นเดิม + เพจที่คำค้นเดิมเจอ → Claude คิดคำค้นใหม่ 8 คำ
+    อ่านอย่างเดียว ไม่แตะ Meta · ไม่ค้น Ad Library เอง (ผลจริงรู้ตอนสแกน)"""
+    c = competitors_claude()
+    if c["error"]:
+        return {"success": False, "error": c["error"]}
+    prompt = "Business, tracked competitors, current keywords and what they found (JSON):\n" + json.dumps(data, ensure_ascii=False)
+    text, err = _claude_text(COMPETITORS_KEYWORDS_SYSTEM, prompt, COMPETITORS_KEYWORDS_SCHEMA,
+                             "Claude ไม่คิดคำค้นให้ — ลองแก้คำอธิบายธุรกิจแล้วกดใหม่", max_tokens=3000,
+                             api_key=c["key"], workspace=c["workspace"], model=c["model"], where=COMPETITORS_WHERE)
+    if err:
+        log_action("competitors_keywords", False, {"model": c["model"], "using": c["using"], "error": err})
+        return {"success": False, "error": err}
+    try:
+        out = json.loads(text or "")
+        have = {str(k).strip().lower() for k in data.get("keywords") or []}
+        items: list[dict[str, str]] = []
+        for k in out.get("keywords") or []:
+            if not isinstance(k, dict):
+                continue
+            kw = re.sub(r'["“”]', "", str(k.get("keyword") or "")).strip()
+            if not (KEYWORD_MIN <= len(kw) <= KEYWORD_MAX) or kw.lower() in have:
+                continue
+            have.add(kw.lower())
+            items.append({"keyword": kw, "why": str(k.get("why") or "").strip()})
+        res = {"success": True, "error": None, "model": c["model"], "keywords": items[:KEYWORD_IDEAS],
+               "noise": str(out.get("noise") or "").strip()}
+    except (ValueError, AttributeError):
+        return {"success": False, "error": "Claude ตอบกลับในรูปแบบที่อ่านไม่ได้ — กดคิดคำค้นใหม่อีกครั้ง"}
+    if not res["keywords"]:
+        return {"success": False, "error": "Claude ไม่ได้เสนอคำใหม่ที่ใช้ได้ (ซ้ำของเดิมหรือยาวเกิน) — กดใหม่อีกครั้ง"}
+    log_action("competitors_keywords", True, {"model": c["model"], "using": c["using"], "keywords": len(res["keywords"])})
+    return res
+
+
 # ปุ่ม ✨ คิดความสนใจ + คำโฆษณา 5 ชุด — ปุ่มที่ Claude เลือกได้ (แสดงคู่กับคำโฆษณา · ชนิดยิงข้อความใช้ "ส่งข้อความ" เสมอ)
 COPY_CTAS: dict[str, str] = {
     "MESSAGE_PAGE": "ส่งข้อความ", "LEARN_MORE": "ดูเพิ่มเติม", "CONTACT_US": "ติดต่อเรา",
@@ -3140,7 +3210,7 @@ if __name__ == "__main__":
     if (ARGS.status or ARGS.create_json or ARGS.suggest_json or ARGS.search_json or ARGS.adset_json
             or ARGS.reach_json or ARGS.lives or ARGS.live_ad_json or ARGS.pages
             or ARGS.portfolios or ARGS.check_portfolio or ARGS.insights_summary_json
-            or ARGS.competitors_summary_json or ARGS.competitors_copy_json or ARGS.competitors_image_json or ARGS.competitors_video_json or ARGS.competitors_claude_check or ARGS.ai_poll_json or ARGS.ai_stop):
+            or ARGS.competitors_summary_json or ARGS.competitors_copy_json or ARGS.competitors_image_json or ARGS.competitors_video_json or ARGS.competitors_keywords_json or ARGS.competitors_claude_check or ARGS.ai_poll_json or ARGS.ai_stop):
         if PORTFOLIO != 1 and (ARGS.status or ARGS.create_json):
             _auto_portfolio_ids()
         if ARGS.ai_poll_json:
@@ -3157,6 +3227,8 @@ if __name__ == "__main__":
             out = competitors_image(json.loads(Path(ARGS.competitors_image_json).read_text(encoding="utf-8")))
         elif ARGS.competitors_video_json:
             out = competitors_video(json.loads(Path(ARGS.competitors_video_json).read_text(encoding="utf-8")))
+        elif ARGS.competitors_keywords_json:
+            out = competitors_keywords(json.loads(Path(ARGS.competitors_keywords_json).read_text(encoding="utf-8")))
         elif ARGS.competitors_claude_check:
             out = competitors_claude_check()
         elif ARGS.check_portfolio:
